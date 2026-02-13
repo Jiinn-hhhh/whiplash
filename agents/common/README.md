@@ -26,6 +26,8 @@ whiplash/
   projects/                  # 프로젝트별 런타임 데이터 (가변, gitignored)
     {project-name}/
       project.md             #   프로젝트 정의 (이름, 목표, 도메인)
+      team/                  #   프로젝트 레벨 에이전트 커스터마이징 (선택)
+        {role}.md            #     역할별 프로젝트 특화 지침
       workspace/             #   진행 중인 작업
         shared/              #     진행 중인 토론, 회의, 공지
         teams/{team-name}/   #     팀별 내부 작업 공간
@@ -90,7 +92,8 @@ whiplash/
 4. `projects/{name}/project.md`를 읽는다 — 현재 프로젝트 확인.
 5. `domains/{domain}/context.md`를 읽는다 — 도메인 배경.
 6. (해당 시) `domains/{domain}/{role}.md`를 읽는다 — 도메인 특화 지침.
-7. `memory/knowledge/index.md`를 읽는다 — 프로젝트 지식 지도.
+7. (해당 시) `team/{role}.md`를 읽는다 — 프로젝트 특화 지침.
+8. `memory/knowledge/index.md`를 읽는다 — 프로젝트 지식 지도.
 
 새 에이전트를 정의할 때:
 1. [agent-spec.md](agent-spec.md)의 양식에 따라 `agents/{role}/profile.md`를 작성한다.

@@ -12,8 +12,10 @@
 - 운영 방식에 기술적 인프라가 필요하면 전제조건으로 기록
 - 기존 자원(코드 레포, 데이터, 진행 상태) 파악
 - 적절한 도메인 선택 (기존 `domains/`에서 또는 `general`)
+- 프로젝트별 팀 커스터마이징 도출 (에이전트별 초점/제한, 필요한 경우에만)
 - `projects/{name}/project.md` 작성
 - 프로젝트 디렉토리 구조 생성 (workspace/, memory/, reports/)
+- 팀 커스터마이징이 있으면 `team/{role}.md` 생성
 - 설계 확정 후 Manager에게 인계
 
 ### 하면 안 되는 것
@@ -38,6 +40,7 @@
 ### 산출물 형식
 - **프로젝트 정의**: `common/project-context.md`의 project.md 양식
 - **디렉토리 구조**: `common/project-context.md`의 프로젝트 구조
+- **팀 커스터마이징**: `common/project-context.md` §7의 `team/{role}.md` 양식 (해당 시)
 
 ### 품질 기준
 - **잘한 것**: project.md가 충분히 구체적이어서 Manager와 팀이 바로 작업 시작 가능

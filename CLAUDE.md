@@ -84,6 +84,8 @@ whiplash/
 └── projects/                    # Per-project runtime data (gitignored)
     └── {project-name}/
         ├── project.md           #   Project definition (name, goal, domain)
+        ├── team/                #   Project-level agent customization (optional)
+        │   └── {role}.md        #     Role-specific project guidelines
         ├── workspace/           #   Active work in progress
         │   ├── shared/          #     Cross-team discussions, meetings, announcements
         │   └── teams/           #     Team-internal workspaces
@@ -118,6 +120,16 @@ Projects can specify a domain for additional context:
 - Projects without a domain default to `general` (no extra files needed)
 - See `domains/README.md` for details
 
+### Project-Level Team Customization
+
+Even within the same domain, each project can give agents different focus/priorities:
+
+- `projects/{name}/team/{role}.md` — project-specific agent guidelines (optional)
+- 3-layer supplement chain: `agents/{role}/profile.md` → `domains/{domain}/{role}.md` → `team/{role}.md`
+- Each layer **supplements** the previous. Never replaces.
+- Created by Onboarding agent, updatable by Manager with user consent.
+- See `agents/common/project-context.md` §7 for details
+
 ## Key Conventions
 
 - **Language**: All framework documents are written in Korean.
@@ -137,7 +149,8 @@ Projects can specify a domain for additional context:
 4. Read `projects/{name}/project.md` — current project
 5. Read `domains/{domain}/context.md` — domain background
 6. (If exists) Read `domains/{domain}/{role}.md` — domain-specific guidelines
-7. Read `memory/knowledge/index.md` — project knowledge map
+7. (If exists) Read `team/{role}.md` — project-specific guidelines
+8. Read `memory/knowledge/index.md` — project knowledge map
 
 ## Adding a New Agent
 

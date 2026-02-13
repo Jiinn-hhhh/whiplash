@@ -25,6 +25,8 @@
 ```
 projects/{name}/
   project.md               # 프로젝트 정의 (이름, 목표, 도메인)
+  team/                    # 프로젝트 레벨 에이전트 커스터마이징 (선택)
+    {role}.md              #   역할별 프로젝트 특화 지침
   workspace/               # 진행 중인 작업
     shared/
       discussions/
@@ -98,6 +100,10 @@ projects/{name}/
 - **긴급 알림**: {블로커 발생 시 즉시 / 모아서 보고}
 - **기술적 전제조건**: {운영 방식 실현에 필요한 인프라, 설정 등 또는 "없음"}
 
+## 팀 구성
+- **활성 에이전트**: {이 프로젝트에 참여하는 에이전트 목록}
+- **커스터마이징**: {있으면 team/{role}.md 참조, 없으면 "기본"}
+
 ## 현재 상태
 (에이전트가 업데이트)
 ```
@@ -111,8 +117,9 @@ projects/{name}/
 1. `projects/{name}/project.md`를 읽는다.
 2. 도메인이 지정되어 있으면 `domains/{domain}/context.md`를 읽는다.
 3. 해당 도메인에 자기 역할 파일이 있으면 (`domains/{domain}/{role}.md`) 읽는다.
-4. `projects/{name}/memory/knowledge/index.md`를 읽는다.
-5. 이후 workspace/, memory/, reports/ 경로는 해당 프로젝트 기준으로 해석한다.
+4. 해당 프로젝트에 자기 역할 파일이 있으면 (`projects/{name}/team/{role}.md`) 읽는다.
+5. `projects/{name}/memory/knowledge/index.md`를 읽는다.
+6. 이후 workspace/, memory/, reports/ 경로는 해당 프로젝트 기준으로 해석한다.
 
 ---
 
@@ -134,3 +141,43 @@ projects/{name}/
 2. `domains/{domain}/{role}.md` — 해당 역할 에이전트만 읽는 추가 지침 (있는 경우)
 
 도메인 파일은 기본 규칙을 **보충**한다. 교체하지 않는다.
+
+---
+
+## 7. 프로젝트 레벨 팀 커스터마이징
+
+같은 도메인이라도 프로젝트마다 에이전트에게 다른 초점/우선순위를 줄 수 있다.
+
+### 3-Layer 보충 체인
+
+```
+agents/{role}/profile.md          ← 기본 (프레임워크, 불변)
+  ↓ 보충
+domains/{domain}/{role}.md        ← 도메인 특화 (프레임워크, 불변)
+  ↓ 보충
+projects/{name}/team/{role}.md    ← 프로젝트 특화 (프로젝트, 가변)
+```
+
+- 각 레이어는 이전 레이어를 **보충**한다. 교체하지 않는다.
+- 프로젝트 레벨 파일은 선택. 없으면 기본 + 도메인만으로 작동한다.
+
+### team/{role}.md 양식
+
+```markdown
+# {프로젝트명} — {역할} 프로젝트 지침
+
+이 파일은 `agents/{role}/profile.md`와 `domains/{domain}/{role}.md`를 **보충**한다.
+
+## 이 프로젝트에서의 초점
+(이 프로젝트에서 특별히 강조할 것)
+
+## 이 프로젝트에서의 제한
+(이 프로젝트에서 특별히 피할 것)
+```
+
+### 작성 규칙
+
+- **온보딩 에이전트가 생성**한다. 유저와의 대화에서 프로젝트별 에이전트 커스터마이징을 도출한 결과물이다.
+- **Manager가 수정 가능**하다. 프로젝트 진행 중 필요 시 유저 합의 하에 업데이트한다.
+- 기본 profile.md나 도메인 파일의 규칙을 **무효화하지 않는다**. 초점과 우선순위를 조정할 뿐이다.
+- project.md의 `팀 구성` 섹션에 개요를 기록하고, 상세는 `team/{role}.md`에 둔다.
