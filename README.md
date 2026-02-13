@@ -8,6 +8,23 @@ AI 에이전트들이 팀으로 협업하는 환경을 정의하는 프레임워
 
 ---
 
+## 시작하기
+
+```bash
+git clone https://github.com/Jiinn-hhhh/whiplash.git
+cd whiplash
+```
+
+AI 코딩 에이전트(Claude Code, Codex 등)를 이 폴더에서 실행하고, 아래 명령을 내린다:
+
+```
+너는 Onboarding 에이전트다. agents/onboarding/profile.md를 읽고 새 프로젝트 온보딩을 시작해라.
+```
+
+온보딩 에이전트가 대화를 통해 프로젝트를 설계하고, 완료되면 Manager를 띄워준다. 이후에는 Manager와 대화하며 프로젝트를 진행한다.
+
+---
+
 ## 핵심 아이디어
 
 - 에이전트를 잘 쓰는 것은 **프롬프트 엔지니어링이 아니라 환경 엔지니어링**이다.
