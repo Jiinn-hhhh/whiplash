@@ -1,0 +1,63 @@
+# Runtime data — ignore contents, keep directory structure via .gitkeep
+#
+# Git ignores are order-dependent and directory-scoped:
+#   - Ignoring a directory prevents traversal into it
+#   - To keep .gitkeep inside, we must un-ignore the directory first
+
+# workspace/
+workspace/*
+!workspace/shared/
+!workspace/teams/
+workspace/shared/*
+!workspace/shared/discussions/
+!workspace/shared/meetings/
+!workspace/shared/announcements/
+workspace/shared/discussions/*
+!workspace/shared/discussions/.gitkeep
+workspace/shared/meetings/*
+!workspace/shared/meetings/.gitkeep
+workspace/shared/announcements/*
+!workspace/shared/announcements/.gitkeep
+workspace/teams/*
+!workspace/teams/research/
+!workspace/teams/developer/
+workspace/teams/research/*
+!workspace/teams/research/.gitkeep
+workspace/teams/developer/*
+!workspace/teams/developer/.gitkeep
+
+# memory/
+memory/*
+!memory/manager/
+!memory/researcher/
+!memory/developer/
+!memory/knowledge/
+memory/manager/*
+!memory/manager/.gitkeep
+memory/researcher/*
+!memory/researcher/.gitkeep
+memory/developer/*
+!memory/developer/.gitkeep
+memory/knowledge/*
+!memory/knowledge/lessons/
+!memory/knowledge/docs/
+!memory/knowledge/discussions/
+!memory/knowledge/meetings/
+!memory/knowledge/archives/
+memory/knowledge/lessons/*
+!memory/knowledge/lessons/.gitkeep
+memory/knowledge/docs/*
+!memory/knowledge/docs/.gitkeep
+memory/knowledge/discussions/*
+!memory/knowledge/discussions/.gitkeep
+memory/knowledge/meetings/*
+!memory/knowledge/meetings/.gitkeep
+memory/knowledge/archives/*
+!memory/knowledge/archives/.gitkeep
+
+# reports/
+reports/*
+!reports/.gitkeep
+
+# OS
+.DS_Store
