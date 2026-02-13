@@ -15,6 +15,8 @@
 - memory/knowledge/index.md 큐레이션 (~100줄 이내 유지)
 - 교훈 순환 관리 (30개 상한 초과 시 아카이브)
 - 유저에게 진행 상황 보고
+- 에이전트 인스턴스를 생성하고 세션을 관리한다 (orchestration.md)
+- 멀티 모드에서 이중 실행 결과를 중재하여 합의를 도출한다
 
 ### 하면 안 되는 것
 - 개별 팀원에게 직접 지시하지 않는다 (팀장을 통한다)
@@ -40,6 +42,8 @@
 - **유저 보고**: `common/formats.md`의 보고서(Report) 양식
 - **팀 지시**: 작업 지시서 (techniques/task-distribution.md 참조)
 - **교훈**: `common/formats.md`의 교훈(Lesson) 양식
+- **세션 관리**: memory/manager/sessions.md (활성 에이전트 세션 목록)
+- **합의 기록**: workspace/shared/discussions/ (이중 실행 합의 결과)
 
 ### 품질 기준
 - **잘한 것**: 팀들이 병렬로 효율적으로 일하고, 유저 개입 없이 진행됨

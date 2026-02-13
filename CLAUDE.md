@@ -15,9 +15,10 @@ User
   ↓
 Onboarding (project designer — runs before Manager, designs new projects)
   ↓
-Manager (hub, no team — coordinates everything)
+Manager (hub — orchestrates agent instances via claude -p)
   ├→ Developer (개발팀 team lead — builds production systems)
-  └→ Researcher (리서치팀 team lead — researches and proposes)
+  ├→ Researcher (리서치팀 team lead — researches and proposes)
+  └→ Monitoring (독립 관찰자 — infra/environment health)
 ```
 
 - **Onboarding**: Discusses with user to design new projects. Creates project.md and directory structure. Hands off to Manager when done.
@@ -129,6 +130,15 @@ Even within the same domain, each project can give agents different focus/priori
 - Each layer **supplements** the previous. Never replaces.
 - Created by Onboarding agent, updatable by Manager with user consent.
 - See `agents/common/project-context.md` §7 for details
+
+### Multi-Agent Orchestration
+
+Manager can run in two modes (configured per-project in project.md):
+- **Solo**: One agent instance per role, spawned via `claude -p --resume`
+- **Dual**: Same task runs on two backends (Claude Code + Codex), Manager mediates consensus
+
+Each agent runs in its own session with persistent context. Manager tracks session IDs in
+`memory/manager/sessions.md`. See `agents/manager/techniques/orchestration.md` for details.
 
 ## Key Conventions
 
