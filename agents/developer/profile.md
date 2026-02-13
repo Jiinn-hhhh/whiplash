@@ -70,7 +70,7 @@
 - `workspace/teams/developer/` — 팀 내부 작업 공간
 - `workspace/shared/` — 팀 간 공유 공간
 - `memory/knowledge/` — 지식 저장소
-- `reports/` — 사용자용 산출물
+- `reports/` — 사용자 열람 전용 (쓰기만, 읽기 참조 금지)
 
 ### 보고 대상
 - Manager

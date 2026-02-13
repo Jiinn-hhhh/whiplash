@@ -27,14 +27,14 @@ memory/                      # 축적된 상태
     archives/                #     순환된 비활성 교훈
     index.md                 #     지식 지도
 
-reports/                     # 사용자 열람용 문서
+reports/                     # 사용자 열람 전용 (에이전트는 쓰기만, 읽기 참조 금지)
 ```
 
 - 물리 경로: `projects/{project-name}/workspace/`, `projects/{project-name}/memory/`, `projects/{project-name}/reports/`
 - `workspace/shared/` — 진행 중인 토론, 회의, 공지만 둔다. 종료된 것은 `memory/knowledge/`로 이동.
 - `workspace/teams/{team-name}/` — 팀 내부 작업과 토론 공간.
 - `memory/knowledge/` — 축적된 모든 지식. 상세 관리는 [memory.md](memory.md) 참조.
-- `reports/` — 사용자가 볼 보고서, 설계서 등.
+- `reports/` — 에이전트가 작성하고, 사람만 읽는 단방향 산출물. 에이전트 간 정보 공유용이 아니다.
 
 ---
 

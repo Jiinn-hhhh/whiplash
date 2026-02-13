@@ -40,7 +40,7 @@ whiplash/
           meetings/          #       종료된 회의록 원본
           archives/          #       순환된 비활성 교훈
           index.md           #       지식 지도 (~100줄)
-      reports/               #   사용자 열람용 문서
+      reports/               #   사용자 열람 전용 (에이전트는 쓰기만, 읽기 참조 금지)
 ```
 
 - Git tracked = `agents/` + `domains/`. 나머지 전부 = `projects/`.

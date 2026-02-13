@@ -39,6 +39,7 @@ projects/{name}/
     manager/
     researcher/
     developer/
+    monitoring/
     knowledge/
       lessons/
       docs/
@@ -46,7 +47,7 @@ projects/{name}/
       meetings/
       archives/
       index.md
-  reports/                 # 사용자용 산출물
+  reports/                 # 사용자 열람 전용 (에이전트는 쓰기만, 읽기 참조 금지)
 ```
 
 ---

@@ -57,7 +57,7 @@ Researcher가 실험할 수 있는 환경을 구축하고 유지한다.
 | 출처 | 경로 |
 |------|------|
 | Researcher 모니터링 중 발견 | Researcher monitoring.md → 기술 이슈는 Developer에게 전달 |
-| 자체 모니터링 | 인프라 상태 점검 중 발견 |
+| Monitoring 에이전트 상태 보고 | Monitoring → Manager → Developer |
 | Manager 지시 | 유저/Manager로부터의 이슈 보고 |
 
 ### 대응 절차
