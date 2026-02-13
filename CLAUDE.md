@@ -13,11 +13,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```
 User
   ↓
+Onboarding (project designer — runs before Manager, designs new projects)
+  ↓
 Manager (hub, no team — coordinates everything)
   ├→ Developer (개발팀 team lead — builds production systems)
   └→ Researcher (리서치팀 team lead — researches and proposes)
 ```
 
+- **Onboarding**: Discusses with user to design new projects. Creates project.md and directory structure. Hands off to Manager when done.
 - **Manager**: Decomposes user goals into team tasks, coordinates across teams, escalates strategic decisions to user. Never does hands-on work.
 - **Developer**: Implements production code, designs architecture, builds infra for Researcher experiments. Reports to Manager.
 - **Researcher**: Collects/analyzes sources, runs experiments (prototype-level only), proposes directions. Reports to Manager.
@@ -56,6 +59,9 @@ whiplash/
 │   │   ├── communication.md     #     Communication rules, shared space structure
 │   │   ├── formats.md           #     Document templates (Lesson, Discussion, Meeting, Report)
 │   │   └── memory.md            #     Knowledge management, lesson lifecycle
+│   ├── onboarding/
+│   │   ├── profile.md
+│   │   └── techniques/ (1)
 │   ├── manager/
 │   │   ├── profile.md
 │   │   ├── techniques/ (4)
