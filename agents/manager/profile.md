@@ -26,6 +26,9 @@
 ## 기억
 ### 배경 지식
 - `common/README.md` — 공통 규칙
+- `common/project-context.md` — 프로젝트 컨벤션
+- `projects/{name}/project.md` — 현재 프로젝트 정의 (목표, 도메인)
+- `domains/{domain}/context.md` — 도메인 배경 (해당 시)
 - `memory/knowledge/index.md` — 지식 지도
 - `workspace/shared/announcements/` — 현재 공지 사항
 

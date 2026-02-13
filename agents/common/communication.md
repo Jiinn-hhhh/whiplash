@@ -6,6 +6,8 @@
 
 ## 1. 공유 공간 구조
 
+각 프로젝트 안에 다음 구조가 존재한다. 아래 경로는 현재 프로젝트 기준 상대 경로다 (상세: [project-context.md](project-context.md)).
+
 ```
 workspace/                   # 런타임 작업 공간 (진행 중인 것)
   shared/                    #   진행 중인 것만
@@ -28,6 +30,7 @@ memory/                      # 축적된 상태
 reports/                     # 사용자 열람용 문서
 ```
 
+- 물리 경로: `projects/{project-name}/workspace/`, `projects/{project-name}/memory/`, `projects/{project-name}/reports/`
 - `workspace/shared/` — 진행 중인 토론, 회의, 공지만 둔다. 종료된 것은 `memory/knowledge/`로 이동.
 - `workspace/teams/{team-name}/` — 팀 내부 작업과 토론 공간.
 - `memory/knowledge/` — 축적된 모든 지식. 상세 관리는 [memory.md](memory.md) 참조.
