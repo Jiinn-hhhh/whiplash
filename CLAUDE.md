@@ -89,6 +89,7 @@ whiplash/
         │   └── {role}.md        #     Role-specific project guidelines
         ├── workspace/           #   Active work in progress
         │   ├── shared/          #     Cross-team discussions, meetings, announcements
+        │   │   └── mailbox/     #     Real-time agent notifications (Maildir pattern)
         │   └── teams/           #     Team-internal workspaces
         ├── memory/              #   Accumulated state
         │   ├── {role}/          #     Agent personal notes
@@ -133,12 +134,18 @@ Even within the same domain, each project can give agents different focus/priori
 
 ### Multi-Agent Orchestration
 
-Manager can run in two modes (configured per-project in project.md):
-- **Solo**: One agent instance per role, spawned via `claude -p --resume`
-- **Dual**: Same task runs on two backends (Claude Code + Codex), Manager mediates consensus
+Manager runs agents via tmux + mailbox for async orchestration:
+- Each agent runs in its own tmux window within session `whiplash-{project}`
+- Agents communicate status via mailbox (Maildir pattern: tmp/ → new/ → cur/)
+- monitor.sh polls mailboxes and delivers notifications via tmux send-keys
+- Users can observe any agent live via `tmux attach -t whiplash-{project}`
 
-Each agent runs in its own session with persistent context. Manager tracks session IDs in
-`memory/manager/sessions.md`. See `agents/manager/techniques/orchestration.md` for details.
+Modes (configured per-project in project.md):
+- **Solo**: One agent instance per role (MVP — currently implemented)
+- **Dual**: Same task runs on two backends → consensus (Phase 2)
+
+Key tools: `orchestrator.sh` (boot/dispatch/shutdown), `monitor.sh` (polling), `mailbox.sh` (messaging).
+See `agents/manager/techniques/orchestration.md` for details.
 
 ## Key Conventions
 
@@ -176,3 +183,48 @@ Each agent runs in its own session with persistent context. Manager tracks sessi
 2. Write `context.md` — domain background, concepts, terminology, quality criteria
 3. (Optional) Write `{role}.md` — role-specific domain guidelines
 4. Set domain in project's `project.md`
+
+## Spawning Agents (Manager Use)
+
+Boot all agents for a project (tmux session + mailbox + monitor):
+
+```bash
+bash agents/manager/tools/orchestrator.sh boot {project-name}
+```
+
+Dispatch a task to an agent:
+
+```bash
+bash agents/manager/tools/orchestrator.sh dispatch {role} {task-file} {project-name}
+```
+
+Shutdown all agents:
+
+```bash
+bash agents/manager/tools/orchestrator.sh shutdown {project-name}
+```
+
+Check status:
+
+```bash
+bash agents/manager/tools/orchestrator.sh status {project-name}
+```
+
+Model selection is automatic: `opus` (Researcher), `sonnet` (Developer), `haiku` (Monitoring).
+
+## Validation Commands
+
+No build/test pipeline. Use these checks:
+
+```bash
+rg --files agents domains       # list managed docs
+git status --short              # confirm staged files
+git log --oneline -n 10         # check commit style
+```
+
+## Style Conventions
+
+- **Language**: Korean for all framework documents
+- **Filenames**: kebab-case for techniques (e.g., `knowledge-management.md`)
+- **Paths**: exact patterns — `agents/{role}/...`, `domains/{domain}/...`
+- **Commits**: imperative verb start (`Add`, `Refactor`, `Update`), one logical change per commit
