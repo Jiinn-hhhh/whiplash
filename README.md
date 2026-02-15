@@ -52,6 +52,8 @@ tmux attach -t whiplash-{project-name}
 
 **유저가 할 일은 온보딩 대화뿐이다.** 그 후 Manager가 팀을 꾸리고, 태스크를 분배하고, 결과를 조율한다. 유저는 tmux에서 관찰하다가 중요한 결정만 내리면 된다.
 
+Manager 윈도우(`Ctrl-b` + `0`)에서 직접 대화할 수도 있다 — 방향 수정, 추가 지시, 진행 상황 질문 등. Manager는 `claude --resume`으로 실행되는 인터랙티브 세션이므로 일반 Claude Code처럼 대화하면 된다.
+
 ---
 
 ## 핵심 아이디어
