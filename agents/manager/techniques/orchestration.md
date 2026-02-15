@@ -56,6 +56,16 @@ orchestrator.sh가 수행하는 것:
 
 Manager가 tmux 안에서 `orchestrator.sh boot`을 호출하면 나머지 에이전트가 부팅된다.
 
+### Manager 시작 절차 (부팅 후 자동 실행)
+
+Manager는 부팅 메시지에 포함된 지시에 따라 아래를 자동 실행한다:
+
+1. 온보딩 8단계 완료
+2. `orchestrator.sh boot {project}` 실행 → 팀 에이전트 부팅
+3. 모든 에이전트의 `agent_ready` mailbox 메시지 대기
+4. project.md의 목표를 분석하고 첫 태스크 분배 (task-distribution.md 절차)
+5. 팀 운영 시작
+
 ### 전체 부팅 (orchestrator.sh boot)
 
 ```bash

@@ -65,19 +65,20 @@ get_model() {
 get_domain() {
   local project="$1"
   local project_md="$(project_dir "$project")/project.md"
-  grep -i "domain" "$project_md" \
+  { grep -i "domain" "$project_md" 2>/dev/null || true; } \
     | head -1 \
     | sed 's/.*: *//' \
     | sed 's/ *(.*//' \
-    | tr -d '[:space:]'
+    | tr -d '[:space:]' \
+    | tr -d '*'
 }
 
 # project.md에서 비용 상한 추출 (없으면 빈 문자열 → 기본값 5)
 get_budget() {
   local project="$1"
   local project_md="$(project_dir "$project")/project.md"
-  grep -oE 'max.*budget.*[0-9]+|비용.*상한.*[0-9]+' "$project_md" 2>/dev/null \
-    | grep -oE '[0-9]+(\.[0-9]+)?' | head -1
+  { grep -oE 'max.*budget.*[0-9]+|비용.*상한.*[0-9]+' "$project_md" 2>/dev/null || true; } \
+    | grep -oE '[0-9]+(\.[0-9]+)?' | head -1 || true
   # 매치 없으면 빈 문자열 → 호출부에서 기본값 5 사용
 }
 
@@ -86,8 +87,12 @@ get_exec_mode() {
   local project="$1"
   local project_md="$(project_dir "$project")/project.md"
   local mode
-  mode=$(grep -i "실행 모드" "$project_md" 2>/dev/null \
-    | head -1 | sed 's/.*: *//' | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+  mode=$({ grep -i "실행 모드" "$project_md" 2>/dev/null || true; } \
+    | head -1 \
+    | sed 's/.*: *//' \
+    | tr -d '[:space:]' \
+    | tr -d '*|' \
+    | tr '[:upper:]' '[:lower:]')
   if [ "$mode" = "dual" ]; then echo "dual"; else echo "solo"; fi
 }
 
@@ -218,8 +223,9 @@ boot_single_agent() {
   echo "--- ${window_name} (${model}) 부팅 중 ---"
 
   # claude -p로 초기 세션 생성하여 session_id 획득
+  # env -u CLAUDECODE: Manager가 Claude Code 안에서 호출할 때 중첩 세션 에러 방지
   local result
-  result=$(claude -p "$boot_msg" \
+  result=$(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude -p "$boot_msg" \
     --model "$model" \
     --output-format json \
     --allowedTools "Read,Glob,Grep,Write,Edit,Bash,WebSearch,WebFetch" \
@@ -315,11 +321,21 @@ cmd_boot_manager() {
   model="$(get_model "manager")"
   local budget
   budget="$(get_budget "$project")"
+  local extra_boot_instructions
+  extra_boot_instructions=$(cat << EXTRA
+10. 온보딩 완료 후, 아래 명령으로 팀 에이전트를 부팅해라:
+    bash agents/manager/tools/orchestrator.sh boot ${project}
+11. 모든 에이전트의 agent_ready 메시지를 기다려라.
+12. 팀이 준비되면 project.md의 목표를 분석하고 첫 태스크를 분배해라.
+    techniques/task-distribution.md 절차를 따른다.
+EXTRA
+)
   local boot_msg
-  boot_msg="$(build_boot_message "manager" "$project")"
+  boot_msg="$(build_boot_message "manager" "$project" "$extra_boot_instructions")"
 
+  # env -u CLAUDECODE: Claude Code 안에서 호출할 때 중첩 세션 에러 방지
   local result
-  result=$(claude -p "$boot_msg" \
+  result=$(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude -p "$boot_msg" \
     --model "$model" \
     --output-format json \
     --allowedTools "Read,Glob,Grep,Write,Edit,Bash,WebSearch,WebFetch" \
