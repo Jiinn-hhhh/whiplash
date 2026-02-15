@@ -50,7 +50,9 @@ send_crash_alert() {
 }
 
 # ──────────────────────────────────────────────
-# sessions.md에서 active 역할 파싱
+# sessions.md에서 active 윈도우 이름 파싱
+# tmux target 컬럼에서 윈도우 이름을 추출한다.
+# solo: "researcher" 반환. dual: "researcher-claude", "researcher-codex" 반환.
 # ──────────────────────────────────────────────
 
 get_active_roles() {
@@ -58,8 +60,10 @@ get_active_roles() {
   if [ ! -f "$sessions_file" ]; then
     return
   fi
+  # tmux target 컬럼(5번째)에서 "session:window" 형식의 윈도우 이름 추출
   grep '| active |' "$sessions_file" 2>/dev/null \
-    | awk -F'|' '{print $2}' \
+    | awk -F'|' '{print $5}' \
+    | sed 's/.*://' \
     | sed 's/^ *//;s/ *$//' \
     | grep -v '^$'
 }
@@ -149,45 +153,45 @@ check_agent_windows() {
   local active_windows
   active_windows=$(tmux list-windows -t "$SESSION" -F '#{window_name}')
 
-  # sessions.md에서 active 역할 파싱 (하드코딩 대신)
-  local active_roles
-  active_roles=$(get_active_roles)
+  # sessions.md에서 active 윈도우 이름 파싱 (solo: role, dual: role-backend)
+  local active_window_names
+  active_window_names=$(get_active_roles)
 
-  for role in $active_roles; do
+  for window_name in $active_window_names; do
     # manager는 건너뛴다
-    if [ "$role" = "manager" ]; then
+    if [ "$window_name" = "manager" ]; then
       continue
     fi
 
-    if echo "$active_windows" | grep -q "^${role}$"; then
+    if echo "$active_windows" | grep -q "^${window_name}$"; then
       # 윈도우 정상 — reboot 카운터 리셋
-      reset_reboot_count "$role"
+      reset_reboot_count "$window_name"
     else
       # 윈도우 없음 — 크래시 감지
       local count
-      count=$(get_reboot_count "$role")
+      count=$(get_reboot_count "$window_name")
 
       if [ "$count" -lt "$MAX_REBOOT" ]; then
-        echo "[monitor] ${role} 윈도우 없음. 자동 reboot 시도 (${count}/${MAX_REBOOT})"
-        increment_reboot_count "$role"
+        echo "[monitor] ${window_name} 윈도우 없음. 자동 reboot 시도 (${count}/${MAX_REBOOT})"
+        increment_reboot_count "$window_name"
 
-        # orchestrator.sh reboot 호출
-        if bash "$TOOLS_DIR/orchestrator.sh" reboot "$role" "$PROJECT" 2>&1; then
-          echo "[monitor] ${role} reboot 성공"
-          send_crash_alert "$role" \
-            "${role} 에이전트 크래시 감지. 자동 reboot 성공 ($((count + 1))/${MAX_REBOOT}회)."
+        # orchestrator.sh reboot 호출 (window_name을 target으로 전달)
+        if bash "$TOOLS_DIR/orchestrator.sh" reboot "$window_name" "$PROJECT" 2>&1; then
+          echo "[monitor] ${window_name} reboot 성공"
+          send_crash_alert "$window_name" \
+            "${window_name} 에이전트 크래시 감지. 자동 reboot 성공 ($((count + 1))/${MAX_REBOOT}회)."
         else
-          echo "[monitor] ${role} reboot 실패"
-          send_crash_alert "$role" \
-            "${role} 에이전트 크래시 감지. 자동 reboot 실패 ($((count + 1))/${MAX_REBOOT}회). 수동 개입 필요."
+          echo "[monitor] ${window_name} reboot 실패"
+          send_crash_alert "$window_name" \
+            "${window_name} 에이전트 크래시 감지. 자동 reboot 실패 ($((count + 1))/${MAX_REBOOT}회). 수동 개입 필요."
         fi
       else
         # 3회 초과 — reboot 포기
-        echo "[monitor] ${role} reboot 한도 초과 (${count}/${MAX_REBOOT}). 수동 개입 필요."
-        send_crash_alert "$role" \
-          "${role} 에이전트 reboot ${MAX_REBOOT}회 시도 후 실패. 수동 개입이 필요하다. orchestrator.sh reboot ${role} ${PROJECT} 로 수동 복구하라."
+        echo "[monitor] ${window_name} reboot 한도 초과 (${count}/${MAX_REBOOT}). 수동 개입 필요."
+        send_crash_alert "$window_name" \
+          "${window_name} 에이전트 reboot ${MAX_REBOOT}회 시도 후 실패. 수동 개입이 필요하다. orchestrator.sh reboot ${window_name} ${PROJECT} 로 수동 복구하라."
         # 알림 중복 방지: 카운터를 한도+1로 설정
-        echo $((MAX_REBOOT + 1)) > "$REBOOT_COUNT_DIR/${role}.count"
+        echo $((MAX_REBOOT + 1)) > "$REBOOT_COUNT_DIR/${window_name}.count"
       fi
     fi
   done

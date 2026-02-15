@@ -128,7 +128,7 @@ workspace/shared/mailbox/
 bash agents/manager/tools/mailbox.sh {project} {from} {to} {kind} {priority} "{subject}" "{content}"
 ```
 
-- kind: `task_complete` | `status_update` | `need_input` | `escalation` | `agent_ready` | `reboot_notice`
+- kind: `task_complete` | `status_update` | `need_input` | `escalation` | `agent_ready` | `reboot_notice` | `consensus_request`
 - priority: `normal` | `urgent`
 - MSG ID 형식: `MSG-{epoch}-{from}-{pid}-{random}` (충돌 방지)
 
