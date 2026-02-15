@@ -153,29 +153,11 @@
 **Manager 인계 절차**:
 
 ```bash
-# 1. Manager 부팅 (온보딩 메시지로 컨텍스트 주입)
-#    온보딩 메시지 끝에 "온보딩이 끝나면 준비 완료를 보고해라"를 포함한다.
-boot_result=$(claude -p "{Manager 온보딩 메시지}" \
-  --output-format json \
-  --allowedTools "Read,Glob,Grep,Write,Edit,Bash,WebSearch,WebFetch" \
-  --max-turns 20)
-
-session_id=$(echo "$boot_result" | jq -r '.session_id')
-response=$(echo "$boot_result" | jq -r '.result')
+# orchestrator.sh boot-manager가 Manager 부팅 + tmux 세션 생성을 처리한다
+bash agents/manager/tools/orchestrator.sh boot-manager {project-name}
 ```
 
-**2. 인계 확인 (handshake)**:
-- Manager의 응답(`response`)에서 준비 완료 확인을 검증한다.
-- 확인되면 → tmux 세션 생성으로 진행.
-- 확인 실패(에러, 온보딩 미완료 등) → `--resume`으로 재시도한다. 될 때까지 반복하되, 3회 실패 시 유저에게 상황을 알린다.
-
-```bash
-# 3. 확인 성공 → tmux 세션 생성 + Manager를 interactive 모드로 실행
-tmux new-session -d -s whiplash-{project-name}
-tmux send-keys -t whiplash-{project-name} "claude --resume $session_id" Enter
-```
-
-**4. 유저에게 안내 후 종료**:
+정상 부팅 확인 후 유저에게 안내:
 ```
 Manager 인계 완료. 아래 명령으로 접속해:
   tmux attach -t whiplash-{project-name}

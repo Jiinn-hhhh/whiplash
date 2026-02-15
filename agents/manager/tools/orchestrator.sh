@@ -2,12 +2,14 @@
 # orchestrator.sh -- tmux 기반 멀티 에이전트 오케스트레이션
 #
 # 서브커맨드:
-#   boot     {project}                   -- tmux 세션 생성 + 에이전트 부팅 + monitor 시작
-#   dispatch {role} {task-file} {project} -- 에이전트에게 태스크 전달
-#   shutdown {project}                   -- 세션 종료 + 정리
-#   status   {project}                   -- 세션 상태 확인
-#   reboot   {role} {project}            -- 에이전트 세션 재시작
-#   refresh  {role} {project}            -- 에이전트 맥락 리프레시 (handoff 후 새 세션)
+#   boot-manager   {project}                   -- Manager 부팅 + tmux 세션 생성
+#   boot           {project}                   -- tmux 세션 생성 + 에이전트 부팅 + monitor 시작
+#   dispatch       {role} {task-file} {project} -- 에이전트에게 태스크 전달
+#   dual-dispatch  {role} {task-file} {project} -- 양쪽 백엔드에 동일 태스크 전달 (dual 모드)
+#   shutdown       {project}                   -- 세션 종료 + 정리
+#   status         {project}                   -- 세션 상태 확인
+#   reboot         {target} {project}          -- 에이전트 세션 재시작 (target: role 또는 role-backend)
+#   refresh        {target} {project}          -- 에이전트 맥락 리프레시 (target: role 또는 role-backend)
 
 set -euo pipefail
 
@@ -79,11 +81,22 @@ get_budget() {
   # 매치 없으면 빈 문자열 → 호출부에서 기본값 5 사용
 }
 
+# project.md에서 실행 모드 추출 (solo | dual, 기본값 solo)
+get_exec_mode() {
+  local project="$1"
+  local project_md="$(project_dir "$project")/project.md"
+  local mode
+  mode=$(grep -i "실행 모드" "$project_md" 2>/dev/null \
+    | head -1 | sed 's/.*: *//' | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+  if [ "$mode" = "dual" ]; then echo "dual"; else echo "solo"; fi
+}
+
 # 부팅 메시지 생성
 build_boot_message() {
   local role="$1"
   local project="$2"
   local extra="${3:-}"
+  local agent_id="${4:-$role}"
   local domain
   domain="$(get_domain "$project")"
 
@@ -102,13 +115,13 @@ build_boot_message() {
 7. (해당 시) projects/${project}/team/${role}.md 읽기
 8. memory/knowledge/index.md 읽기
 9. 태스크 완료 또는 블로커 발생 시 아래 명령으로 Manager에게 알려라:
-   bash agents/manager/tools/mailbox.sh ${project} ${role} manager {kind} {priority} "{subject}" "{content}"
+   bash agents/manager/tools/mailbox.sh ${project} ${agent_id} manager {kind} {priority} "{subject}" "{content}"
    kind: task_complete | status_update | need_input | escalation | agent_ready
    priority: normal | urgent
    다른 에이전트에게 직접 알릴 때도 같은 방식 (to를 해당 역할로 변경).
 ${extra}
 온보딩이 끝나면 준비 완료를 mailbox로 보고해라:
-bash agents/manager/tools/mailbox.sh ${project} ${role} manager agent_ready normal "온보딩 완료" "${role} 에이전트 준비 완료"
+bash agents/manager/tools/mailbox.sh ${project} ${agent_id} manager agent_ready normal "온보딩 완료" "${agent_id} 에이전트 준비 완료"
 BOOTMSG
 }
 
@@ -116,19 +129,31 @@ BOOTMSG
 init_mailbox() {
   local project="$1"
   local shared_dir="$(project_dir "$project")/workspace/shared/mailbox"
+  local exec_mode
+  exec_mode="$(get_exec_mode "$project")"
 
   for role in manager researcher developer monitoring; do
     mkdir -p "$shared_dir/$role"/{tmp,new,cur}
+    # dual 모드이고 monitoring이 아닌 역할은 backend별 mailbox도 생성
+    if [ "$exec_mode" = "dual" ] && [ "$role" != "manager" ] && [ "$role" != "monitoring" ]; then
+      mkdir -p "$shared_dir/${role}-claude"/{tmp,new,cur}
+      mkdir -p "$shared_dir/${role}-codex"/{tmp,new,cur}
+    fi
   done
-  echo "mailbox 디렉토리 초기화 완료"
+  echo "mailbox 디렉토리 초기화 완료 (mode: ${exec_mode})"
 }
 
-# sessions.md 초기화 또는 갱신
+# sessions.md 초기화 (멱등: 이미 존재하면 건너뜀)
 init_sessions_file() {
   local project="$1"
   local sf
   sf="$(sessions_file "$project")"
   mkdir -p "$(dirname "$sf")"
+
+  # 이미 존재하면 덮어쓰지 않음 (boot-manager에서 이미 생성했을 수 있음)
+  if [ -f "$sf" ]; then
+    return
+  fi
 
   cat > "$sf" << 'HEADER'
 # 활성 에이전트 세션
@@ -140,21 +165,26 @@ HEADER
 
 # sessions.md에 행 추가
 add_session_row() {
-  local project="$1" role="$2" session_id="$3" tmux_target="$4" model="$5"
+  local project="$1" role="$2" session_id="$3" tmux_target="$4" model="$5" backend="${6:-claude}"
   local sf
   sf="$(sessions_file "$project")"
   local today
   today="$(date +%Y-%m-%d)"
-  echo "| ${role} | claude | ${session_id} | ${tmux_target} | active | ${today} | ${model} | |" >> "$sf"
+  echo "| ${role} | ${backend} | ${session_id} | ${tmux_target} | active | ${today} | ${model} | |" >> "$sf"
 }
 
 # sessions.md에서 특정 역할의 상태를 변경
+# backend가 지정되면 role+backend 매칭, 없으면 role만 매칭
 mark_session_status() {
-  local project="$1" role="$2" old_status="$3" new_status="$4"
+  local project="$1" role="$2" old_status="$3" new_status="$4" backend="${5:-}"
   local sf
   sf="$(sessions_file "$project")"
   if [ -f "$sf" ]; then
-    sed -i '' "s/| ${role} \(.*\)| ${old_status} |/| ${role} \1| ${new_status} |/g" "$sf"
+    if [ -n "$backend" ]; then
+      sed -i '' "s/| ${role} | ${backend} \(.*\)| ${old_status} |/| ${role} | ${backend} \1| ${new_status} |/g" "$sf"
+    else
+      sed -i '' "s/| ${role} \(.*\)| ${old_status} |/| ${role} \1| ${new_status} |/g" "$sf"
+    fi
   fi
 }
 
@@ -173,17 +203,19 @@ boot_single_agent() {
   local role="$1"
   local project="$2"
   local extra_boot_msg="${3:-}"
+  local window_name="${4:-$role}"
   local sess
   sess="$(session_name "$project")"
   local model
   model="$(get_model "$role")"
   local budget
   budget="$(get_budget "$project")"
+  local agent_id="$window_name"
   local boot_msg
-  boot_msg="$(build_boot_message "$role" "$project" "$extra_boot_msg")"
-  local tmux_target="${sess}:${role}"
+  boot_msg="$(build_boot_message "$role" "$project" "$extra_boot_msg" "$agent_id")"
+  local tmux_target="${sess}:${window_name}"
 
-  echo "--- ${role} (${model}) 부팅 중 ---"
+  echo "--- ${window_name} (${model}) 부팅 중 ---"
 
   # claude -p로 초기 세션 생성하여 session_id 획득
   local result
@@ -198,19 +230,122 @@ boot_single_agent() {
   session_id=$(echo "$result" | jq -r '.session_id')
 
   if [ -z "$session_id" ] || [ "$session_id" = "null" ]; then
-    echo "Warning: ${role} session_id 획득 실패." >&2
+    echo "Warning: ${window_name} session_id 획득 실패." >&2
     return 1
   fi
 
   # tmux 윈도우 생성 후 claude --resume으로 인터랙티브 세션 시작
-  tmux new-window -t "$sess" -n "$role"
+  tmux new-window -t "$sess" -n "$window_name"
   tmux send-keys -t "$tmux_target" "claude --resume $session_id" Enter
 
   # sessions.md에 기록
-  add_session_row "$project" "$role" "$session_id" "$tmux_target" "$model"
+  add_session_row "$project" "$role" "$session_id" "$tmux_target" "$model" "claude"
 
-  echo "${role} 부팅 완료: session=${session_id}, tmux=${tmux_target}"
+  echo "${window_name} 부팅 완료: session=${session_id}, tmux=${tmux_target}"
   return 0
+}
+
+# Codex CLI 에이전트 부팅
+boot_codex_agent() {
+  local role="$1"
+  local project="$2"
+  local window_name="$3"
+  local extra_boot_msg="${4:-}"
+  local sess
+  sess="$(session_name "$project")"
+  local agent_id="$window_name"
+  local tmux_target="${sess}:${window_name}"
+
+  # codex CLI 설치 확인
+  if ! command -v codex &>/dev/null; then
+    echo "Warning: codex CLI가 설치되어 있지 않다. ${window_name} 부팅 건너뜀." >&2
+    return 1
+  fi
+
+  echo "--- ${window_name} (codex) 부팅 중 ---"
+
+  # 부팅 메시지를 파일에 저장 (send-keys 길이 제한 회피)
+  local boot_msg
+  boot_msg="$(build_boot_message "$role" "$project" "$extra_boot_msg" "$agent_id")"
+  local boot_file="$(project_dir "$project")/memory/${role}/codex-boot-msg.md"
+  mkdir -p "$(dirname "$boot_file")"
+  echo "$boot_msg" > "$boot_file"
+
+  # tmux 윈도우 생성
+  tmux new-window -t "$sess" -n "$window_name"
+
+  # codex 인터랙티브 시작
+  tmux send-keys -t "$tmux_target" "codex" Enter
+  sleep 2
+
+  # 부팅 메시지 파일 읽기 지시
+  tmux send-keys -t "$tmux_target" \
+    "${boot_file} 파일을 읽고 그 안의 온보딩 절차를 따라라." Enter
+
+  # sessions.md에 기록
+  add_session_row "$project" "$role" "codex-interactive" "$tmux_target" "codex" "codex"
+
+  echo "${window_name} 부팅 완료: tmux=${tmux_target}"
+  return 0
+}
+
+# ──────────────────────────────────────────────
+# boot-manager 서브커맨드
+# ──────────────────────────────────────────────
+
+cmd_boot_manager() {
+  local project="$1"
+  local sess
+  sess="$(session_name "$project")"
+
+  echo "=== Manager 부팅 ==="
+
+  # 이미 세션이 있으면 중단
+  if tmux has-session -t "$sess" 2>/dev/null; then
+    echo "Error: tmux 세션 '$sess'가 이미 존재한다. 먼저 shutdown하라." >&2
+    exit 1
+  fi
+
+  # 1. mailbox + sessions.md 초기화
+  init_mailbox "$project"
+  init_sessions_file "$project"
+
+  # 2. Manager 부팅 (claude -p → session_id)
+  local model
+  model="$(get_model "manager")"
+  local budget
+  budget="$(get_budget "$project")"
+  local boot_msg
+  boot_msg="$(build_boot_message "manager" "$project")"
+
+  local result
+  result=$(claude -p "$boot_msg" \
+    --model "$model" \
+    --output-format json \
+    --allowedTools "Read,Glob,Grep,Write,Edit,Bash,WebSearch,WebFetch" \
+    --max-turns 20 \
+    --max-budget-usd "${budget:-5}")
+
+  local session_id
+  session_id=$(echo "$result" | jq -r '.session_id')
+
+  if [ -z "$session_id" ] || [ "$session_id" = "null" ]; then
+    echo "Error: Manager session_id 획득 실패." >&2
+    exit 1
+  fi
+
+  # 3. tmux 세션 생성 + Manager 투입
+  tmux new-session -d -s "$sess" -n manager
+  local tmux_target="${sess}:manager"
+  tmux send-keys -t "$tmux_target" "claude --resume $session_id" Enter
+
+  # 4. sessions.md에 기록
+  add_session_row "$project" "manager" "$session_id" "$tmux_target" "$model"
+
+  echo "=== Manager 부팅 완료 ==="
+  echo "session_id: $session_id"
+  echo "tmux attach -t $sess 로 접속하라."
+  echo "Manager가 orchestrator.sh boot ${project} 로 나머지 에이전트를 부팅한다."
 }
 
 # ──────────────────────────────────────────────
@@ -221,24 +356,30 @@ cmd_boot() {
   local project="$1"
   local sess
   sess="$(session_name "$project")"
+  local exec_mode
+  exec_mode="$(get_exec_mode "$project")"
 
-  echo "=== ${project} 프로젝트 부팅 ==="
+  echo "=== ${project} 프로젝트 부팅 (mode: ${exec_mode}) ==="
 
-  # 이미 세션이 있으면 중단
-  if tmux has-session -t "$sess" 2>/dev/null; then
-    echo "Error: tmux 세션 '$sess'가 이미 존재한다. 먼저 shutdown하라." >&2
+  # dual 모드 시 codex 설치 확인
+  if [ "$exec_mode" = "dual" ] && ! command -v codex &>/dev/null; then
+    echo "Error: dual 모드이지만 codex CLI가 설치되어 있지 않다." >&2
     exit 1
   fi
 
   # 1. mailbox 디렉토리 생성
   init_mailbox "$project"
 
-  # 2. sessions.md 초기화
+  # 2. sessions.md 초기화 (멱등 — boot-manager에서 이미 생성했으면 건너뜀)
   init_sessions_file "$project"
 
-  # 3. tmux 세션 생성 (manager 윈도우)
-  tmux new-session -d -s "$sess" -n manager
-  echo "tmux 세션 '$sess' 생성됨"
+  # 3. tmux 세션 생성 또는 기존 재사용
+  if tmux has-session -t "$sess" 2>/dev/null; then
+    echo "기존 tmux 세션 '$sess' 재사용 (boot-manager로 생성됨)"
+  else
+    tmux new-session -d -s "$sess" -n manager
+    echo "tmux 세션 '$sess' 생성됨"
+  fi
 
   # 4. 각 에이전트 부팅
   local agents
@@ -250,10 +391,21 @@ cmd_boot() {
       continue
     fi
 
-    boot_single_agent "$role" "$project" || {
-      echo "Warning: ${role} 부팅 실패. 건너뜀." >&2
-      continue
-    }
+    if [ "$exec_mode" = "dual" ] && [ "$role" != "monitoring" ]; then
+      # dual 모드: claude + codex 양쪽 부팅 (monitoring은 solo)
+      boot_single_agent "$role" "$project" "" "${role}-claude" || {
+        echo "Warning: ${role}-claude 부팅 실패. 건너뜀." >&2
+      }
+      boot_codex_agent "$role" "$project" "${role}-codex" || {
+        echo "Warning: ${role}-codex 부팅 실패. 건너뜀." >&2
+      }
+    else
+      # solo 모드 (기존 동작)
+      boot_single_agent "$role" "$project" || {
+        echo "Warning: ${role} 부팅 실패. 건너뜀." >&2
+        continue
+      }
+    fi
   done
 
   # 5. monitor.sh 백그라운드 실행 (에러 로깅)
@@ -297,16 +449,75 @@ cmd_dispatch() {
 }
 
 # ──────────────────────────────────────────────
+# dual-dispatch 서브커맨드
+# ──────────────────────────────────────────────
+
+cmd_dual_dispatch() {
+  local role="$1"
+  local task_file="$2"
+  local project="$3"
+  local sess
+  sess="$(session_name "$project")"
+
+  local claude_win="${role}-claude"
+  local codex_win="${role}-codex"
+
+  # 양쪽 윈도우 존재 확인
+  local windows
+  windows=$(tmux list-windows -t "$sess" -F '#{window_name}' 2>/dev/null)
+
+  local ok=true
+  if ! echo "$windows" | grep -q "^${claude_win}$"; then
+    echo "Error: ${claude_win} 윈도우가 없다." >&2
+    ok=false
+  fi
+  if ! echo "$windows" | grep -q "^${codex_win}$"; then
+    echo "Error: ${codex_win} 윈도우가 없다." >&2
+    ok=false
+  fi
+  if [ "$ok" = false ]; then
+    exit 1
+  fi
+
+  # 양쪽에 동일 태스크 전달
+  tmux send-keys -t "${sess}:${claude_win}" \
+    "${task_file} 파일에 새 작업 지시가 있다. 읽고 실행해라." Enter
+  tmux send-keys -t "${sess}:${codex_win}" \
+    "${task_file} 파일에 새 작업 지시가 있다. 읽고 실행해라." Enter
+
+  echo "dual-dispatch 완료: ${role} (claude + codex) ← ${task_file}"
+}
+
+# ──────────────────────────────────────────────
 # reboot 서브커맨드
 # ──────────────────────────────────────────────
 
 cmd_reboot() {
-  local role="$1"
+  local target="$1"
   local project="$2"
   local sess
   sess="$(session_name "$project")"
 
-  echo "=== ${role} 에이전트 리부팅 ==="
+  # target에서 role과 backend 분리
+  # "researcher-claude" → role=researcher, backend=claude, window=researcher-claude
+  # "researcher-codex"  → role=researcher, backend=codex, window=researcher-codex
+  # "researcher"        → role=researcher, backend=claude, window=researcher (solo 호환)
+  local role backend window_name
+  if [[ "$target" == *-claude ]]; then
+    role="${target%-claude}"
+    backend="claude"
+    window_name="$target"
+  elif [[ "$target" == *-codex ]]; then
+    role="${target%-codex}"
+    backend="codex"
+    window_name="$target"
+  else
+    role="$target"
+    backend="claude"
+    window_name="$target"
+  fi
+
+  echo "=== ${window_name} 에이전트 리부팅 ==="
 
   # tmux 세션 존재 확인
   if ! tmux has-session -t "$sess" 2>/dev/null; then
@@ -315,23 +526,30 @@ cmd_reboot() {
   fi
 
   # 1. 기존 윈도우 있으면 kill
-  if tmux list-windows -t "$sess" -F '#{window_name}' 2>/dev/null | grep -q "^${role}$"; then
-    echo "기존 ${role} 윈도우 종료 중..."
-    tmux send-keys -t "${sess}:${role}" "/exit" Enter 2>/dev/null || true
+  if tmux list-windows -t "$sess" -F '#{window_name}' 2>/dev/null | grep -q "^${window_name}$"; then
+    echo "기존 ${window_name} 윈도우 종료 중..."
+    tmux send-keys -t "${sess}:${window_name}" "/exit" Enter 2>/dev/null || true
     sleep 2
-    tmux kill-window -t "${sess}:${role}" 2>/dev/null || true
+    tmux kill-window -t "${sess}:${window_name}" 2>/dev/null || true
   fi
 
   # 2. sessions.md에서 이전 행을 crashed로 표시
-  mark_session_status "$project" "$role" "active" "crashed"
+  mark_session_status "$project" "$role" "active" "crashed" "$backend"
 
-  # 3. 새 세션으로 부팅
-  boot_single_agent "$role" "$project" || {
-    echo "Error: ${role} 리부팅 실패." >&2
-    exit 1
-  }
+  # 3. backend에 따라 적절한 부팅 함수 호출
+  if [ "$backend" = "codex" ]; then
+    boot_codex_agent "$role" "$project" "$window_name" || {
+      echo "Error: ${window_name} 리부팅 실패." >&2
+      exit 1
+    }
+  else
+    boot_single_agent "$role" "$project" "" "$window_name" || {
+      echo "Error: ${window_name} 리부팅 실패." >&2
+      exit 1
+    }
+  fi
 
-  echo "=== ${role} 리부팅 완료 ==="
+  echo "=== ${window_name} 리부팅 완료 ==="
 }
 
 # ──────────────────────────────────────────────
@@ -339,12 +557,28 @@ cmd_reboot() {
 # ──────────────────────────────────────────────
 
 cmd_refresh() {
-  local role="$1"
+  local target="$1"
   local project="$2"
   local sess
   sess="$(session_name "$project")"
 
-  echo "=== ${role} 에이전트 리프레시 ==="
+  # target에서 role과 backend 분리 (reboot과 동일한 파싱)
+  local role backend window_name
+  if [[ "$target" == *-claude ]]; then
+    role="${target%-claude}"
+    backend="claude"
+    window_name="$target"
+  elif [[ "$target" == *-codex ]]; then
+    role="${target%-codex}"
+    backend="codex"
+    window_name="$target"
+  else
+    role="$target"
+    backend="claude"
+    window_name="$target"
+  fi
+
+  echo "=== ${window_name} 에이전트 리프레시 ==="
 
   # tmux 세션 존재 확인
   if ! tmux has-session -t "$sess" 2>/dev/null; then
@@ -353,16 +587,17 @@ cmd_refresh() {
   fi
 
   # 윈도우 존재 확인
-  if ! tmux list-windows -t "$sess" -F '#{window_name}' 2>/dev/null | grep -q "^${role}$"; then
-    echo "Error: ${role} 윈도우가 없다." >&2
+  if ! tmux list-windows -t "$sess" -F '#{window_name}' 2>/dev/null | grep -q "^${window_name}$"; then
+    echo "Error: ${window_name} 윈도우가 없다." >&2
     exit 1
   fi
 
+  # handoff 파일 경로는 role 기준 (backend별로 분리하지 않음)
   local handoff_file="$(project_dir "$project")/memory/${role}/handoff.md"
 
   # 1. 에이전트에게 handoff.md 작성 지시
   echo "handoff.md 작성 지시 전송..."
-  tmux send-keys -t "${sess}:${role}" \
+  tmux send-keys -t "${sess}:${window_name}" \
     "지금까지의 작업 맥락을 memory/${role}/handoff.md에 정리해라. 현재 진행 상황, 다음 할 일, 중요 결정사항을 포함해라." Enter
 
   # 2. 최대 2분 대기 (handoff.md 파일 생성 감시)
@@ -382,13 +617,13 @@ cmd_refresh() {
   fi
 
   # 3. 기존 세션 종료
-  echo "기존 ${role} 세션 종료 중..."
-  tmux send-keys -t "${sess}:${role}" "/exit" Enter 2>/dev/null || true
+  echo "기존 ${window_name} 세션 종료 중..."
+  tmux send-keys -t "${sess}:${window_name}" "/exit" Enter 2>/dev/null || true
   sleep 3
-  tmux kill-window -t "${sess}:${role}" 2>/dev/null || true
+  tmux kill-window -t "${sess}:${window_name}" 2>/dev/null || true
 
   # 4. sessions.md에서 이전 행을 refreshed로 표시
-  mark_session_status "$project" "$role" "active" "refreshed"
+  mark_session_status "$project" "$role" "active" "refreshed" "$backend"
 
   # 5. 새 세션 부팅 (온보딩 + handoff.md 읽기 지시 추가)
   local extra_msg=""
@@ -396,12 +631,19 @@ cmd_refresh() {
     extra_msg="10. memory/${role}/handoff.md를 읽어라. 이전 세션에서 인수인계한 맥락이다."
   fi
 
-  boot_single_agent "$role" "$project" "$extra_msg" || {
-    echo "Error: ${role} 리프레시 후 부팅 실패." >&2
-    exit 1
-  }
+  if [ "$backend" = "codex" ]; then
+    boot_codex_agent "$role" "$project" "$window_name" "$extra_msg" || {
+      echo "Error: ${window_name} 리프레시 후 부팅 실패." >&2
+      exit 1
+    }
+  else
+    boot_single_agent "$role" "$project" "$extra_msg" "$window_name" || {
+      echo "Error: ${window_name} 리프레시 후 부팅 실패." >&2
+      exit 1
+    }
+  fi
 
-  echo "=== ${role} 리프레시 완료 ==="
+  echo "=== ${window_name} 리프레시 완료 ==="
 }
 
 # ──────────────────────────────────────────────
@@ -545,12 +787,14 @@ cmd_status() {
 
 if [ $# -lt 2 ]; then
   echo "Usage:" >&2
-  echo "  orchestrator.sh boot     {project}" >&2
-  echo "  orchestrator.sh dispatch {role} {task-file} {project}" >&2
-  echo "  orchestrator.sh shutdown {project}" >&2
-  echo "  orchestrator.sh status   {project}" >&2
-  echo "  orchestrator.sh reboot   {role} {project}" >&2
-  echo "  orchestrator.sh refresh  {role} {project}" >&2
+  echo "  orchestrator.sh boot-manager   {project}" >&2
+  echo "  orchestrator.sh boot           {project}" >&2
+  echo "  orchestrator.sh dispatch       {role} {task-file} {project}" >&2
+  echo "  orchestrator.sh dual-dispatch  {role} {task-file} {project}" >&2
+  echo "  orchestrator.sh shutdown       {project}" >&2
+  echo "  orchestrator.sh status         {project}" >&2
+  echo "  orchestrator.sh reboot         {target} {project}" >&2
+  echo "  orchestrator.sh refresh        {target} {project}" >&2
   exit 1
 fi
 
@@ -558,6 +802,10 @@ command="$1"
 shift
 
 case "$command" in
+  boot-manager)
+    [ $# -lt 1 ] && { echo "Usage: orchestrator.sh boot-manager {project}" >&2; exit 1; }
+    cmd_boot_manager "$1"
+    ;;
   boot)
     [ $# -lt 1 ] && { echo "Usage: orchestrator.sh boot {project}" >&2; exit 1; }
     cmd_boot "$1"
@@ -565,6 +813,10 @@ case "$command" in
   dispatch)
     [ $# -lt 3 ] && { echo "Usage: orchestrator.sh dispatch {role} {task-file} {project}" >&2; exit 1; }
     cmd_dispatch "$1" "$2" "$3"
+    ;;
+  dual-dispatch)
+    [ $# -lt 3 ] && { echo "Usage: orchestrator.sh dual-dispatch {role} {task-file} {project}" >&2; exit 1; }
+    cmd_dual_dispatch "$1" "$2" "$3"
     ;;
   shutdown)
     [ $# -lt 1 ] && { echo "Usage: orchestrator.sh shutdown {project}" >&2; exit 1; }
@@ -575,16 +827,16 @@ case "$command" in
     cmd_status "$1"
     ;;
   reboot)
-    [ $# -lt 2 ] && { echo "Usage: orchestrator.sh reboot {role} {project}" >&2; exit 1; }
+    [ $# -lt 2 ] && { echo "Usage: orchestrator.sh reboot {target} {project}" >&2; exit 1; }
     cmd_reboot "$1" "$2"
     ;;
   refresh)
-    [ $# -lt 2 ] && { echo "Usage: orchestrator.sh refresh {role} {project}" >&2; exit 1; }
+    [ $# -lt 2 ] && { echo "Usage: orchestrator.sh refresh {target} {project}" >&2; exit 1; }
     cmd_refresh "$1" "$2"
     ;;
   *)
     echo "Unknown command: $command" >&2
-    echo "Available: boot, dispatch, shutdown, status, reboot, refresh" >&2
+    echo "Available: boot-manager, boot, dispatch, dual-dispatch, shutdown, status, reboot, refresh" >&2
     exit 1
     ;;
 esac

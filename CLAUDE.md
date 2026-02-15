@@ -142,7 +142,7 @@ Manager runs agents via tmux + mailbox for async orchestration:
 
 Modes (configured per-project in project.md):
 - **Solo**: One agent instance per role (MVP — currently implemented)
-- **Dual**: Same task runs on two backends → consensus (Phase 2)
+- **Dual**: Same task runs on two backends (Claude Code + Codex CLI) → Manager mediates consensus
 
 Key tools: `orchestrator.sh` (boot/dispatch/shutdown), `monitor.sh` (polling), `mailbox.sh` (messaging).
 See `agents/manager/techniques/orchestration.md` for details.
@@ -186,7 +186,13 @@ See `agents/manager/techniques/orchestration.md` for details.
 
 ## Spawning Agents (Manager Use)
 
-Boot all agents for a project (tmux session + mailbox + monitor):
+Boot Manager into tmux session:
+
+```bash
+bash agents/manager/tools/orchestrator.sh boot-manager {project-name}
+```
+
+Boot all other agents (run by Manager inside tmux):
 
 ```bash
 bash agents/manager/tools/orchestrator.sh boot {project-name}

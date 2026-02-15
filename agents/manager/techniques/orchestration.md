@@ -9,10 +9,10 @@
 | 모드 | 설명 | 결정 시점 |
 |------|------|-----------|
 | 단독 (solo) | Manager가 역할별 에이전트 1개씩 실행 | 온보딩 시 유저 선택 |
-| 멀티 (dual) | 같은 태스크를 두 백엔드로 이중 실행 → 합의 | 온보딩 시 유저 선택 |
+| 멀티 (dual) | 같은 태스크를 두 백엔드(Claude Code + Codex CLI)로 이중 실행 → Manager가 합의 도출 | 온보딩 시 유저 선택 |
 
 - project.md `운영 방식`에 `실행 모드: solo | dual` 기록
-- **현재 Solo 모드만 구현**. Dual 모드는 Phase 3에서 추가 예정.
+- Solo와 Dual 모드를 모두 지원한다. `orchestrator.sh boot` 시 project.md에서 실행 모드를 파싱하여 자동 분기한다.
 
 ---
 
@@ -40,7 +40,23 @@
 
 ## 3. 부팅 절차
 
-### 전체 부팅 (orchestrator.sh)
+### Manager 부팅 (orchestrator.sh boot-manager)
+
+```bash
+bash agents/manager/tools/orchestrator.sh boot-manager {project-name}
+```
+
+orchestrator.sh가 수행하는 것:
+
+1. mailbox 디렉토리 생성 + sessions.md 초기화
+2. `claude -p "{부팅 메시지}" --model sonnet --output-format json` → session_id 획득
+3. tmux 세션 `whiplash-{project}` 생성 (manager 윈도우)
+4. `tmux send-keys "claude --resume {session_id}" Enter`
+5. sessions.md에 Manager 행 기록
+
+Manager가 tmux 안에서 `orchestrator.sh boot`을 호출하면 나머지 에이전트가 부팅된다.
+
+### 전체 부팅 (orchestrator.sh boot)
 
 ```bash
 bash agents/manager/tools/orchestrator.sh boot {project-name}
@@ -48,10 +64,10 @@ bash agents/manager/tools/orchestrator.sh boot {project-name}
 
 orchestrator.sh가 자동으로 수행하는 것:
 
-1. tmux 세션 `whiplash-{project}` 생성 (manager 윈도우 포함)
+1. tmux 세션 `whiplash-{project}` 생성 (없으면 생성, boot-manager로 이미 생성되었으면 재사용)
 2. project.md에서 활성 에이전트 목록 추출
 3. project.md에서 비용 상한 추출 (없으면 기본값 $5)
-4. 각 에이전트에 대해:
+4. 각 에이전트에 대해 (Manager는 건너뜀):
    - `claude -p "{부팅 메시지}" --model {model} --output-format json --max-budget-usd {budget}` → session_id 획득
    - tmux 윈도우 생성 (`tmux new-window -n {role}`)
    - `tmux send-keys "claude --resume {session_id}" Enter`
@@ -164,10 +180,78 @@ tmux attach -t whiplash-{project}
 
 ## 6. 멀티 모드: 이중 실행 + 합의 프로토콜
 
-> **Phase 3에서 추가 예정.** 현재는 단독 모드만 지원한다.
->
-> 기존 설계: 같은 태스크를 Claude Code + Codex 양쪽에 디스패치 → 결과 교차 전달 → 토론 라운드 → 합의 판정.
-> tmux 기반으로 전환 시 각 백엔드를 별도 윈도우로 운영하고, 결과 비교를 mailbox 메시지로 수행하는 방식으로 확장할 예정.
+### 6.1 개요
+
+Dual 모드는 같은 태스크를 **Claude Code**와 **Codex CLI** 두 백엔드에서 병렬 실행하고, Manager가 결과를 비교하여 합의를 도출하는 방식이다.
+
+- 합의는 **반자동** — orchestrator.sh에 도구(`dual-dispatch` 등)만 제공하고, Manager가 문서화된 절차를 따라 직접 판정한다.
+- Monitoring 에이전트는 dual에서도 **solo로 부팅**한다 (이중 실행 불필요).
+
+### 6.2 이중 부팅
+
+`orchestrator.sh boot`가 project.md의 `실행 모드: dual`을 감지하면 자동으로 이중 부팅한다:
+
+- 각 역할(monitoring 제외)에 대해 두 윈도우 생성:
+  - `{role}-claude`: Claude Code (`claude -p` → `claude --resume`)
+  - `{role}-codex`: Codex CLI (`codex` 인터랙티브)
+- sessions.md에 백엔드별 행이 기록된다:
+
+```markdown
+| researcher | claude | abc-123 | whiplash-proj:researcher-claude | active | 2026-02-15 | opus | |
+| researcher | codex | codex-interactive | whiplash-proj:researcher-codex | active | 2026-02-15 | codex | |
+```
+
+- codex CLI가 설치되어 있지 않으면 boot 시 에러로 중단한다.
+
+### 6.3 이중 디스패치
+
+```bash
+bash agents/manager/tools/orchestrator.sh dual-dispatch {role} {task-file} {project}
+```
+
+양쪽 윈도우(`{role}-claude`, `{role}-codex`)에 동일한 태스크를 전달한다. 단독 dispatch도 여전히 사용 가능 — 특정 백엔드 윈도우에만 전달하고 싶을 때.
+
+### 6.4 합의 절차
+
+Manager가 다음 6단계를 수동으로 수행한다:
+
+1. **결과 수집**: 양쪽 에이전트의 `task_complete` 메시지를 대기. 한쪽이 먼저 완료해도 다른 쪽을 기다린다 (타임아웃은 Manager 판단).
+2. **합의 문서 생성**: 양쪽 결과를 비교하여 `workspace/shared/discussions/DISC-NNN.md`에 합의 문서를 작성한다. 형식은 `formats.md` 토론 템플릿을 따른다.
+3. **교차 전달**: mailbox로 양쪽 에이전트에 `consensus_request`를 보낸다.
+   ```bash
+   bash agents/manager/tools/mailbox.sh {project} manager {role}-claude \
+     consensus_request normal "합의 요청" "workspace/shared/discussions/DISC-NNN.md를 읽고 의견을 추가하라."
+   bash agents/manager/tools/mailbox.sh {project} manager {role}-codex \
+     consensus_request normal "합의 요청" "workspace/shared/discussions/DISC-NNN.md를 읽고 의견을 추가하라."
+   ```
+4. **판정**: 양쪽 응답 확인 후 Manager가 판정한다.
+   - **동의**: 합의 결과를 채택하고 문서에 결론을 기록한다.
+   - **대립**: 2차 라운드를 진행한다.
+5. **2차 라운드** (최대 1회 추가): 대립 지점을 명확히 하여 양쪽에 재질의한다. 2차에서도 미합의 시 Manager가 직접 판정하거나 유저에게 에스컬레이션한다.
+6. **결과 확정**: 합의 문서를 `memory/knowledge/discussions/`로 이동하고, 최종 결과를 정식 위치에 배치한다.
+
+### 6.5 작업 영역 분리
+
+Dual 모드에서는 양쪽 에이전트가 파일 충돌을 피하기 위해 별도 작업 경로를 사용한다:
+
+- Claude: `workspace/teams/{team}/{role}-claude/`
+- Codex: `workspace/teams/{team}/{role}-codex/`
+
+합의 후 Manager가 최종 결과를 정식 위치에 배치한다.
+
+### 6.6 에이전트 식별
+
+Dual 모드에서는 mailbox의 from 필드에 `{role}-{backend}`를 사용한다:
+
+- `researcher-claude`, `researcher-codex` 등
+- Manager가 어느 백엔드의 보고인지 구별할 수 있다.
+- 부팅 메시지에서 agent_id로 자동 설정된다.
+
+### 6.7 한쪽 장애 시
+
+- 한쪽 백엔드만 크래시되면 monitor.sh가 해당 윈도우만 독립적으로 reboot한다.
+  - 예: `researcher-codex` 크래시 → `orchestrator.sh reboot researcher-codex {project}`
+- 한쪽만 결과를 낸 경우 Manager가 해당 결과만으로 채택 가능 (합의 불필요 판정).
 
 ---
 
@@ -282,6 +366,7 @@ subject: {제목}
 | escalation | 유저 에스컬레이션 필요 | "리소스 부족, 유저 확인 필요" |
 | agent_ready | 에이전트 준비 완료 | "온보딩 완료, 대기 중" |
 | reboot_notice | 에이전트 자동 리부팅 알림 | "researcher 크래시 후 자동 reboot" |
+| consensus_request | 합의 요청 (dual 모드) | "DISC-001 합의 문서를 읽고 의견 추가" |
 
 ### 사용법
 
@@ -329,11 +414,12 @@ URGENT mailbox {from}: {subject} ({kind})
 | 알림 kind | Manager 행동 |
 |-----------|-------------|
 | agent_ready | 에이전트 준비 확인, 대기 중인 태스크가 있으면 디스패치 |
-| task_complete | 결과물 확인, 다음 단계 진행 |
+| task_complete | 결과물 확인, 다음 단계 진행. dual 모드에서는 양쪽 완료 후 합의 절차(§6.4) 시작 |
 | status_update | 참고. 필요 시 추가 지시 |
 | need_input | 결정이 Manager 범위면 응답, 아니면 유저 에스컬레이션 |
 | escalation | 유저에게 보고 |
 | reboot_notice | 에이전트 복구 상태 확인, 필요 시 수동 개입 |
+| consensus_request | (dual 모드) 에이전트에게 합의 문서 검토 요청. 응답 대기 후 판정(§6.4) |
 
 ### monitor.sh 관리
 
