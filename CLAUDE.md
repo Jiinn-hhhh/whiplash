@@ -82,6 +82,17 @@ whiplash/
 │       ├── context.md           #     Domain background, terminology, principles
 │       └── researcher.md        #     Researcher domain-specific guidelines
 │
+├── dashboard/                   # Visual office dashboard (independent module)
+│   ├── server.py                #   HTTP server (Python stdlib only)
+│   ├── status-collector.sh      #   Data collection → JSON
+│   ├── index.html               #   Canvas + polling
+│   ├── sprites.js               #   Pixel art sprite definitions
+│   └── office.js                #   Office layout + rendering engine
+│
+├── feedback/                    # Framework improvement insights (independent module)
+│   ├── guide.md                 #   Recording rules
+│   └── insights.md              #   Accumulated insights
+│
 └── projects/                    # Per-project runtime data (gitignored)
     └── {project-name}/
         ├── project.md           #   Project definition (name, goal, domain)

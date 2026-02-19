@@ -228,6 +228,17 @@ whiplash/
 │       ├── context.md           #     도메인 배경, 용어, 원칙
 │       └── researcher.md        #     Researcher 추가 지침
 │
+├── dashboard/                   # 시각 오피스 대시보드 (독립 모듈)
+│   ├── server.py                #   HTTP 서버 (Python stdlib only)
+│   ├── status-collector.sh      #   데이터 수집 → JSON
+│   ├── index.html               #   Canvas + 폴링
+│   ├── sprites.js               #   픽셀 아트 스프라이트 정의
+│   └── office.js                #   오피스 레이아웃 + 렌더링 엔진
+│
+├── feedback/                    # 프레임워크 개선 인사이트 (독립 모듈)
+│   ├── guide.md                 #   기록 규칙
+│   └── insights.md              #   축적된 인사이트
+│
 └── projects/                    # 프로젝트별 런타임 (mutable, gitignored)
     └── {project-name}/
         ├── project.md           #   프로젝트 정의 (이름, 목표, 도메인, 실행 모드)
@@ -338,3 +349,6 @@ whiplash/
 8. `memory/knowledge/index.md` — 프로젝트 지식 지도
 
 상세 절차는 `techniques/`, 자동화 코드는 `tools/`에 있다.
+
+프레임워크 자체의 비효율(소통 병목, 절차 문제, 역할 모호 등)을 발견하면
+`feedback/guide.md`를 읽고 `feedback/insights.md`에 기록해라. 프로젝트 교훈(Lesson)과는 별개다.

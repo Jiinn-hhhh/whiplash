@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=640">
+  <title>Whiplash Office Dashboard</title>
+  <style>
+    @font-face {
+      font-family: 'DungGeunMo';
+      src: url('https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_six@1.2/DungGeunMo.woff') format('woff');
+      font-weight: normal;
+      font-style: normal;
+      font-display: swap;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0a0a1a;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: 'DungGeunMo', monospace;
+      color: #e0e0e0;
+    }
+
+    .controls {
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .controls label {
+      font-size: 14px;
+      color: #adb5bd;
+    }
+
+    .controls input {
+      background: #16213e;
+      border: 2px solid #0f3460;
+      color: #e94560;
+      font-family: 'DungGeunMo', monospace;
+      font-size: 14px;
+      padding: 4px 10px;
+      border-radius: 4px;
+      outline: none;
+      width: 180px;
+    }
+
+    .controls input:focus {
+      border-color: #e94560;
+    }
+
+    #dashboard-canvas {
+      border: 2px solid #0f3460;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      cursor: default;
+    }
+
+    .footer-text {
+      margin-top: 8px;
+      font-size: 10px;
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+  <div class="controls">
+    <label for="project-input">Project:</label>
+    <input type="text" id="project-input" placeholder="project name" spellcheck="false">
+  </div>
+
+  <canvas id="dashboard-canvas"></canvas>
+
+  <div class="footer-text">
+    Whiplash Office Dashboard &mdash; 3s polling &middot; pixel art
+  </div>
+
+  <script src="sprites.js"></script>
+  <script src="office.js"></script>
+  <script>
+    // Auto-detect project from URL params or server default
+    (function() {
+      const params = new URLSearchParams(window.location.search);
+      const projectInput = document.getElementById('project-input');
+
+      if (params.has('project')) {
+        projectInput.value = params.get('project');
+      }
+
+      // Also try to get from the initial status response
+      fetch('/api/status')
+        .then(r => r.json())
+        .then(data => {
+          if (data.project && !projectInput.value) {
+            projectInput.value = data.project;
+          }
+        })
+        .catch(() => {});
+
+      // Initialize the office
+      const canvas = document.getElementById('dashboard-canvas');
+      initOffice(canvas);
+    })();
+  </script>
+</body>
+</html>
