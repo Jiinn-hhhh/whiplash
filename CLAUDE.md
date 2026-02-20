@@ -15,7 +15,7 @@ User
   ↓
 Onboarding (project designer — runs before Manager, designs new projects)
   ↓
-Manager (hub — orchestrates agent instances via claude -p)
+Manager (hub — orchestrates agent instances)
   ├→ Developer (개발팀 team lead — builds production systems)
   ├→ Researcher (리서치팀 team lead — researches and proposes)
   └→ Monitoring (독립 관찰자 — infra/environment health)
@@ -145,18 +145,23 @@ Even within the same domain, each project can give agents different focus/priori
 
 ### Multi-Agent Orchestration
 
-Manager runs agents via tmux + mailbox for async orchestration:
+Three execution modes (configured per-project in project.md):
+
+**Solo/Dual mode** (tmux-based):
 - Each agent runs in its own tmux window within session `whiplash-{project}`
-- Agents communicate status via mailbox (Maildir pattern: tmp/ → new/ → cur/)
+- Agents communicate via mailbox (Maildir pattern: tmp/ → new/ → cur/)
 - monitor.sh polls mailboxes and delivers notifications via tmux send-keys
-- Users can observe any agent live via `tmux attach -t whiplash-{project}`
+- Solo: one agent per role. Dual: same task on two backends (Claude Code + Codex CLI)
+- Key tools: `orchestrator.sh`, `monitor.sh`, `mailbox.sh`
+- See `agents/manager/techniques/orchestration.md`
 
-Modes (configured per-project in project.md):
-- **Solo**: One agent instance per role (MVP — currently implemented)
-- **Dual**: Same task runs on two backends (Claude Code + Codex CLI) → Manager mediates consensus
-
-Key tools: `orchestrator.sh` (boot/dispatch/shutdown), `monitor.sh` (polling), `mailbox.sh` (messaging).
-See `agents/manager/techniques/orchestration.md` for details.
+**Agent-team mode** (Claude Code Agent Teams):
+- Manager uses native TeamCreate, Task, SendMessage tools
+- No tmux/mailbox/monitor infrastructure needed
+- Agents spawned as team members, communicate via SendMessage
+- Dashboard reads `agent-team-status.json` written by Manager
+- Key files: `agent-team/manager/techniques/orchestration.md`
+- Boot: `bash agent-team/boot.sh`
 
 ## Key Conventions
 
@@ -196,6 +201,16 @@ See `agents/manager/techniques/orchestration.md` for details.
 4. Set domain in project's `project.md`
 
 ## Spawning Agents (Manager Use)
+
+### Agent-team mode
+
+```bash
+bash agent-team/boot.sh
+```
+
+Onboarding handles everything: project design → Manager transition → TeamCreate → agent spawn.
+
+### Solo/dual mode
 
 Boot Manager into tmux session:
 
