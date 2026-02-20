@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Whiplash — Dashboard</title>
+  <style>
+    :root {
+      --bg: #08080c;
+      --bg2: #0c0c12;
+      --card: rgba(255,255,255,0.025);
+      --card-border: rgba(255,255,255,0.06);
+      --card-hover: rgba(255,255,255,0.04);
+      --text: #e0e0ec;
+      --text-dim: #6a6a80;
+      --text-dimmer: #3a3a4a;
+      --green: #00d68f;
+      --amber: #daa520;
+      --red: #ff3b3b;
+      --orange: #ff8c00;
+      --blue: #5b8af0;
+      --dim: #4a5568;
+      --r-manager: #5b8af0;
+      --r-researcher: #00d68f;
+      --r-developer: #ff6b6b;
+      --r-monitoring: #daa520;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      padding: 18px 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--card-border);
+      background: var(--bg2);
+    }
+
+    .logo {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.18em;
+      color: var(--text-dimmer);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .logo .mark { color: var(--text); font-size: 14px; letter-spacing: 0.12em; }
+    .logo .sep { color: var(--text-dimmer); font-weight: 300; }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      font-size: 12px;
+      color: var(--text-dim);
+      font-family: ui-monospace, 'SF Mono', 'Cascadia Code', monospace;
+    }
+
+    .monitor-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 6px;
+      background: rgba(255,255,255,0.03);
+    }
+    .monitor-badge .dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--green);
+    }
+    .monitor-badge.down .dot { background: var(--red); animation: blink 0.6s infinite; }
+
+    .project-input {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--card-border);
+      color: var(--text);
+      font-family: ui-monospace, 'SF Mono', monospace;
+      font-size: 12px;
+      padding: 6px 12px;
+      border-radius: 6px;
+      outline: none;
+      width: 140px;
+      transition: border-color 0.2s;
+    }
+    .project-input:focus { border-color: rgba(91,138,240,0.5); }
+    .project-input::placeholder { color: var(--text-dimmer); }
+
+    main {
+      flex: 1;
+      padding: 32px;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 16px;
+      max-width: 840px;
+      width: 100%;
+      margin: 0 auto;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 24px;
+      position: relative;
+      overflow: hidden;
+      transition: background 0.3s, border-color 0.3s;
+    }
+    .card::before {
+      content: '';
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 3px;
+      background: var(--accent);
+      opacity: 0.7;
+    }
+    .card:hover { background: var(--card-hover); border-color: rgba(255,255,255,0.1); }
+
+    .card-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 20px;
+    }
+    .role-name {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+    }
+    .model-chip {
+      font-size: 10px;
+      font-family: ui-monospace, 'SF Mono', monospace;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: rgba(255,255,255,0.04);
+      color: var(--text-dimmer);
+    }
+
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .status-dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .status-dot.working { background: var(--green); box-shadow: 0 0 12px rgba(0,214,143,0.4); animation: pulse 2s ease-in-out infinite; }
+    .status-dot.idle { background: var(--amber); opacity: 0.8; }
+    .status-dot.sleeping { background: var(--dim); animation: breathe 3s ease-in-out infinite; }
+    .status-dot.crashed { background: var(--red); box-shadow: 0 0 12px rgba(255,59,59,0.5); animation: blink 0.6s infinite; }
+    .status-dot.hung { background: var(--orange); animation: blink 1.2s infinite; }
+    .status-dot.rebooting { background: var(--blue); animation: pulse 1s ease-in-out infinite; }
+    .status-dot.offline { background: var(--text-dimmer); opacity: 0.4; }
+
+    .status-label {
+      font-size: 22px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+    .status-label.crashed { color: var(--red); }
+    .status-label.hung { color: var(--orange); }
+
+    .task-area {
+      min-height: 36px;
+      margin-bottom: 16px;
+    }
+    .task-text {
+      font-size: 13px;
+      color: var(--text-dim);
+      line-height: 1.6;
+      font-family: ui-monospace, 'SF Mono', monospace;
+    }
+    .task-none {
+      font-size: 13px;
+      color: var(--text-dimmer);
+    }
+
+    .metrics {
+      display: flex;
+      gap: 16px;
+      padding-top: 14px;
+      border-top: 1px solid var(--card-border);
+      font-size: 11px;
+      font-family: ui-monospace, 'SF Mono', monospace;
+      color: var(--text-dimmer);
+    }
+    .metric { display: flex; align-items: center; gap: 4px; }
+    .metric .v { color: var(--text-dim); }
+    .metric.mail .v { color: var(--amber); }
+    .metric.warn { color: var(--orange); }
+
+    footer {
+      padding: 14px 32px;
+      border-top: 1px solid var(--card-border);
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--text-dimmer);
+      font-family: ui-monospace, 'SF Mono', monospace;
+      background: var(--bg2);
+    }
+
+    .empty-state {
+      grid-column: 1 / -1;
+      text-align: center;
+      padding: 60px 0;
+      color: var(--text-dimmer);
+      font-size: 14px;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
+    }
+    @keyframes breathe {
+      0%, 100% { opacity: 0.25; }
+      50% { opacity: 0.7; }
+    }
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.1; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <span class="mark">WHIPLASH</span>
+      <span class="sep">/</span>
+      DASHBOARD
+    </div>
+    <div class="header-right">
+      <input type="text" id="project-input" class="project-input" placeholder="project" spellcheck="false" autocomplete="off">
+      <div id="monitor-badge" class="monitor-badge">
+        <div class="dot"></div>
+        <span id="monitor-text">--</span>
+      </div>
+      <span id="clock">--:--:--</span>
+    </div>
+  </header>
+
+  <main id="agents">
+    <div class="empty-state">enter project name above</div>
+  </main>
+
+  <footer>
+    <span id="last-update">waiting...</span>
+    <span>3s polling</span>
+  </footer>
+
+  <script>
+    const POLL_MS = 3000;
+    const ROLE_ORDER = ['manager', 'researcher', 'developer', 'monitoring'];
+    const STATE_KO = {
+      working: '작업중', idle: '대기', sleeping: '수면',
+      crashed: 'ERROR', hung: '응답없음', rebooting: '재부팅', offline: '오프라인',
+    };
+
+    let data = null;
+
+    // ── Init ───────────────────────────────
+    (function init() {
+      const params = new URLSearchParams(location.search);
+      const input = document.getElementById('project-input');
+      if (params.has('project')) input.value = params.get('project');
+
+      fetch('/api/status').then(r => r.json()).then(d => {
+        if (d.project && !input.value) input.value = d.project;
+      }).catch(() => {});
+
+      poll();
+      setInterval(poll, POLL_MS);
+      tick();
+      setInterval(tick, 1000);
+    })();
+
+    // ── Poll ───────────────────────────────
+    async function poll() {
+      try {
+        const p = document.getElementById('project-input').value.trim();
+        if (!p) return;
+        const r = await fetch(`/api/status?project=${encodeURIComponent(p)}`);
+        if (r.ok) { data = await r.json(); render(); }
+      } catch(e) { console.warn('poll:', e); }
+    }
+
+    function tick() {
+      document.getElementById('clock').textContent =
+        new Date().toLocaleTimeString('ko-KR', { hour12: false });
+    }
+
+    // ── Render ─────────────────────────────
+    function render() {
+      if (!data) return;
+      renderMonitor();
+      renderCards();
+      renderFooter();
+    }
+
+    function renderMonitor() {
+      const m = data.monitor;
+      const el = document.getElementById('monitor-badge');
+      el.className = 'monitor-badge' + (m.alive ? '' : ' down');
+      document.getElementById('monitor-text').textContent =
+        m.alive ? `monitor OK${m.heartbeat_age_sec >= 0 ? ` ${m.heartbeat_age_sec}s` : ''}` : 'monitor DOWN';
+    }
+
+    function renderCards() {
+      const main = document.getElementById('agents');
+      if (!data.agents) { main.innerHTML = '<div class="empty-state">no agents</div>'; return; }
+
+      const sorted = ROLE_ORDER
+        .map(role => Object.values(data.agents).find(a => a.role === role))
+        .filter(Boolean);
+
+      main.innerHTML = sorted.map(a => {
+        const accent = `var(--r-${a.role})`;
+        const label = STATE_KO[a.state] || a.state;
+        const task = a.current_task || '';
+        const mail = a.mailbox_new || 0;
+
+        return `<div class="card" style="--accent:${accent}">
+          <div class="card-top">
+            <span class="role-name">${a.role}</span>
+            <span class="model-chip">${a.model || '--'}</span>
+          </div>
+          <div class="status-row">
+            <div class="status-dot ${a.state}"></div>
+            <span class="status-label ${a.state}">${label}</span>
+          </div>
+          <div class="task-area">${task
+            ? `<div class="task-text">${esc(task)}</div>`
+            : `<div class="task-none">—</div>`}</div>
+          <div class="metrics">
+            <div class="metric">idle <span class="v">${fmtIdle(a.idle_seconds)}</span></div>
+            ${mail > 0 ? `<div class="metric mail">mail <span class="v">${mail}</span></div>` : ''}
+            ${a.reboot_count > 0 ? `<div class="metric">reboot <span class="v">${a.reboot_count}</span></div>` : ''}
+            ${a.is_hung ? '<div class="metric warn">hung</div>' : ''}
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    function renderFooter() {
+      const ts = new Date(data.timestamp * 1000).toLocaleTimeString('ko-KR', { hour12: false });
+      document.getElementById('last-update').textContent = `updated ${ts}`;
+    }
+
+    // ── Util ───────────────────────────────
+    function fmtIdle(sec) {
+      if (sec == null || sec < 0) return '--';
+      if (sec < 60) return sec + 's';
+      if (sec < 3600) return Math.floor(sec / 60) + 'm';
+      return Math.floor(sec / 3600) + 'h ' + Math.floor((sec % 3600) / 60) + 'm';
+    }
+
+    function esc(s) {
+      const d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+  </script>
+</body>
+</html>

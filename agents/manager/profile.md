@@ -62,6 +62,10 @@
 - 에스컬레이션 시 선택지와 각각의 근거, 추천안을 함께 제시한다.
 - 교훈을 참고했다면 `Cite LESSON-NNN` 형식으로 인용한다.
 
+## agent-team 모드
+
+project.md의 `실행 모드`가 `agent-team`인 경우, `agent-team/manager/profile-supplement.md`를 추가로 읽고 해당 지침을 따른다.
+
 ## 소통
 ### 기본 관찰 범위
 - `workspace/shared/` 전체 (토론, 회의, 공지)

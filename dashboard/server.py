@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 DASHBOARD_DIR = Path(__file__).resolve().parent
+REPO_ROOT = DASHBOARD_DIR.parent
 COLLECTOR = DASHBOARD_DIR / "status-collector.sh"
 
 # Simple cache: (timestamp, data)
@@ -24,26 +25,42 @@ _cache = {"time": 0, "data": ""}
 CACHE_TTL = 2  # seconds
 
 
+def _read_agent_team_status(project: str) -> str | None:
+    """Try reading agent-team-status.json directly (agent-team mode)."""
+    status_file = REPO_ROOT / "projects" / project / "memory" / "manager" / "agent-team-status.json"
+    if status_file.exists():
+        try:
+            return status_file.read_text()
+        except Exception:
+            return None
+    return None
+
+
 def collect_status(project: str) -> str:
-    """Run status-collector.sh and return JSON string."""
+    """Get status JSON — agent-team file first, then status-collector.sh fallback."""
     now = time.time()
     if now - _cache["time"] < CACHE_TTL and _cache["data"]:
         return _cache["data"]
 
-    try:
-        result = subprocess.run(
-            ["bash", str(COLLECTOR), project],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        output = result.stdout.strip()
-        if not output:
-            output = json.dumps({"error": result.stderr.strip() or "empty output"})
-    except subprocess.TimeoutExpired:
-        output = json.dumps({"error": "collector timeout"})
-    except Exception as e:
-        output = json.dumps({"error": str(e)})
+    # Try agent-team mode (direct JSON file)
+    output = _read_agent_team_status(project)
+
+    # Fallback to status-collector.sh (tmux mode)
+    if not output:
+        try:
+            result = subprocess.run(
+                ["bash", str(COLLECTOR), project],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            output = result.stdout.strip()
+            if not output:
+                output = json.dumps({"error": result.stderr.strip() or "empty output"})
+        except subprocess.TimeoutExpired:
+            output = json.dumps({"error": "collector timeout"})
+        except Exception as e:
+            output = json.dumps({"error": str(e)})
 
     _cache["time"] = now
     _cache["data"] = output

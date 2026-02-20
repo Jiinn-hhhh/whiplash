@@ -32,8 +32,8 @@ projects/{name}/
       discussions/
       meetings/
       announcements/
-      mailbox/               # 실시간 알림 (에이전트 간 양방향)
-        {role}/
+      mailbox/               # 실시간 알림 (에이전트 간 양방향, solo/dual 모드 전용)
+        {role}/              #   agent-team 모드에서는 불필요 (SendMessage 사용)
           tmp/               #   작성 중 (원자적 전달용)
           new/               #   도착한 메시지
           cur/               #   처리된 메시지
@@ -100,7 +100,7 @@ projects/{name}/
 구체적 조건. 가능하면 정량적으로.
 
 ## 운영 방식
-- **실행 모드**: {solo | dual}
+- **실행 모드**: {solo | dual | agent-team}
 - **보고 빈도**: {매일 / 마일스톤마다 / 요청 시 등}
 - **보고 채널**: {reports/ 파일 / Slack / 이메일 / 대화 내 등}
 - **자율 범위**: {팀이 알아서 진행할 수 있는 범위 / 유저 확인이 필요한 것}
