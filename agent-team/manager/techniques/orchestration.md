@@ -74,6 +74,21 @@ Task(
 4. TeamDelete — 팀 리소스 정리
 ```
 
+### 2.6 기존 프로젝트 재개
+
+`boot.sh {project}`로 부팅하면 대시보드가 이미 실행된 상태에서 시작한다. Manager는 아래 절차를 따른다:
+
+1. `projects/{project}/project.md`를 읽어 프로젝트 상태 파악
+2. `projects/{project}/memory/knowledge/index.md`를 읽어 축적된 지식 확인
+3. Manager 보충 파일 읽기 (§2.2와 동일한 파일 목록)
+4. `TeamCreate(team_name: "whiplash-{project}")`
+5. 팀원 스폰 (§2.2 절차와 동일)
+6. 모든 팀원 "준비 완료" 수신 대기
+7. 대시보드 확인 — `memory/manager/dashboard.pid` 존재 여부로 판단:
+   - 있으면: boot.sh가 이미 시작함. 추가 작업 불필요.
+   - 없으면: §8 시작 절차에 따라 직접 시작.
+8. 이전 태스크 상태 확인 후 작업 재개 또는 새 태스크 분배
+
 ---
 
 ## 3. 모델 선택
@@ -146,17 +161,23 @@ agent-team 모드에서는 다음 도구를 사용하지 않는다:
    - 서버가 시작되면 브라우저가 자동으로 `http://localhost:8420`을 연다 (`--no-open` 미사용)
    - 서버 PID를 `memory/manager/dashboard.pid`에 저장
 
-### 상태 업데이트
+### 상태 업데이트 (분산 자기보고)
 
-Manager는 다음 이벤트 발생 시 `agent-team-status.json`을 갱신한다:
-- 팀원 스폰 완료 (state: "working")
-- 태스크 할당 (state: "working", current_task: 태스크 요약)
-- 태스크 완료 보고 수신, 다음 태스크 미정 (state: "idle", current_task: null)
-- 태스크 완료 후 즉시 새 태스크 할당 (state: "working", current_task: 새 태스크 요약)
-- 장애 감지 (state: "crashed")
-- 재스폰 (state: "rebooting" → "working")
-- 유저에게 질문 시 (자신의 state: "waiting_for_user", current_task에 질문 요약)
-- 유저 응답 수신 후 (state: "working"으로 복원)
+**각 에이전트가 자기 상태를 직접 보고한다.** 에이전트는 `memory/{role}/status.json`에 자기 현재 상태를 작성한다. (spawn-prompts에 규칙 포함)
+
+Manager는 다음 이벤트에서**만** `agent-team-status.json` 또는 `memory/manager/overrides/{role}.json`을 갱신한다:
+- 팀원 스폰 완료 — 초기 `agent-team-status.json`에 팀 골격 작성
+- 장애 감지 (state: "crashed") — `memory/manager/overrides/{role}.json`에 작성
+- 재스폰 (state: "rebooting") — `memory/manager/overrides/{role}.json`에 작성
+- 유저에게 질문 시 (자신의 state: "waiting_for_user") — `agent-team-status.json`의 manager 항목 갱신
+- 유저 응답 수신 후 (자신의 state: "working") — `agent-team-status.json`의 manager 항목 갱신
+
+**에이전트 자기보고 항목** (Manager가 갱신하지 않음):
+- 태스크 수신 → 에이전트가 `memory/{role}/status.json`에 state: "working" 기록
+- 태스크 완료 → 에이전트가 state: "idle" 기록
+- 온보딩 완료 → 에이전트가 state: "idle" 기록
+
+`status-collector.sh`가 개별 `status.json` 파일을 수집하여 대시보드용 JSON을 생성한다. 개별 파일이 레거시 `agent-team-status.json`보다 우선한다. Manager 오버라이드(`memory/manager/overrides/`)가 최우선이다.
 
 대시보드 상태-행동 매핑:
 
@@ -201,7 +222,8 @@ shutdown_request 전송 전에:
       "reboot_count": 0,
       "is_hung": false,
       "mailbox_new": 0,
-      "current_task": "팀 조율 중"
+      "current_task": "팀 조율 중",
+      "last_update": {unix_seconds}
     },
     "researcher": { "..." : "..." },
     "developer": { "..." : "..." },
@@ -211,3 +233,5 @@ shutdown_request 전송 전에:
 ```
 
 `monitor` 필드는 agent-team에서 사용하지 않으므로 기본값(`alive: false`)으로 둔다.
+
+`last_update`: 해당 에이전트의 상태가 마지막으로 변경된 시각 (unix seconds). 각 에이전트가 자기 `status.json`에 기록하거나, Manager가 초기/오버라이드 시 설정한다. `status-collector.sh`가 이 값을 기반으로 `idle_seconds`를 계산하여 대시보드에 표시한다.

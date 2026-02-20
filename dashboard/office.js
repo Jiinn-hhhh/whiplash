@@ -39,7 +39,7 @@ const MGR_DESK = { x: 470, y: 60, w: 340, h: 76 };
 const RES_DESK = { x: 120, y: 290, w: 260, h: 76 };
 const DEV_DESK = { x: 900, y: 290, w: 260, h: 76 };
 
-let statusData = null, animFrame = 0, lastAnimTime = 0, canvas, ctx, offCanvas, offCtx;
+let statusData = null, animFrame = 0, lastAnimTime = 0, canvas, ctx, offCanvas, offCtx, visCtx;
 
 const STATE_LABEL = {
   working: null, idle: '대기중...', sleeping: 'zzZ',
@@ -52,6 +52,7 @@ let _prevWaitingUser = false;
 function initOffice(c) {
   canvas = c;
   c.width = CANVAS_W; c.height = CANVAS_H;
+  visCtx = c.getContext('2d');
   offCanvas = document.createElement('canvas');
   offCanvas.width = CANVAS_W; offCanvas.height = CANVAS_H;
   offCtx = offCanvas.getContext('2d');
@@ -76,7 +77,8 @@ async function pollStatus() {
 
 function renderLoop(ts) {
   if (ts - lastAnimTime > ANIM_INTERVAL) { animFrame = 1 - animFrame; lastAnimTime = ts; }
-  render(); requestAnimationFrame(renderLoop);
+  try { render(); } catch (e) { console.error('Render error:', e); }
+  requestAnimationFrame(renderLoop);
 }
 
 function getAgent(role) {
@@ -112,7 +114,6 @@ function render() {
   drawFooter();
   drawUserAlert();
   // Double buffer: copy completed frame to visible canvas
-  const visCtx = canvas.getContext('2d');
   visCtx.drawImage(offCanvas, 0, 0);
 }
 

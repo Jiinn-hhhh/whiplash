@@ -21,12 +21,74 @@ if grep -q "agent-team" "$PROJECT_DIR/project.md" 2>/dev/null; then
 fi
 
 if [[ "$EXEC_MODE" == "agent-team" ]]; then
-  STATUS_FILE="$PROJECT_DIR/memory/manager/agent-team-status.json"
-  if [[ -f "$STATUS_FILE" ]]; then
-    cat "$STATUS_FILE"
-  else
-    # 아직 상태 파일이 없으면 빈 상태 출력
-    cat <<JSON
+  # 분산 자기보고: 각 에이전트의 memory/{role}/status.json을 수집
+  python3 -c "
+import json, sys, time, os
+
+now = int(time.time())
+project_dir = sys.argv[1]
+project = sys.argv[2]
+
+roles = ['researcher', 'developer', 'monitoring']
+agents = {}
+
+# Manager 상태: 기본값
+agents['manager'] = {
+    'role': 'manager', 'model': 'sonnet', 'session_status': 'active',
+    'idle_seconds': 0, 'state': 'working', 'reboot_count': 0,
+    'is_hung': False, 'mailbox_new': 0, 'current_task': '팀 조율 중',
+    'last_update': now
+}
+
+# 레거시 중앙 파일 (있으면 베이스로 사용)
+legacy = os.path.join(project_dir, 'memory/manager/agent-team-status.json')
+if os.path.exists(legacy):
+    with open(legacy) as f:
+        data = json.load(f)
+    agents.update(data.get('agents', {}))
+
+# 개별 에이전트 상태 (있으면 레거시 덮어쓰기)
+for role in roles:
+    status_file = os.path.join(project_dir, f'memory/{role}/status.json')
+    if os.path.exists(status_file):
+        try:
+            with open(status_file) as f:
+                s = json.load(f)
+            base = agents.get(role, {
+                'role': role, 'model': 'sonnet', 'session_status': 'active',
+                'idle_seconds': 0, 'state': 'idle', 'reboot_count': 0,
+                'is_hung': False, 'mailbox_new': 0, 'current_task': None,
+                'last_update': now
+            })
+            base['state'] = s.get('state', base.get('state', 'idle'))
+            base['current_task'] = s.get('current_task', base.get('current_task'))
+            base['last_update'] = s.get('last_update', now)
+            agents[role] = base
+        except: pass
+
+    # Manager 오버라이드 (crash/reboot)
+    override = os.path.join(project_dir, f'memory/manager/overrides/{role}.json')
+    if os.path.exists(override):
+        try:
+            with open(override) as f:
+                ov = json.load(f)
+            if role in agents:
+                agents[role].update(ov)
+        except: pass
+
+# idle_seconds 계산 (표시용)
+for agent in agents.values():
+    lu = agent.get('last_update', now)
+    agent['idle_seconds'] = now - lu
+
+result = {
+    'project': project,
+    'timestamp': now,
+    'monitor': {'alive': False, 'heartbeat_age_sec': -1},
+    'agents': agents
+}
+json.dump(result, sys.stdout, ensure_ascii=False)
+" "$PROJECT_DIR" "$PROJECT" 2>/dev/null || cat <<JSON
 {
   "project": "$PROJECT",
   "timestamp": $NOW,
@@ -34,7 +96,6 @@ if [[ "$EXEC_MODE" == "agent-team" ]]; then
   "agents": {}
 }
 JSON
-  fi
   exit 0
 fi
 

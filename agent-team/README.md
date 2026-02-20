@@ -18,14 +18,21 @@ Claude Code의 네이티브 Agent Team 기능(TeamCreate, TaskCreate, SendMessag
 
 ## Quick Start
 
+### 새 프로젝트
+
 ```bash
 bash agent-team/boot.sh
 ```
 
-Agent Teams 환경변수가 설정된 Claude Code 세션이 열린다. 이후:
+Claude Code 세션이 열린다. "새 프로젝트 시작할래" → 온보딩 대화 → project.md 생성 → Manager 전환 → 팀 스폰 → 대시보드 자동 시작
 
-- **새 프로젝트**: "새 프로젝트 시작할래" → 온보딩 에이전트가 대화 → project.md 생성 → Phase 7에서 TeamCreate + 팀원 스폰
-- **기존 프로젝트**: "프로젝트 X를 agent-team으로 시작해" → Manager가 파일 읽고 TeamCreate + 팀원 스폰
+### 기존 프로젝트 재개
+
+```bash
+bash agent-team/boot.sh {project-name}
+```
+
+대시보드가 즉시 열리고(`http://localhost:8420`), Claude Code 세션이 시작된다. "프로젝트 X 재개해" → Manager가 팀 스폰 → 작업 재개
 
 ---
 

@@ -17,6 +17,8 @@ Agent Team 모드에서는 여러 에이전트가 동시에 파일을 읽고 쓸
 | Researcher | `workspace/teams/research/` | `memory/researcher/` |
 | Monitoring | (점검 결과 보고) | `memory/monitoring/` |
 
+각 에이전트는 자기 전용 메모리에 `status.json`을 작성하여 현재 상태를 보고한다. Manager만 `memory/manager/overrides/` 디렉토리에 다른 에이전트의 상태 오버라이드를 작성할 수 있다.
+
 ---
 
 ## 2. 공유 공간 규칙

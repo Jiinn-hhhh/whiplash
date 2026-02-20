@@ -204,7 +204,13 @@ agent-team 모드에서는 유저의 추가 조작 없이 **같은 세션에서*
    - `Task(team_name: "whiplash-{project}", name: "developer", subagent_type: "general-purpose", prompt: "...", mode: "bypassPermissions")`
    - `Task(team_name: "whiplash-{project}", name: "monitoring", subagent_type: "general-purpose", prompt: "...", mode: "bypassPermissions")`
 5. 모든 팀원의 "준비 완료" SendMessage 수신 대기
-6. 대시보드 시작 — `agent-team/manager/techniques/orchestration.md` §8 절차에 따라 상태 JSON 작성 및 서버 기동
+6. 대시보드 시작:
+   a. 초기 상태 JSON을 `memory/manager/agent-team-status.json`에 작성 (orchestration.md §8 양식 참조)
+   b. 대시보드 서버 시작:
+      ```bash
+      python3 {REPO_ROOT}/dashboard/server.py --project {project} &
+      ```
+      PID를 `memory/manager/dashboard.pid`에 저장한다.
 7. project.md의 목표를 분석하고 첫 태스크 분배 (agent-team/manager/techniques/task-distribution.md 절차)
 8. 이후 Manager로서 팀 운영 시작
 

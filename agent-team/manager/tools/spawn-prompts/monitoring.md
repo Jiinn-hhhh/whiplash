@@ -51,6 +51,17 @@ Manager가 Monitoring 에이전트를 스폰할 때 사용하는 프롬프트. `
 중간 결과 보존:
 - 점검 데이터를 memory/monitoring/에 저장한다.
 
+상태 자기보고:
+너의 현재 상태를 memory/monitoring/status.json에 JSON으로 기록한다.
+필드: state ("working" | "idle"), current_task (문자열 또는 null), last_update (unix timestamp)
+
+상태 전환 시점:
+- 태스크를 받으면: {"state": "working", "current_task": "태스크 요약", "last_update": {now}}
+- 태스크 완료 후 Manager에게 보고하면: {"state": "idle", "current_task": null, "last_update": {now}}
+- 온보딩 완료 시: {"state": "idle", "current_task": null, "last_update": {now}}
+
+unix timestamp 획득: Bash 도구로 `date +%s` 실행.
+
 온보딩이 끝나면 Manager에게 준비 완료를 보고해라:
 SendMessage(type: "message", recipient: "manager", content: "Monitoring 온보딩 완료, 준비됨", summary: "Monitoring 준비 완료")
 ```
