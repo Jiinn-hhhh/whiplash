@@ -19,28 +19,49 @@
 
 순서가 고정되어 있지 않다. 유저의 답변에 따라 유연하게 진행한다. 단, 모든 Phase를 거쳐야 한다.
 
+### 최초 진입 분기
+
+대화의 맨 처음, 프로젝트 설계에 들어가기 전에 **유저에게 직접 물어본다**.
+
+#### 절차
+
+1. `projects/` 디렉토리를 확인한다.
+2. 기존 프로젝트가 있으면 목록을 보여주며 물어본다:
+   - "기존 프로젝트를 이어할까, 새 프로젝트를 시작할까?"
+   - 기존 프로젝트 목록: {프로젝트명 나열}
+3. 기존 프로젝트가 없으면 바로 새 프로젝트 온보딩으로 진행한다.
+
+#### 기존 프로젝트 재개
+
+유저가 기존 프로젝트를 선택하면, 온보딩 전 과정을 건너뛰고 **tmux에 Manager를 새로 부팅한다**.
+
+1. `projects/{project}/project.md`를 읽어 프로젝트 정보와 실행 모드 확인
+2. 유저에게 "{project} 프로젝트를 재개합니다" 안내
+3. `orchestrator.sh boot-manager {project}` 실행 → tmux 세션에 Manager 부팅
+4. 유저에게 tmux 접속 안내: `tmux attach -t whiplash-{project}`
+5. Manager가 tmux 안에서 `orchestrator.sh boot`으로 팀 부팅 → 작업 재개
+
+Onboarding 에이전트는 Manager 부팅 확인 후 종료한다.
+
+#### 새 프로젝트 온보딩
+
+유저가 새 프로젝트를 선택하면, Phase 0("기존 작업물 확인" — "이미 작업중이던 코드나 레포가 있어?")부터 시작한다. 이후 사전 질문(실행 모드) → Phase 1-7 정상 진행.
+
 ### 사전 질문: 에이전트 실행 모드
 
-대화 시작 시 프로젝트 내용에 들어가기 전에 먼저 물어본다. 2단계 질문으로 3가지 모드 중 하나를 선택한다.
+대화 시작 시 프로젝트 내용에 들어가기 전에 먼저 물어본다.
 
-**질문 1**: "클로드 코드만 사용할 건지, 멀티 백엔드(Claude Code + Codex)를 사용할 건지?"
+**질문**: "클로드 코드만 사용할 건지, 멀티 백엔드(Claude Code + Codex)를 사용할 건지?"
 
-- **멀티 백엔드** → `dual` 모드 선택 (기존과 동일)
-- **코덱스만** → 아직 미지원. 유저에게 "코덱스 단독 모드는 아직 지원하지 않는다"고 안내하고 다시 선택하게 한다.
-- **클로드 코드만** → 질문 2로 이동
-
-**질문 2** (클로드 코드만 선택 시): "에이전트 팀 기능을 사용할 건지?"
-
-- **사용** → `agent-team` 모드 선택
-- **미사용** → `solo` 모드 선택
-
-각 모드의 특성을 유저에게 설명한다:
+- **클로드 코드만** 또는 **코덱스만** → `solo` 모드 선택
+- **멀티 백엔드** → `dual` 모드 선택
 
 | 모드 | 설명 | 장점 | 단점 |
 |------|------|------|------|
-| solo | Manager가 역할별 에이전트를 하나씩 순차 실행 (tmux 기반) | 비용 최소, 안정적 | 에이전트 동시 실행 불가 |
-| agent-team | Claude Code Agent Team으로 팀원 동시 실행 | 편의성↑, 병렬 작업 | 비용 4-7x↑ |
+| solo | Manager가 역할별 에이전트를 하나씩 실행 (tmux 기반). Manager와 같은 백엔드 사용 | 비용 최소, 안정적 | 에이전트 동시 실행 불가 |
 | dual | 같은 태스크를 두 백엔드에서 이중 실행 | 다양한 관점, 합의 기반 | 비용 2x↑, 인프라 복잡 |
+
+**참고**: Claude Code를 쓰는 개별 에이전트는 자기 판단으로 Agent Teams를 하위에 활용할 수 있다 (프레임워크 모드가 아닌 개별 도구).
 
 **파일 작업**: 프로젝트 이름 후보를 임시로 정하고 디렉토리 구조와 project.md 초안을 생성한다. (이름은 Phase 1에서 확정 후 변경 가능)
 
@@ -49,8 +70,6 @@
 → projects/{name}/project.md 초안 작성 (실행 모드만 기록)
 → projects/{name}/memory/knowledge/index.md 초기화
 ```
-
-**주의**: agent-team 모드 선택 시 mailbox 디렉토리(`workspace/shared/mailbox/`)는 생성하지 않는다 (SendMessage 사용).
 
 ### Phase 0: 기존 작업물 확인
 
@@ -168,53 +187,22 @@
 3. 유저 확인/수정 후 확정 → project.md에 반영
 4. 실행 모드에 따라 Manager 인계 방식이 다르다
 
-#### solo/dual 모드 인계
+#### Manager 인계
 
-tmux 세션으로 Manager를 띄우고 유저에게 안내한다.
+Onboarding이 내부적으로 Manager를 tmux 세션에 부팅한다.
 
 ```bash
-# orchestrator.sh boot-manager가 Manager 부팅 + tmux 세션 생성을 처리한다
+# Onboarding이 실행 (유저가 실행하지 않음)
 bash agents/manager/tools/orchestrator.sh boot-manager {project-name}
 ```
 
 정상 부팅 확인 후 유저에게 안내:
 ```
-Manager 인계 완료. 아래 명령으로 접속해:
+Manager 인계 완료. 별도 터미널에서 접속 가능:
   tmux attach -t whiplash-{project-name}
 ```
 
-온보딩 에이전트는 인계 확인이 끝나면 종료한다.
-
-#### agent-team 모드 자동 전환
-
-agent-team 모드에서는 유저의 추가 조작 없이 **같은 세션에서** Manager로 자동 전환한다.
-
-1. 유저에게 "project.md 확인 완료. Manager로 전환합니다." 안내
-2. 아래 파일을 읽어 Manager 역할을 습득한다:
-   - `agents/manager/profile.md`
-   - `agent-team/manager/profile-supplement.md`
-   - `agent-team/manager/techniques/orchestration.md`
-   - `agent-team/manager/techniques/task-distribution.md`
-   - `agent-team/manager/techniques/crash-recovery.md`
-   - `agent-team/common/communication-supplement.md`
-   - `agent-team/common/file-ownership.md`
-3. `TeamCreate(team_name: "whiplash-{project}")` 실행
-4. 각 팀원 스폰 — `agent-team/manager/tools/spawn-prompts/`의 프롬프트를 읽고, 변수를 치환하여 `Task`로 스폰:
-   - `Task(team_name: "whiplash-{project}", name: "researcher", subagent_type: "general-purpose", prompt: "...", mode: "bypassPermissions")`
-   - `Task(team_name: "whiplash-{project}", name: "developer", subagent_type: "general-purpose", prompt: "...", mode: "bypassPermissions")`
-   - `Task(team_name: "whiplash-{project}", name: "monitoring", subagent_type: "general-purpose", prompt: "...", mode: "bypassPermissions")`
-5. 모든 팀원의 "준비 완료" SendMessage 수신 대기
-6. 대시보드 시작:
-   a. 초기 상태 JSON을 `memory/manager/agent-team-status.json`에 작성 (orchestration.md §8 양식 참조)
-   b. 대시보드 서버 시작:
-      ```bash
-      python3 {REPO_ROOT}/dashboard/server.py --project {project} &
-      ```
-      PID를 `memory/manager/dashboard.pid`에 저장한다.
-7. project.md의 목표를 분석하고 첫 태스크 분배 (agent-team/manager/techniques/task-distribution.md 절차)
-8. 이후 Manager로서 팀 운영 시작
-
-온보딩 에이전트는 Manager로 **전환**하므로 별도 종료가 없다.
+Onboarding 에이전트는 인계 확인이 끝나면 종료한다.
 
 ---
 

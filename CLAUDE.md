@@ -1,6 +1,4 @@
-# CLAUDE.md
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+# Whiplash Framework Guide
 
 ## What This Repository Is
 
@@ -82,13 +80,6 @@ whiplash/
 │       ├── context.md           #     Domain background, terminology, principles
 │       └── researcher.md        #     Researcher domain-specific guidelines
 │
-├── dashboard/                   # Visual office dashboard (independent module)
-│   ├── server.py                #   HTTP server (Python stdlib only)
-│   ├── status-collector.sh      #   Data collection → JSON
-│   ├── index.html               #   Canvas + polling
-│   ├── sprites.js               #   Pixel art sprite definitions
-│   └── office.js                #   Office layout + rendering engine
-│
 ├── feedback/                    # Framework improvement insights (independent module)
 │   ├── guide.md                 #   Recording rules
 │   └── insights.md              #   Accumulated insights
@@ -145,23 +136,24 @@ Even within the same domain, each project can give agents different focus/priori
 
 ### Multi-Agent Orchestration
 
-Three execution modes (configured per-project in project.md):
+Two execution modes (configured per-project in project.md):
 
-**Solo/Dual mode** (tmux-based):
+**Solo mode** (tmux-based):
 - Each agent runs in its own tmux window within session `whiplash-{project}`
+- Manager and all sub-agents use the same backend (Claude Code or Codex)
 - Agents communicate via mailbox (Maildir pattern: tmp/ → new/ → cur/)
 - monitor.sh polls mailboxes and delivers notifications via tmux send-keys
-- Solo: one agent per role. Dual: same task on two backends (Claude Code + Codex CLI)
 - Key tools: `orchestrator.sh`, `monitor.sh`, `mailbox.sh`
-- See `agents/manager/techniques/orchestration.md`
 
-**Agent-team mode** (Claude Code Agent Teams):
-- Manager uses native TeamCreate, Task, SendMessage tools
-- No tmux/mailbox/monitor infrastructure needed
-- Agents spawned as team members, communicate via SendMessage
-- Dashboard reads `agent-team-status.json` written by Manager
-- Key files: `agent-team/manager/techniques/orchestration.md`
-- Boot: `bash agent-team/boot.sh`
+**Dual mode** (tmux-based):
+- Same task runs on two backends (Claude Code + Codex) simultaneously
+- Manager coordinates consensus between both results
+- Monitoring runs solo (no dual needed)
+- Key tools: same as solo + `dual-dispatch`
+
+See `agents/manager/techniques/orchestration.md`
+
+**Note**: Claude Code agents can optionally use Agent Teams (TeamCreate, Task, SendMessage) internally within their tmux sessions.
 
 ## Key Conventions
 
@@ -200,49 +192,33 @@ Three execution modes (configured per-project in project.md):
 3. (Optional) Write `{role}.md` — role-specific domain guidelines
 4. Set domain in project's `project.md`
 
-## Spawning Agents (Manager Use)
+## Starting the Framework
 
-### Agent-team mode
+### 대화 기반 진입
 
-```bash
-bash agent-team/boot.sh
-```
+Claude Code 또는 Codex CLI를 whiplash 디렉토리에서 열고 대화를 시작한다. 별도 쉘 스크립트 실행이 필요 없다.
 
-Onboarding handles everything: project design → Manager transition → TeamCreate → agent spawn.
+- "시작하자" / "새 프로젝트" → Onboarding이 프로젝트 설계 대화 시작
+- "{project-name} 이어하자" → Onboarding이 기존 프로젝트를 감지하고 Manager로 바로 전환
 
-### Solo/dual mode
+진입 분기 상세: `agents/onboarding/techniques/project-design.md`
 
-Boot Manager into tmux session:
+### 이후 흐름
 
-```bash
-bash agents/manager/tools/orchestrator.sh boot-manager {project-name}
-```
+Onboarding 완료 후 → tmux 세션에 Manager를 새로 부팅 → Manager가 팀 에이전트 부팅 → 작업 시작.
+Onboarding 세션은 종료되고, 유저는 별도 터미널에서 `tmux attach -t whiplash-{project}`로 관찰.
 
-Boot all other agents (run by Manager inside tmux):
+### Internal tools (Manager 내부용)
 
-```bash
-bash agents/manager/tools/orchestrator.sh boot {project-name}
-```
-
-Dispatch a task to an agent:
+Manager가 내부적으로 사용하는 도구. 유저가 직접 실행하지 않는다.
 
 ```bash
-bash agents/manager/tools/orchestrator.sh dispatch {role} {task-file} {project-name}
+orchestrator.sh boot-manager {project}    # Manager tmux 세션 부팅
+orchestrator.sh boot {project}            # 팀 에이전트 부팅
+orchestrator.sh dispatch {role} {task} {project}  # 태스크 전달
+orchestrator.sh status {project}          # 상태 확인
+orchestrator.sh shutdown {project}        # 전체 종료
 ```
-
-Shutdown all agents:
-
-```bash
-bash agents/manager/tools/orchestrator.sh shutdown {project-name}
-```
-
-Check status:
-
-```bash
-bash agents/manager/tools/orchestrator.sh status {project-name}
-```
-
-Model selection is automatic: `opus` (Researcher), `sonnet` (Developer), `haiku` (Monitoring).
 
 ## Validation Commands
 
@@ -260,3 +236,5 @@ git log --oneline -n 10         # check commit style
 - **Filenames**: kebab-case for techniques (e.g., `knowledge-management.md`)
 - **Paths**: exact patterns — `agents/{role}/...`, `domains/{domain}/...`
 - **Commits**: imperative verb start (`Add`, `Refactor`, `Update`), one logical change per commit
+- **Pull Requests**: include a concise summary of changed paths and rationale, link related issues/tasks, note cross-file consistency updates (especially `agents/common/` impacts)
+- **Security**: respect `.gitignore` (`projects/*` is runtime state), avoid embedding secrets or project-specific private data in framework docs

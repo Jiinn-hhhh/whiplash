@@ -31,44 +31,32 @@ cd whiplash
 
 | Mode | Description | Pros | Cons | Cost |
 |------|-------------|------|------|------|
-| **solo** | Manager runs one agent per role sequentially (tmux-based) | Lowest cost, stable | No concurrency | 1x |
-| **agent-team** | Claude Code Agent Teams for simultaneous execution | Convenient, parallel work | Higher cost | 4-7x |
+| **solo** | Manager runs one agent per role (tmux-based) | Lowest cost, stable | No concurrency | 1x |
 | **dual** | Same task runs on two backends (Claude Code + Codex) | Diverse perspectives, consensus-based | Complex infra | 2x |
 
-#### 3-A. Agent-Team Mode (Recommended)
+#### 3. Start
 
-```bash
-bash agent-team/boot.sh
-```
-
-Opens a Claude Code session with Agent Teams enabled. Then:
+Open Claude Code (or Codex CLI) in the whiplash directory:
 
 ```
 "Start a new project"
 ```
 
-The Onboarding agent discusses the project with you, then automatically transitions to Manager in the same session — creates team, spawns agents, opens dashboard, distributes tasks. Fully automated.
+The Onboarding agent discusses the project with you, then automatically boots Manager into a tmux session → boots team agents → distributes tasks. Fully automated.
 
-#### 3-B. Solo/Dual Mode
-
-Run Claude Code in this folder:
+To continue an existing project:
 
 ```
-You are the Onboarding agent. Read agents/onboarding/profile.md and start a new project onboarding.
+"Continue midi-render"
 ```
 
-After onboarding completes:
+All you do is talk. After that, Manager assembles the team, distributes tasks, and coordinates results.
 
-1. `orchestrator.sh boot-manager` boots Manager into a tmux session
-2. Manager automatically boots remaining agents
-3. You get a tmux attach command
-
+To observe agents working in a separate terminal:
 ```bash
 tmux attach -t whiplash-{project-name}
 # Ctrl-b + n/p/number to switch agent windows
 ```
-
-**All you do is the onboarding conversation.** After that, Manager assembles the team, distributes tasks, and coordinates results.
 
 ---
 
@@ -105,36 +93,6 @@ Manager — user ↔ team hub. Creates agents, distributes tasks, coordinates, r
 
 ## Execution
 
-### Agent-Team Mode
-
-```
-User: "Start a new project"
-  │
-  ▼
-Onboarding (boot.sh → Claude Code session)
-  │  Conversation → project.md created
-  │  Phase 7: auto-transition to Manager
-  │
-  ▼
-Manager (same session)
-  │
-  ├─ TeamCreate("whiplash-{project}")
-  ├─ Task(spawn) × 3 — Researcher, Developer, Monitoring (parallel)
-  ├─ Wait for 3× "ready" messages
-  ├─ Start dashboard server (browser auto-opens)
-  ├─ Analyze project.md goals → distribute first tasks
-  └─ Team operation begins
-       ├─ SendMessage for task instructions
-       ├─ Receive reports → distribute next tasks
-       ├─ Update agent-team-status.json → dashboard reflects in real-time
-       └─ Report to user
-```
-
-- Agent communication: `SendMessage` (native)
-- Task management: `TaskCreate` + `TaskUpdate`
-- Crash detection: Manager checks at 10min/5min/5min intervals → re-spawn
-- Details: `agent-team/manager/techniques/orchestration.md`
-
 ### Solo/Dual Mode
 
 ```
@@ -168,7 +126,9 @@ tmux session: whiplash-{project}
 - Crash detection: `monitor.sh` polls every 30s, auto-reboot (max 3x)
 - Details: `agents/manager/techniques/orchestration.md`
 
-### CLI Commands (solo/dual)
+### CLI Commands (Manager-internal)
+
+These commands are run internally by the Manager agent. Users do not run them directly.
 
 ```bash
 bash agents/manager/tools/orchestrator.sh boot-manager {project}  # Boot Manager
@@ -177,24 +137,6 @@ bash agents/manager/tools/orchestrator.sh dispatch {role} {task} {project}  # Se
 bash agents/manager/tools/orchestrator.sh status {project}        # Check status
 bash agents/manager/tools/orchestrator.sh shutdown {project}      # Shutdown all
 ```
-
----
-
-## Dashboard
-
-A pixel-art office dashboard for visual agent monitoring.
-
-```bash
-python3 dashboard/server.py --project {project-name}
-# → http://localhost:8420 auto-opens in browser
-```
-
-- 3-second polling for real-time agent status
-- Agents move based on state: working → desk, idle → lounge, sleeping → sofa
-- Orange flashing banner + browser notification when Manager awaits user input
-- Solo/dual mode: collects from tmux + sessions.md
-- Agent-team mode: reads `agent-team-status.json` written by Manager
-- Double-buffered rendering for flicker-free display
 
 ---
 
@@ -218,25 +160,8 @@ whiplash/
 │   └── monitoring/              #   Monitoring agent
 │       └── techniques/ (2)
 │
-├── agent-team/                  # Agent Team mode module (git tracked)
-│   ├── boot.sh                  #   Entry point script
-│   ├── manager/                 #   Manager supplement
-│   │   ├── profile-supplement.md
-│   │   ├── techniques/ (3)      #     orchestration, task-distribution, crash-recovery
-│   │   └── tools/spawn-prompts/ #     Agent spawn prompts
-│   └── common/                  #   Shared supplements
-│       ├── communication-supplement.md
-│       └── file-ownership.md
-│
 ├── domains/                     # Domain-specific definitions (git tracked)
 │   └── deep-learning/           #   Example domain
-│
-├── dashboard/                   # Visual office dashboard (independent module)
-│   ├── server.py                #   HTTP server (Python stdlib only)
-│   ├── status-collector.sh      #   Data collection → JSON (mode-aware)
-│   ├── index.html               #   Canvas + polling
-│   ├── sprites.js               #   Pixel art sprite definitions
-│   └── office.js                #   Office layout + rendering engine
 │
 ├── feedback/                    # Framework improvement insights (independent module)
 │   ├── guide.md                 #   Recording rules
@@ -257,13 +182,11 @@ whiplash/
 | Folder | Nature | Git |
 |--------|--------|-----|
 | `agents/` | Framework definitions (immutable) | tracked |
-| `agent-team/` | Agent Team mode supplement (immutable) | tracked |
 | `domains/` | Domain-specific definitions (immutable) | tracked |
-| `dashboard/` | Visual dashboard (independent) | tracked |
 | `feedback/` | Framework improvement (independent) | tracked |
 | `projects/` | Per-project runtime data (mutable) | ignored |
 
-**Git clone gives you `agents/` + `agent-team/` + `domains/` + `dashboard/` + `feedback/`.** Project data is created at runtime by agents.
+**Git clone gives you `agents/` + `domains/` + `feedback/`.** Project data is created at runtime by agents.
 
 ---
 
@@ -284,7 +207,7 @@ Each agent folder follows three layers. Stable upper layers allow lower layers t
 One framework runs multiple projects simultaneously. Each project has isolated workspace, memory, and reports under `projects/{name}/`.
 
 - Paths like `workspace/`, `memory/`, `reports/` in agent docs resolve relative to the current project
-- Each project gets its own tmux session (`whiplash-{project}`) or Agent Team (`whiplash-{project}`)
+- Each project gets its own tmux session (`whiplash-{project}`)
 - Cross-project references use explicit full paths
 
 Details: `agents/common/project-context.md`
@@ -309,7 +232,7 @@ Details: `domains/README.md`
 | Agent | profile.md | techniques |
 |-------|:----------:|:----------:|
 | Onboarding | O | 1 |
-| Manager | O | 5 (+3 agent-team) |
+| Manager | O | 5 |
 | Researcher | O | 6 |
 | Developer | O | 5 |
 | Monitoring | - | 2 |
