@@ -1,50 +1,31 @@
 # Whiplash Framework Guide
 
-## What This Repository Is
+## 즉시 행동 지시 (Claude Code 세션 시작 시)
 
-**Whiplash** — a multi-agent team governance framework (in Korean) that defines how three specialized AI agent roles — Manager, Developer, Researcher — collaborate across multiple projects with domain specialization. This is a documentation-first project: no build system, no package manager, no traditional code. All rules, procedures, and communication happen through structured Markdown files.
+너는 Whiplash 프레임워크의 **Onboarding 에이전트**다.
 
-## Architecture
+### 첫 번째 행동
+1. `projects/` 디렉토리를 확인한다.
+2. 기존 프로젝트가 있으면 목록을 보여주며 물어본다:
+   "기존 프로젝트를 이어할까, 새 프로젝트를 시작할까?"
+3. 기존 프로젝트가 없으면 새 프로젝트 온보딩을 시작한다.
 
-### Agent Hierarchy
+### 역할 활성화
+- Onboarding 절차 상세: `agents/onboarding/techniques/project-design.md`
+- 역할 정의: `agents/onboarding/profile.md`
+- 유저가 명시적으로 다른 에이전트 역할을 지정하면: `agents/{role}/profile.md` 읽고 전환
 
-```
-User
-  ↓
-Onboarding (project designer — runs before Manager, designs new projects)
-  ↓
-Manager (hub — orchestrates agent instances)
-  ├→ Developer (개발팀 team lead — builds production systems)
-  ├→ Researcher (리서치팀 team lead — researches and proposes)
-  └→ Monitoring (독립 관찰자 — infra/environment health)
-```
+## 프레임워크 개요
 
-- **Onboarding**: Discusses with user to design new projects. Creates project.md and directory structure. Hands off to Manager when done.
-- **Manager**: Decomposes user goals into team tasks, coordinates across teams, escalates strategic decisions to user. Never does hands-on work.
-- **Developer**: Implements production code, designs architecture, builds infra for Researcher experiments. Reports to Manager.
-- **Researcher**: Collects/analyzes sources, runs experiments (prototype-level only), proposes directions. Reports to Manager.
+**Whiplash** — AI 에이전트 팀 거버넌스 프레임워크 (한국어). 마크다운 문서로 역할, 절차, 소통 규칙을 정의하면 에이전트가 자율 협업한다.
 
-### 3-Folder Separation
+- **에이전트**: Onboarding → Manager → Developer, Researcher, Monitoring
+- **구조**: `agents/`(정의, immutable) + `domains/`(도메인, immutable) + `projects/`(런타임, gitignored)
+- **각 에이전트**: `profile.md`(역할) + `techniques/`(방법론) + `tools/`(자동화)
+- **실행 모드**: solo(tmux 단일 백엔드) / dual(Claude Code + Codex 이중 실행)
+- **소통**: mailbox(실시간 알림) + 토론/회의/공지(구조화 문서)
 
-| Folder | Nature | Git |
-|--------|--------|-----|
-| `agents/` | Framework definitions (immutable) | tracked |
-| `domains/` | Domain-specific definitions (immutable) | tracked |
-| `projects/` | Per-project runtime data (mutable) | ignored |
-
-Git clone gives you `agents/` + `domains/`. Project data is created at runtime.
-
-### Three-Layer Separation (per agent)
-
-Each agent folder (`manager/`, `developer/`, `researcher/`) follows:
-
-| Layer | Purpose | Change frequency |
-|-------|---------|-----------------|
-| `profile.md` | **What/Why** — role definition, rules, constraints | Stable |
-| `techniques/` | **How** — natural language procedures | Freely improvable |
-| `tools/` | **Execution** — pre-built automation code, scripts, configs | Added as needed |
-
-Upper layers remain stable while lower layers evolve independently.
+상세 아키텍처: `agents/common/README.md`
 
 ### Directory Structure
 
@@ -63,16 +44,19 @@ whiplash/
 │   │   └── techniques/ (1)
 │   ├── manager/
 │   │   ├── profile.md
-│   │   ├── techniques/ (4)
+│   │   ├── techniques/ (6)
 │   │   └── tools/
 │   ├── researcher/
 │   │   ├── profile.md
 │   │   ├── techniques/ (6)
 │   │   └── tools/
-│   └── developer/
+│   ├── developer/
+│   │   ├── profile.md
+│   │   ├── techniques/ (5)
+│   │   └── tools/
+│   └── monitoring/
 │       ├── profile.md
-│       ├── techniques/ (5)
-│       └── tools/
+│       └── techniques/ (2)
 │
 ├── domains/                     # Domain-specific definitions (git tracked)
 │   ├── README.md                #   Domain system explanation
@@ -191,34 +175,6 @@ See `agents/manager/techniques/orchestration.md`
 2. Write `context.md` — domain background, concepts, terminology, quality criteria
 3. (Optional) Write `{role}.md` — role-specific domain guidelines
 4. Set domain in project's `project.md`
-
-## Starting the Framework
-
-### 대화 기반 진입
-
-Claude Code 또는 Codex CLI를 whiplash 디렉토리에서 열고 대화를 시작한다. 별도 쉘 스크립트 실행이 필요 없다.
-
-- "시작하자" / "새 프로젝트" → Onboarding이 프로젝트 설계 대화 시작
-- "{project-name} 이어하자" → Onboarding이 기존 프로젝트를 감지하고 Manager로 바로 전환
-
-진입 분기 상세: `agents/onboarding/techniques/project-design.md`
-
-### 이후 흐름
-
-Onboarding 완료 후 → tmux 세션에 Manager를 새로 부팅 → Manager가 팀 에이전트 부팅 → 작업 시작.
-Onboarding 세션은 종료되고, 유저는 별도 터미널에서 `tmux attach -t whiplash-{project}`로 관찰.
-
-### Internal tools (Manager 내부용)
-
-Manager가 내부적으로 사용하는 도구. 유저가 직접 실행하지 않는다.
-
-```bash
-orchestrator.sh boot-manager {project}    # Manager tmux 세션 부팅
-orchestrator.sh boot {project}            # 팀 에이전트 부팅
-orchestrator.sh dispatch {role} {task} {project}  # 태스크 전달
-orchestrator.sh status {project}          # 상태 확인
-orchestrator.sh shutdown {project}        # 전체 종료
-```
 
 ## Validation Commands
 

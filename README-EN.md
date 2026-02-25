@@ -17,6 +17,7 @@ Built entirely with **Markdown documents** — no build system, no package manag
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`npm install -g @anthropic-ai/claude-code`)
 - [tmux](https://github.com/tmux/tmux) — required for solo/dual mode (`brew install tmux` / `apt install tmux`)
 - [jq](https://jqlang.github.io/jq/) — required for solo/dual mode (`brew install jq` / `apt install jq`)
+- [fswatch](https://emcrisostomo.github.io/fswatch/) — optional, real-time mailbox monitoring (`brew install fswatch`). Falls back to 5-second polling if unavailable.
 
 ### Quick Start
 
@@ -140,6 +141,68 @@ bash agents/manager/tools/orchestrator.sh shutdown {project}      # Shutdown all
 
 ---
 
+## How It Works (Technical Details)
+
+### 1. Onboarding
+
+- CLAUDE.md → Onboarding agent auto-activates
+- Checks `projects/` → resume existing project or start new one
+- New project: Phase 0~7 dialogue → `project.md` + directory creation
+- Execution mode selection (solo / dual)
+
+### 2. Manager Boot
+
+- `orchestrator.sh boot-manager {project}`
+  - Creates tmux session `whiplash-{project}`
+  - `claude -p "{boot_message}" --model sonnet --output-format json` → session_id
+  - `tmux new-window -n manager` + `claude --resume {session_id}`
+  - Records in `sessions.md`
+- Onboarding session terminates, user gets "tmux attach" instructions
+
+### 3. Team Boot
+
+- Manager runs `orchestrator.sh boot {project}`
+  - Parses active agent list + execution mode from `project.md`
+  - Each agent: `claude -p` (get session_id) → create tmux window → `claude --resume`
+  - Per-role models: researcher=opus, developer=sonnet, monitoring=haiku
+  - Per-role tool restrictions: monitoring gets Read/Glob/Grep/Bash only
+  - Per-role turn limits: monitoring=10, manager=20, researcher=30, developer=40
+  - Mailbox directory initialization
+  - `monitor.sh` runs as nohup background process
+
+### 4. Communication
+
+- **Mailbox (real-time notifications)**:
+  - Agent A → `mailbox.sh` → creates file in `mailbox/{role-B}/new/`
+  - `monitor.sh` detects via fswatch → pushes to Agent B via tmux send-keys
+  - Messages deleted immediately after delivery
+  - Types: task_complete, status_update, need_input, escalation, agent_ready
+  - Audit log: `memory/manager/logs/mailbox-audit.log`
+- **Discussions** (`workspace/shared/discussions/DISC-NNN.md`): structured documents, append-only
+- **Meetings** (`workspace/shared/meetings/MEET-NNN.md`): 3 rounds (position → response → synthesis)
+- **Announcements** (`workspace/shared/announcements/`): task directives
+
+### 5. Task Execution
+
+- Manager writes directive → `orchestrator.sh dispatch {role} {task-file}`
+- Delivered to agent via tmux send-keys
+- Agent completes → sends task_complete via mailbox
+- Dual mode: both backends execute → Manager drives consensus
+
+### 6. Failure Recovery
+
+- **Crash detection**: monitor.sh 30-second health check → tmux window disappearance → auto reboot (max 3 attempts)
+- **Hung detection**: 10-minute inactivity → one-time alert to Manager (no auto-kill)
+- **monitor.sh self-recovery**: Manager calls `monitor-check` to verify PID+heartbeat → restarts if dead
+- **Session refresh**: Manager can manually trigger when context grows too large (auto-compact handles most cases)
+
+### 7. Shutdown
+
+- Manager runs `orchestrator.sh shutdown {project}`
+- All agent sessions terminated, tmux session killed, monitor.sh PID killed
+
+---
+
 ## Project Structure
 
 ```
@@ -149,7 +212,7 @@ whiplash/
 │   ├── onboarding/              #   Onboarding agent
 │   ├── manager/                 #   Manager agent
 │   │   ├── profile.md           #     Role definition
-│   │   ├── techniques/ (5)      #     Procedures
+│   │   ├── techniques/ (6)      #     Procedures
 │   │   └── tools/               #     orchestrator.sh, monitor.sh, mailbox.sh
 │   ├── researcher/              #   Researcher agent
 │   │   ├── profile.md
@@ -158,6 +221,7 @@ whiplash/
 │   │   ├── profile.md
 │   │   └── techniques/ (5)
 │   └── monitoring/              #   Monitoring agent
+│       ├── profile.md
 │       └── techniques/ (2)
 │
 ├── domains/                     # Domain-specific definitions (git tracked)
@@ -232,10 +296,10 @@ Details: `domains/README.md`
 | Agent | profile.md | techniques |
 |-------|:----------:|:----------:|
 | Onboarding | O | 1 |
-| Manager | O | 5 |
+| Manager | O | 6 |
 | Researcher | O | 6 |
 | Developer | O | 5 |
-| Monitoring | - | 2 |
+| Monitoring | O | 2 |
 
 | Domain | Description |
 |--------|-------------|

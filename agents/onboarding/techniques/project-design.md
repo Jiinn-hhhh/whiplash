@@ -198,8 +198,13 @@ bash agents/manager/tools/orchestrator.sh boot-manager {project-name}
 
 정상 부팅 확인 후 유저에게 안내:
 ```
-Manager 인계 완료. 별도 터미널에서 접속 가능:
+Manager가 tmux 세션에 부팅되었습니다.
+
+아래 명령으로 접속하면 Manager와 직접 대화할 수 있습니다:
   tmux attach -t whiplash-{project-name}
+
+Manager 윈도우에서 자연어로 지시하면 됩니다.
+Ctrl-b + n/p/숫자 로 다른 에이전트 윈도우도 관찰할 수 있습니다.
 ```
 
 Onboarding 에이전트는 인계 확인이 끝나면 종료한다.

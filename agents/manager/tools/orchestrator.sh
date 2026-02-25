@@ -10,6 +10,7 @@
 #   status         {project}                   -- 세션 상태 확인
 #   reboot         {target} {project}          -- 에이전트 세션 재시작 (target: role 또는 role-backend)
 #   refresh        {target} {project}          -- 에이전트 맥락 리프레시 (target: role 또는 role-backend)
+#   monitor-check  {project}                   -- monitor.sh 상태 확인 + 자동 재시작
 
 set -euo pipefail
 
@@ -58,6 +59,27 @@ get_model() {
     developer)  echo "sonnet" ;;
     monitoring) echo "haiku" ;;
     *)          echo "sonnet" ;;
+  esac
+}
+
+# 역할별 allowedTools
+get_allowed_tools() {
+  local role="$1"
+  case "$role" in
+    monitoring) echo "Read,Glob,Grep,Bash" ;;
+    *)          echo "Read,Glob,Grep,Write,Edit,Bash,WebSearch,WebFetch" ;;
+  esac
+}
+
+# 역할별 max-turns
+get_max_turns() {
+  local role="$1"
+  case "$role" in
+    monitoring) echo "10" ;;
+    manager)    echo "20" ;;
+    researcher) echo "30" ;;
+    developer)  echo "40" ;;
+    *)          echo "20" ;;
   esac
 }
 
@@ -119,11 +141,28 @@ build_boot_message() {
 6. (해당 시) domains/${domain}/${role}.md 읽기
 7. (해당 시) projects/${project}/team/${role}.md 읽기
 8. memory/knowledge/index.md 읽기
-9. 태스크 완료 또는 블로커 발생 시 아래 명령으로 Manager에게 알려라:
-   bash agents/manager/tools/mailbox.sh ${project} ${agent_id} manager {kind} {priority} "{subject}" "{content}"
-   kind: task_complete | status_update | need_input | escalation | agent_ready
-   priority: normal | urgent
-   다른 에이전트에게 직접 알릴 때도 같은 방식 (to를 해당 역할로 변경).
+9. mailbox 보내기 (상황별 예시):
+   태스크 완료:
+     bash agents/manager/tools/mailbox.sh ${project} ${agent_id} manager task_complete normal "TASK-XXX 완료" "결과 요약"
+   도움 필요:
+     bash agents/manager/tools/mailbox.sh ${project} ${agent_id} manager need_input normal "방향 선택 필요" "상세 내용"
+   긴급 블로커:
+     bash agents/manager/tools/mailbox.sh ${project} ${agent_id} manager escalation urgent "블로커 발생" "상세 내용"
+   다른 에이전트에게:
+     bash agents/manager/tools/mailbox.sh ${project} ${agent_id} {대상} status_update normal "제목" "내용"
+
+10. mailbox 받기 — 작업 중 아래 형식의 알림이 올 수 있다:
+    [mailbox] {보낸이} → {나} | {종류}
+    제목: {제목}
+    내용: {내용}
+
+    종류별 행동:
+    - task_complete: 태스크 결과 확인 후 다음 단계
+    - status_update: 참고
+    - need_input: 응답 필요
+    - escalation: 긴급 처리
+    - agent_ready: 에이전트 준비 확인
+    - reboot_notice: 에이전트 복구 상태 확인
 ${extra}
 온보딩이 끝나면 준비 완료를 mailbox로 보고해라:
 bash agents/manager/tools/mailbox.sh ${project} ${agent_id} manager agent_ready normal "온보딩 완료" "${agent_id} 에이전트 준비 완료"
@@ -215,6 +254,10 @@ boot_single_agent() {
   model="$(get_model "$role")"
   local budget
   budget="$(get_budget "$project")"
+  local allowed_tools
+  allowed_tools="$(get_allowed_tools "$role")"
+  local max_turns
+  max_turns="$(get_max_turns "$role")"
   local agent_id="$window_name"
   local boot_msg
   boot_msg="$(build_boot_message "$role" "$project" "$extra_boot_msg" "$agent_id")"
@@ -228,8 +271,8 @@ boot_single_agent() {
   result=$(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude -p "$boot_msg" \
     --model "$model" \
     --output-format json \
-    --allowedTools "Read,Glob,Grep,Write,Edit,Bash,WebSearch,WebFetch" \
-    --max-turns 20 \
+    --allowedTools "$allowed_tools" \
+    --max-turns "$max_turns" \
     --max-budget-usd "${budget:-5}")
 
   local session_id
@@ -321,6 +364,10 @@ cmd_boot_manager() {
   model="$(get_model "manager")"
   local budget
   budget="$(get_budget "$project")"
+  local allowed_tools
+  allowed_tools="$(get_allowed_tools "manager")"
+  local max_turns
+  max_turns="$(get_max_turns "manager")"
   local extra_boot_instructions
   extra_boot_instructions=$(cat << EXTRA
 10. 온보딩 완료 후, 아래 명령으로 팀 에이전트를 부팅해라:
@@ -338,8 +385,8 @@ EXTRA
   result=$(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude -p "$boot_msg" \
     --model "$model" \
     --output-format json \
-    --allowedTools "Read,Glob,Grep,Write,Edit,Bash,WebSearch,WebFetch" \
-    --max-turns 20 \
+    --allowedTools "$allowed_tools" \
+    --max-turns "$max_turns" \
     --max-budget-usd "${budget:-5}")
 
   local session_id
@@ -663,6 +710,63 @@ cmd_refresh() {
 }
 
 # ──────────────────────────────────────────────
+# monitor-check 서브커맨드
+# ──────────────────────────────────────────────
+
+cmd_monitor_check() {
+  local project="$1"
+  local pid_file="$(project_dir "$project")/memory/manager/monitor.pid"
+  local hb_file="$(project_dir "$project")/memory/manager/monitor.heartbeat"
+  local now
+  now=$(date +%s)
+
+  # PID 파일 확인
+  if [ ! -f "$pid_file" ]; then
+    echo "[monitor-check] PID 파일 없음. monitor.sh 재시작 중..."
+    restart_monitor "$project"
+    return
+  fi
+
+  local pid
+  pid=$(cat "$pid_file")
+
+  # 프로세스 생존 확인
+  if ! kill -0 "$pid" 2>/dev/null; then
+    echo "[monitor-check] monitor.sh 프로세스 죽음 (PID: $pid). 재시작 중..."
+    restart_monitor "$project"
+    return
+  fi
+
+  # heartbeat 신선도 확인 (90초 이상이면 좀비)
+  if [ -f "$hb_file" ]; then
+    local hb_time
+    hb_time=$(cat "$hb_file")
+    local hb_age=$((now - hb_time))
+    if [ "$hb_age" -gt 90 ]; then
+      echo "[monitor-check] heartbeat ${hb_age}초 전 (좀비). 강제 종료 후 재시작..."
+      kill "$pid" 2>/dev/null || true
+      sleep 1
+      restart_monitor "$project"
+      return
+    fi
+    echo "[monitor-check] monitor.sh 정상 (PID: $pid, heartbeat: ${hb_age}초 전)"
+  else
+    echo "[monitor-check] heartbeat 파일 없음. 프로세스 확인 필요."
+  fi
+}
+
+restart_monitor() {
+  local project="$1"
+  local log_dir="$(project_dir "$project")/memory/manager/logs"
+  mkdir -p "$log_dir"
+  local log_file="$log_dir/monitor-$(date +%Y%m%d-%H%M%S).log"
+  nohup bash "$TOOLS_DIR/monitor.sh" "$project" >> "$log_file" 2>&1 &
+  local new_pid=$!
+  echo "$new_pid" > "$(project_dir "$project")/memory/manager/monitor.pid"
+  echo "[monitor-check] monitor.sh 재시작 완료 (PID: $new_pid, log: $log_file)"
+}
+
+# ──────────────────────────────────────────────
 # shutdown 서브커맨드
 # ──────────────────────────────────────────────
 
@@ -811,6 +915,7 @@ if [ $# -lt 2 ]; then
   echo "  orchestrator.sh status         {project}" >&2
   echo "  orchestrator.sh reboot         {target} {project}" >&2
   echo "  orchestrator.sh refresh        {target} {project}" >&2
+  echo "  orchestrator.sh monitor-check  {project}" >&2
   exit 1
 fi
 
@@ -850,9 +955,13 @@ case "$command" in
     [ $# -lt 2 ] && { echo "Usage: orchestrator.sh refresh {target} {project}" >&2; exit 1; }
     cmd_refresh "$1" "$2"
     ;;
+  monitor-check)
+    [ $# -lt 1 ] && { echo "Usage: orchestrator.sh monitor-check {project}" >&2; exit 1; }
+    cmd_monitor_check "$1"
+    ;;
   *)
     echo "Unknown command: $command" >&2
-    echo "Available: boot-manager, boot, dispatch, dual-dispatch, shutdown, status, reboot, refresh" >&2
+    echo "Available: boot-manager, boot, dispatch, dual-dispatch, shutdown, status, reboot, refresh, monitor-check" >&2
     exit 1
     ;;
 esac

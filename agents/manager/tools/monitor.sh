@@ -1,8 +1,9 @@
 #!/bin/bash
-# monitor.sh -- mailbox 폴링 + tmux 알림 + 크래시 복구 + 행 감지 데몬
+# monitor.sh -- 이벤트 드리븐 mailbox 감시 + tmux 알림 + 크래시 복구 + 행 감지 데몬
 #
-# 30초 간격으로 각 에이전트의 mailbox/new/를 확인하고,
-# 새 메시지가 있으면 수신자의 tmux 윈도우에 알림을 전달한다.
+# mailbox/new/ 감시: fswatch(macOS) / inotifywait(Linux)로 즉시 감지.
+# 둘 다 없으면 5초 폴링 fallback.
+# 헬스 체크(크래시/hung/heartbeat): 30초 주기 포그라운드 루프.
 # 에이전트 크래시 감지 시 자동 reboot (최대 3회).
 # 10분 비활성 에이전트 감지 시 Manager에게 알림.
 #
@@ -24,7 +25,7 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 TOOLS_DIR="$REPO_ROOT/agents/manager/tools"
 MAILBOX_ROOT="$REPO_ROOT/projects/$PROJECT/workspace/shared/mailbox"
 SESSION="whiplash-${PROJECT}"
-POLL_INTERVAL=30
+HEALTH_CHECK_INTERVAL=30   # 헬스 체크 주기 (mailbox와 무관)
 MAX_REBOOT=3
 HUNG_THRESHOLD=600  # 10분 (초)
 REBOOT_COUNT_DIR="$REPO_ROOT/projects/$PROJECT/memory/manager/reboot-counts"
@@ -45,8 +46,13 @@ parse_field() {
 
 send_crash_alert() {
   local role="$1" message="$2"
-  bash "$TOOLS_DIR/mailbox.sh" "$PROJECT" monitor manager \
-    escalation urgent "${role} 크래시" "$message"
+  if [ "$role" = "manager" ]; then
+    # Manager에게 mailbox를 보낼 수 없으므로 로그에만 기록
+    echo "[monitor] MANAGER CRASH: $message" >&2
+  else
+    bash "$TOOLS_DIR/mailbox.sh" "$PROJECT" monitor manager \
+      escalation urgent "${role} 크래시" "$message"
+  fi
 }
 
 # ──────────────────────────────────────────────
@@ -98,13 +104,53 @@ reset_reboot_count() {
 }
 
 # ──────────────────────────────────────────────
-# 메시지 처리: new/ → tmux 알림 → cur/ 이동
+# 모든 역할의 mailbox를 한 번에 처리
+# ──────────────────────────────────────────────
+
+process_all_mailboxes() {
+  for role_dir in "$MAILBOX_ROOT"/*/; do
+    [ -d "$role_dir" ] || continue
+    local role
+    role="$(basename "$role_dir")"
+    process_mailbox "$role"
+  done
+}
+
+# ──────────────────────────────────────────────
+# 크로스플랫폼 파일 감시 — mailbox/*/new/ 디렉토리 감시
+# ──────────────────────────────────────────────
+
+start_mailbox_watcher() {
+  if command -v fswatch &>/dev/null; then
+    # macOS (FSEvents)
+    fswatch -0 --event Created "$MAILBOX_ROOT"/*/new/ 2>/dev/null \
+      | while read -d '' _event; do
+          process_all_mailboxes
+        done
+  elif command -v inotifywait &>/dev/null; then
+    # Linux (inotify)
+    inotifywait -m -q -e create,moved_to \
+      --format '%w' "$MAILBOX_ROOT"/*/new/ 2>/dev/null \
+      | while read _dir; do
+          process_all_mailboxes
+        done
+  else
+    # Fallback: 빠른 폴링 (5초)
+    echo "[monitor] fswatch/inotifywait 없음. 5초 폴링 fallback."
+    while true; do
+      process_all_mailboxes
+      sleep 5
+    done
+  fi
+}
+
+# ──────────────────────────────────────────────
+# 메시지 처리: new/ → tmux 알림(전체 내용 포함) → 즉시 삭제
 # ──────────────────────────────────────────────
 
 process_mailbox() {
   local role="$1"
   local new_dir="$MAILBOX_ROOT/$role/new"
-  local cur_dir="$MAILBOX_ROOT/$role/cur"
 
   # new/ 디렉토리가 없거나 비어있으면 스킵
   [ -d "$new_dir" ] || return 0
@@ -113,18 +159,22 @@ process_mailbox() {
     # glob이 매치 안 되면 리터럴 문자열이 됨 — 존재 확인
     [ -f "$msg_file" ] || continue
 
-    local from subject kind priority
+    local from subject kind priority content
     from="$(parse_field "$msg_file" "from")"
     subject="$(parse_field "$msg_file" "subject")"
     kind="$(parse_field "$msg_file" "kind")"
     priority="$(parse_field "$msg_file" "priority")"
+    # frontmatter(---...---) 이후의 본문을 추출
+    content="$(sed -n '/^---$/,/^---$/d; /^$/d; p' "$msg_file" | head -20)"
 
-    # tmux 알림 구성
-    local prefix=""
+    # tmux 알림 구성 (전체 내용 포함)
+    local prefix="[mailbox]"
     if [ "$priority" = "urgent" ]; then
-      prefix="URGENT "
+      prefix="[URGENT mailbox]"
     fi
-    local notification="${prefix}mailbox ${from}: ${subject} (${kind})"
+    local notification="${prefix} ${from} → ${role} | ${kind}
+제목: ${subject}
+내용: ${content}"
 
     # 해당 에이전트의 tmux 윈도우에 전달
     local tmux_target="${SESSION}:${role}"
@@ -135,8 +185,8 @@ process_mailbox() {
       fi
     fi
 
-    # new/ → cur/ 이동
-    mv "$msg_file" "$cur_dir/"
+    # 전달 후 즉시 삭제
+    rm -f "$msg_file"
   done
 }
 
@@ -158,11 +208,6 @@ check_agent_windows() {
   active_window_names=$(get_active_roles)
 
   for window_name in $active_window_names; do
-    # manager는 건너뛴다
-    if [ "$window_name" = "manager" ]; then
-      continue
-    fi
-
     if echo "$active_windows" | grep -q "^${window_name}$"; then
       # 윈도우 정상 — reboot 카운터 리셋
       reset_reboot_count "$window_name"
@@ -244,19 +289,22 @@ check_agent_health() {
 }
 
 # ──────────────────────────────────────────────
-# 메인 루프
+# 메인: mailbox 이벤트 감시(백그라운드) + 헬스 체크(포그라운드)
 # ──────────────────────────────────────────────
 
-echo "[monitor] 시작: project=${PROJECT}, session=${SESSION}, interval=${POLL_INTERVAL}s"
+echo "[monitor] 시작: project=${PROJECT}, session=${SESSION}, health_check=${HEALTH_CHECK_INTERVAL}s"
 
+# 1. Mailbox 감시 — 백그라운드 (이벤트 드리븐)
+start_mailbox_watcher &
+WATCHER_PID=$!
+
+# 종료 시 watcher도 함께 정리
+trap 'kill $WATCHER_PID 2>/dev/null; exit 0' INT TERM EXIT
+
+echo "[monitor] mailbox watcher 시작 (PID: $WATCHER_PID)"
+
+# 2. 헬스 체크 — 포그라운드 (주기적)
 while true; do
-  # 모든 역할의 mailbox 처리
-  for role_dir in "$MAILBOX_ROOT"/*/; do
-    [ -d "$role_dir" ] || continue
-    role="$(basename "$role_dir")"
-    process_mailbox "$role"
-  done
-
   # 크래시 감지 + 자동 reboot (매 사이클)
   check_agent_windows
 
@@ -266,5 +314,5 @@ while true; do
   # 자가 heartbeat
   date +%s > "$HEARTBEAT_FILE"
 
-  sleep "$POLL_INTERVAL"
+  sleep "$HEALTH_CHECK_INTERVAL"
 done

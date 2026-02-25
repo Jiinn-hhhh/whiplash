@@ -110,7 +110,6 @@ workspace/shared/mailbox/
   {role}/
     tmp/     # 작성 중 (원자적 전달용, 외부에서 읽지 말 것)
     new/     # 도착한 메시지 (미읽음)
-    cur/     # 처리된 메시지
 ```
 
 ### 소통 채널 분리
@@ -120,7 +119,7 @@ workspace/shared/mailbox/
 | announcements/ | 작업 지시 | 구조화된 지시서 | 영구 |
 | discussions/ | 토론 | 구조화된 토론 문서 | memory/로 이동 |
 | meetings/ | 회의 | 구조화된 회의록 | memory/로 이동 |
-| mailbox/ | 실시간 알림 | 짧은 상태 메시지 | cur/에서 정리 |
+| mailbox/ | 실시간 알림 | 짧은 상태 메시지 | 전달 후 즉시 삭제 |
 
 ### 전송 방법
 
@@ -137,4 +136,4 @@ bash agents/manager/tools/mailbox.sh {project} {from} {to} {kind} {priority} "{s
 - **짧은 알림용**. 상세 내용은 별도 문서에 두고 참조만 포함한다.
 - 기존 소통(토론, 회의, 공지) 규칙을 **대체하지 않는다**. 보충한다.
 - 모든 에이전트 간 **양방향** 사용 가능. Manager를 거칠 필요 없다.
-- monitor.sh가 new/ 메시지를 감지하여 수신자의 tmux 윈도우에 알림을 전달하고, cur/로 이동시킨다.
+- monitor.sh가 new/ 메시지를 감지하여 수신자의 tmux 윈도우에 전체 내용(제목+본문)을 전달하고, **즉시 삭제**한다. 감사 로그(`memory/manager/logs/mailbox-audit.log`)가 이력을 대체한다.
