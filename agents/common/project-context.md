@@ -32,10 +32,6 @@ projects/{name}/
       discussions/
       meetings/
       announcements/
-      mailbox/               # 실시간 알림 (에이전트 간 양방향)
-        {role}/
-          tmp/               #   작성 중 (원자적 전달용)
-          new/               #   도착한 메시지
     teams/
       research/
       developer/

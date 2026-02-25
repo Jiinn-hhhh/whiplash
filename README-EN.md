@@ -17,7 +17,6 @@ Built entirely with **Markdown documents** — no build system, no package manag
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`npm install -g @anthropic-ai/claude-code`)
 - [tmux](https://github.com/tmux/tmux) — required for solo/dual mode (`brew install tmux` / `apt install tmux`)
 - [jq](https://jqlang.github.io/jq/) — required for solo/dual mode (`brew install jq` / `apt install jq`)
-- [fswatch](https://emcrisostomo.github.io/fswatch/) — optional, real-time mailbox monitoring (`brew install fswatch`). Falls back to 5-second polling if unavailable.
 
 ### Quick Start
 
@@ -82,8 +81,8 @@ Manager — user ↔ team hub. Creates agents, distributes tasks, coordinates, r
  └── Monitoring (independent observer)
 ```
 
-| Agent | Role | Model (solo/dual) |
-|-------|------|-------------------|
+| Agent | Role | Model |
+|-------|------|-------|
 | **Onboarding** | Designs projects via user conversation. Creates project.md, hands off to Manager | - |
 | **Manager** | User ↔ team hub. Agent lifecycle, task distribution, coordination, reporting | sonnet |
 | **Researcher** | Source collection/analysis, experiments (prototype-level), direction proposals | opus |
@@ -119,12 +118,14 @@ tmux session: whiplash-{project}
   ├─ [0] manager
   ├─ [1] researcher
   ├─ [2] developer
-  └─ [3] monitoring
+  ├─ [3] monitoring
+  └─ [4] researcher-2          ← dynamically spawned (on demand)
 ```
 
-- Agent communication: `mailbox.sh` (Maildir pattern)
-- Task management: Task files + `dispatch`
-- Crash detection: `monitor.sh` polls every 30s, auto-reboot (max 3x)
+- Agent communication: `notify.sh` — direct tmux delivery (fire-and-forget)
+- Task management: Task files + `dispatch` / `dual-dispatch`
+- Crash detection: `monitor.sh` health check every 30s, auto-reboot (max 3x)
+- Dynamic spawn: when an agent is busy, `spawn` adds another instance of the same role; `kill-agent` terminates it after work
 - Details: `agents/manager/techniques/orchestration.md`
 
 ### CLI Commands (Manager-internal)
@@ -132,11 +133,24 @@ tmux session: whiplash-{project}
 These commands are run internally by the Manager agent. Users do not run them directly.
 
 ```bash
-bash agents/manager/tools/orchestrator.sh boot-manager {project}  # Boot Manager
-bash agents/manager/tools/orchestrator.sh boot {project}          # Boot agents
-bash agents/manager/tools/orchestrator.sh dispatch {role} {task-file} {project}  # Send task
-bash agents/manager/tools/orchestrator.sh status {project}        # Check status
-bash agents/manager/tools/orchestrator.sh shutdown {project}      # Shutdown all
+# Boot/Shutdown
+orchestrator.sh boot-manager   {project}                          # Boot Manager + create tmux session
+orchestrator.sh boot           {project}                          # Boot agents + start monitor
+orchestrator.sh shutdown       {project}                          # Shutdown all + cleanup
+
+# Tasks
+orchestrator.sh dispatch       {role} {task-file} {project}       # Send task to agent
+orchestrator.sh dual-dispatch  {role} {task-file} {project}       # Send task to both backends (dual mode)
+
+# Dynamic Spawn
+orchestrator.sh spawn          {role} {window-name} {project}     # Spawn extra agent
+orchestrator.sh kill-agent     {window-name} {project}            # Kill spawned agent
+
+# Recovery/Management
+orchestrator.sh reboot         {target} {project}                 # Restart agent (crash recovery)
+orchestrator.sh refresh        {target} {project}                 # Context refresh (handoff → new session)
+orchestrator.sh status         {project}                          # Check session status
+orchestrator.sh monitor-check  {project}                          # Check monitor.sh + auto-restart
 ```
 
 ---
@@ -164,20 +178,20 @@ bash agents/manager/tools/orchestrator.sh shutdown {project}      # Shutdown all
 - Manager runs `orchestrator.sh boot {project}`
   - Parses active agent list + execution mode from `project.md`
   - Each agent: `claude -p` (get session_id) → create tmux window → `claude --resume`
+  - Dual mode: creates `{role}-claude` + `{role}-codex` windows per role (monitoring excluded)
   - Per-role models: researcher=opus, developer=sonnet, monitoring=haiku
   - Per-role tool restrictions: monitoring gets Read/Glob/Grep/Bash only
   - Per-role turn limits: monitoring=10, manager=20, researcher=30, developer=40
-  - Mailbox directory initialization
   - `monitor.sh` runs as nohup background process
 
 ### 4. Communication
 
-- **Mailbox (real-time notifications)**:
-  - Agent A → `mailbox.sh` → creates file in `mailbox/{role-B}/new/`
-  - `monitor.sh` detects via fswatch → pushes to Agent B via tmux send-keys
-  - Messages deleted immediately after delivery
-  - Types: task_complete, status_update, need_input, escalation, agent_ready
-  - Audit log: `memory/manager/logs/mailbox-audit.log`
+- **Notifications (real-time)** — `notify.sh` (direct tmux delivery):
+  - Agent A → `notify.sh` → delivers directly to Agent B's tmux window
+  - Uses `tmux load-buffer` + `paste-buffer` for reliable multiline delivery
+  - Fire-and-forget: if the tmux session/window is absent, logs a warning and continues
+  - Types: task_complete, status_update, need_input, escalation, agent_ready, reboot_notice, consensus_request
+  - Audit log: `memory/manager/logs/notify-audit.log`
 - **Discussions** (`workspace/shared/discussions/DISC-NNN.md`): structured documents, append-only
 - **Meetings** (`workspace/shared/meetings/MEET-NNN.md`): 3 rounds (position → response → synthesis)
 - **Announcements** (`workspace/shared/announcements/`): task directives
@@ -186,20 +200,30 @@ bash agents/manager/tools/orchestrator.sh shutdown {project}      # Shutdown all
 
 - Manager writes directive → `orchestrator.sh dispatch {role} {task-file}`
 - Delivered to agent via tmux send-keys
-- Agent completes → sends task_complete via mailbox
-- Dual mode: both backends execute → Manager drives consensus
+- Agent completes → sends task_complete via notify.sh
+- Dual mode: `dual-dispatch` to both backends → Manager drives consensus
 
-### 6. Failure Recovery
+### 6. Dynamic Spawn
 
-- **Crash detection**: monitor.sh 30-second health check → tmux window disappearance → auto reboot (max 3 attempts)
-- **Hung detection**: 10-minute inactivity → one-time alert to Manager (no auto-kill)
-- **monitor.sh self-recovery**: Manager calls `monitor-check` to verify PID+heartbeat → restarts if dead
-- **Session refresh**: Manager can manually trigger when context grows too large (auto-compact handles most cases)
+- When an agent is busy with a long task, spawn an additional instance of the same role
+- `orchestrator.sh spawn {role} {window-name} {project}` → boots agent in new tmux window
+- Shares the same project memory/workspace. Only restriction: no concurrent edits to the same file
+- After work is done: `orchestrator.sh kill-agent {window-name} {project}`
+- monitor.sh automatically watches spawned agents (including crash reboot)
 
-### 7. Shutdown
+### 7. Failure Recovery
+
+`monitor.sh` is a dedicated health-check daemon. Checks agent status every 30 seconds and reports anomalies to Manager via `notify.sh`.
+
+- **Crash detection**: Parses active roles from `sessions.md` → detects tmux window disappearance → auto-reboots via `orchestrator.sh reboot` (max 3 attempts)
+- **Hung detection**: 10-minute inactivity → one-time alert to Manager (no auto-kill). Auto-clears when activity resumes
+- **Heartbeat**: Every 30 seconds writes timestamp to `monitor.heartbeat`. Manager calls `monitor-check` — if over 90 seconds stale, zombie verdict → restart
+- **Session refresh**: When context grows too large, `orchestrator.sh refresh` performs handoff → boots new session
+
+### 8. Shutdown
 
 - Manager runs `orchestrator.sh shutdown {project}`
-- All agent sessions terminated, tmux session killed, monitor.sh PID killed
+- All agent sessions terminated (including dynamic spawns), tmux session killed, monitor.sh PID killed
 
 ---
 
@@ -213,7 +237,7 @@ whiplash/
 │   ├── manager/                 #   Manager agent
 │   │   ├── profile.md           #     Role definition
 │   │   ├── techniques/ (6)      #     Procedures
-│   │   └── tools/               #     orchestrator.sh, monitor.sh, mailbox.sh
+│   │   └── tools/               #     orchestrator.sh, monitor.sh, notify.sh
 │   ├── researcher/              #   Researcher agent
 │   │   ├── profile.md
 │   │   └── techniques/ (6)

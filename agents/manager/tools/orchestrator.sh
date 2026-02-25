@@ -6,6 +6,8 @@
 #   boot           {project}                   -- tmux 세션 생성 + 에이전트 부팅 + monitor 시작
 #   dispatch       {role} {task-file} {project} -- 에이전트에게 태스크 전달
 #   dual-dispatch  {role} {task-file} {project} -- 양쪽 백엔드에 동일 태스크 전달 (dual 모드)
+#   spawn          {role} {window-name} {project} [extra-msg] -- 동적 에이전트 추가 스폰
+#   kill-agent     {window-name} {project}     -- 동적 에이전트 종료
 #   shutdown       {project}                   -- 세션 종료 + 정리
 #   status         {project}                   -- 세션 상태 확인
 #   reboot         {target} {project}          -- 에이전트 세션 재시작 (target: role 또는 role-backend)
@@ -20,6 +22,14 @@ TOOLS_DIR="$REPO_ROOT/agents/manager/tools"
 # ──────────────────────────────────────────────
 # 유틸리티 함수
 # ──────────────────────────────────────────────
+
+validate_project_name() {
+  local name="$1"
+  if [ -z "$name" ] || [[ "$name" == */* ]] || [[ "$name" == *..* ]]; then
+    echo "Error: 잘못된 project 이름: '$name'" >&2
+    exit 1
+  fi
+}
 
 session_name() {
   echo "whiplash-$1"
@@ -95,15 +105,6 @@ get_domain() {
     | tr -d '*'
 }
 
-# project.md에서 비용 상한 추출 (없으면 빈 문자열 → 기본값 5)
-get_budget() {
-  local project="$1"
-  local project_md="$(project_dir "$project")/project.md"
-  { grep -oE 'max.*budget.*[0-9]+|비용.*상한.*[0-9]+' "$project_md" 2>/dev/null || true; } \
-    | grep -oE '[0-9]+(\.[0-9]+)?' | head -1 || true
-  # 매치 없으면 빈 문자열 → 호출부에서 기본값 5 사용
-}
-
 # project.md에서 실행 모드 추출 (solo | dual, 기본값 solo)
 get_exec_mode() {
   local project="$1"
@@ -137,22 +138,22 @@ build_boot_message() {
 2. agents/common/project-context.md 읽기
 3. agents/${role}/profile.md 읽기
 4. projects/${project}/project.md 읽기
-5. domains/${domain}/context.md 읽기
+5. (해당 시) domains/${domain}/context.md 읽기
 6. (해당 시) domains/${domain}/${role}.md 읽기
 7. (해당 시) projects/${project}/team/${role}.md 읽기
 8. memory/knowledge/index.md 읽기
-9. mailbox 보내기 (상황별 예시):
+9. 알림 보내기 (상황별 예시):
    태스크 완료:
-     bash agents/manager/tools/mailbox.sh ${project} ${agent_id} manager task_complete normal "TASK-XXX 완료" "결과 요약"
+     bash agents/manager/tools/notify.sh ${project} ${agent_id} manager task_complete normal "TASK-XXX 완료" "결과 요약"
    도움 필요:
-     bash agents/manager/tools/mailbox.sh ${project} ${agent_id} manager need_input normal "방향 선택 필요" "상세 내용"
+     bash agents/manager/tools/notify.sh ${project} ${agent_id} manager need_input normal "방향 선택 필요" "상세 내용"
    긴급 블로커:
-     bash agents/manager/tools/mailbox.sh ${project} ${agent_id} manager escalation urgent "블로커 발생" "상세 내용"
+     bash agents/manager/tools/notify.sh ${project} ${agent_id} manager escalation urgent "블로커 발생" "상세 내용"
    다른 에이전트에게:
-     bash agents/manager/tools/mailbox.sh ${project} ${agent_id} {대상} status_update normal "제목" "내용"
+     bash agents/manager/tools/notify.sh ${project} ${agent_id} {대상} status_update normal "제목" "내용"
 
-10. mailbox 받기 — 작업 중 아래 형식의 알림이 올 수 있다:
-    [mailbox] {보낸이} → {나} | {종류}
+10. 알림 받기 — 작업 중 아래 형식의 알림이 올 수 있다:
+    [notify] {보낸이} → {나} | {종류}
     제목: {제목}
     내용: {내용}
 
@@ -164,27 +165,9 @@ build_boot_message() {
     - agent_ready: 에이전트 준비 확인
     - reboot_notice: 에이전트 복구 상태 확인
 ${extra}
-온보딩이 끝나면 준비 완료를 mailbox로 보고해라:
-bash agents/manager/tools/mailbox.sh ${project} ${agent_id} manager agent_ready normal "온보딩 완료" "${agent_id} 에이전트 준비 완료"
+온보딩이 끝나면 준비 완료를 알림으로 보고해라:
+bash agents/manager/tools/notify.sh ${project} ${agent_id} manager agent_ready normal "온보딩 완료" "${agent_id} 에이전트 준비 완료"
 BOOTMSG
-}
-
-# mailbox 디렉토리 생성
-init_mailbox() {
-  local project="$1"
-  local shared_dir="$(project_dir "$project")/workspace/shared/mailbox"
-  local exec_mode
-  exec_mode="$(get_exec_mode "$project")"
-
-  for role in manager researcher developer monitoring; do
-    mkdir -p "$shared_dir/$role"/{tmp,new}
-    # dual 모드이고 monitoring이 아닌 역할은 backend별 mailbox도 생성
-    if [ "$exec_mode" = "dual" ] && [ "$role" != "manager" ] && [ "$role" != "monitoring" ]; then
-      mkdir -p "$shared_dir/${role}-claude"/{tmp,new}
-      mkdir -p "$shared_dir/${role}-codex"/{tmp,new}
-    fi
-  done
-  echo "mailbox 디렉토리 초기화 완료 (mode: ${exec_mode})"
 }
 
 # sessions.md 초기화 (멱등: 이미 존재하면 건너뜀)
@@ -212,6 +195,13 @@ add_session_row() {
   local project="$1" role="$2" session_id="$3" tmux_target="$4" model="$5" backend="${6:-claude}"
   local sf
   sf="$(sessions_file "$project")"
+
+  # 중복 등록 방지: 이미 같은 tmux_target이 active면 건너뜀
+  if grep -q "| ${tmux_target} | active |" "$sf" 2>/dev/null; then
+    echo "Warning: ${tmux_target}가 이미 active 상태. 중복 등록 건너뜀." >&2
+    return 0
+  fi
+
   local today
   today="$(date +%Y-%m-%d)"
   echo "| ${role} | ${backend} | ${session_id} | ${tmux_target} | active | ${today} | ${model} | |" >> "$sf"
@@ -252,8 +242,6 @@ boot_single_agent() {
   sess="$(session_name "$project")"
   local model
   model="$(get_model "$role")"
-  local budget
-  budget="$(get_budget "$project")"
   local allowed_tools
   allowed_tools="$(get_allowed_tools "$role")"
   local max_turns
@@ -273,10 +261,13 @@ boot_single_agent() {
     --output-format json \
     --allowedTools "$allowed_tools" \
     --max-turns "$max_turns" \
-    --max-budget-usd "${budget:-5}")
+    --dangerously-skip-permissions) || {
+    echo "Warning: ${window_name} claude -p 실행 실패." >&2
+    return 1
+  }
 
   local session_id
-  session_id=$(echo "$result" | jq -r '.session_id')
+  session_id=$(echo "$result" | jq -r '.session_id' 2>/dev/null) || session_id=""
 
   if [ -z "$session_id" ] || [ "$session_id" = "null" ]; then
     echo "Warning: ${window_name} session_id 획득 실패." >&2
@@ -284,8 +275,9 @@ boot_single_agent() {
   fi
 
   # tmux 윈도우 생성 후 claude --resume으로 인터랙티브 세션 시작
+  # env -u CLAUDECODE: Manager가 Claude Code 안에서 호출할 때 중첩 세션 에러 방지
   tmux new-window -t "$sess" -n "$window_name"
-  tmux send-keys -t "$tmux_target" "claude --resume $session_id" Enter
+  tmux send-keys -t "$tmux_target" "env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude --resume $session_id --dangerously-skip-permissions" Enter
 
   # sessions.md에 기록
   add_session_row "$project" "$role" "$session_id" "$tmux_target" "$model" "claude"
@@ -339,11 +331,86 @@ boot_codex_agent() {
 }
 
 # ──────────────────────────────────────────────
+# spawn 서브커맨드 — 동적 에이전트 추가 스폰
+# ──────────────────────────────────────────────
+
+cmd_spawn() {
+  local role="$1"        # researcher, developer 등
+  local window_name="$2" # researcher-2, dev-hotfix 등
+  local project="$3"
+  local extra_msg="${4:-}"
+  validate_project_name "$project"
+  local sess
+  sess="$(session_name "$project")"
+
+  # 세션 확인
+  if ! tmux has-session -t "$sess" 2>/dev/null; then
+    echo "Error: tmux 세션 '$sess'가 없다." >&2
+    exit 1
+  fi
+
+  # 윈도우 중복 확인
+  if tmux list-windows -t "$sess" -F '#{window_name}' | grep -q "^${window_name}$"; then
+    echo "Error: ${window_name} 윈도우가 이미 존재한다." >&2
+    exit 1
+  fi
+
+  # 부팅 (동일한 프로젝트 맥락, 메모리 공유)
+  local spawn_note="
+참고: 너는 동적으로 스폰된 추가 에이전트다 (${window_name}).
+다른 에이전트가 현재 수정 중인 파일은 건드리지 마라.
+${extra_msg}"
+  boot_single_agent "$role" "$project" "$spawn_note" "$window_name" || {
+    echo "Error: ${window_name} 스폰 실패." >&2
+    exit 1
+  }
+  echo "=== ${window_name} 스폰 완료 ==="
+}
+
+# ──────────────────────────────────────────────
+# kill-agent 서브커맨드 — 동적 에이전트 종료
+# ──────────────────────────────────────────────
+
+cmd_kill_agent() {
+  local window_name="$1"
+  local project="$2"
+  validate_project_name "$project"
+  local sess
+  sess="$(session_name "$project")"
+
+  # 세션 확인
+  if ! tmux has-session -t "$sess" 2>/dev/null; then
+    echo "Error: tmux 세션 '$sess'가 없다." >&2
+    exit 1
+  fi
+
+  # 윈도우 확인
+  if ! tmux list-windows -t "$sess" -F '#{window_name}' | grep -q "^${window_name}$"; then
+    echo "Error: ${window_name} 윈도우가 없다." >&2
+    exit 1
+  fi
+
+  # 종료
+  tmux send-keys -t "${sess}:${window_name}" "/exit" Enter
+  sleep 3
+  tmux kill-window -t "${sess}:${window_name}" 2>/dev/null || true
+
+  # sessions.md 업데이트
+  local sf
+  sf="$(sessions_file "$project")"
+  if [ -f "$sf" ]; then
+    sed -i '' "s/| ${sess}:${window_name} | active |/| ${sess}:${window_name} | closed |/g" "$sf"
+  fi
+  echo "=== ${window_name} 종료 완료 ==="
+}
+
+# ──────────────────────────────────────────────
 # boot-manager 서브커맨드
 # ──────────────────────────────────────────────
 
 cmd_boot_manager() {
   local project="$1"
+  validate_project_name "$project"
   local sess
   sess="$(session_name "$project")"
 
@@ -355,15 +422,12 @@ cmd_boot_manager() {
     exit 1
   fi
 
-  # 1. mailbox + sessions.md 초기화
-  init_mailbox "$project"
+  # 1. sessions.md 초기화
   init_sessions_file "$project"
 
   # 2. Manager 부팅 (claude -p → session_id)
   local model
   model="$(get_model "manager")"
-  local budget
-  budget="$(get_budget "$project")"
   local allowed_tools
   allowed_tools="$(get_allowed_tools "manager")"
   local max_turns
@@ -387,10 +451,13 @@ EXTRA
     --output-format json \
     --allowedTools "$allowed_tools" \
     --max-turns "$max_turns" \
-    --max-budget-usd "${budget:-5}")
+    --dangerously-skip-permissions) || {
+    echo "Error: Manager claude -p 실행 실패." >&2
+    exit 1
+  }
 
   local session_id
-  session_id=$(echo "$result" | jq -r '.session_id')
+  session_id=$(echo "$result" | jq -r '.session_id' 2>/dev/null) || session_id=""
 
   if [ -z "$session_id" ] || [ "$session_id" = "null" ]; then
     echo "Error: Manager session_id 획득 실패." >&2
@@ -400,7 +467,7 @@ EXTRA
   # 3. tmux 세션 생성 + Manager 투입
   tmux new-session -d -s "$sess" -n manager
   local tmux_target="${sess}:manager"
-  tmux send-keys -t "$tmux_target" "claude --resume $session_id" Enter
+  tmux send-keys -t "$tmux_target" "env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude --resume $session_id --dangerously-skip-permissions" Enter
 
   # 4. sessions.md에 기록
   add_session_row "$project" "manager" "$session_id" "$tmux_target" "$model"
@@ -417,6 +484,7 @@ EXTRA
 
 cmd_boot() {
   local project="$1"
+  validate_project_name "$project"
   local sess
   sess="$(session_name "$project")"
   local exec_mode
@@ -430,13 +498,10 @@ cmd_boot() {
     exit 1
   fi
 
-  # 1. mailbox 디렉토리 생성
-  init_mailbox "$project"
-
-  # 2. sessions.md 초기화 (멱등 — boot-manager에서 이미 생성했으면 건너뜀)
+  # 1. sessions.md 초기화 (멱등 — boot-manager에서 이미 생성했으면 건너뜀)
   init_sessions_file "$project"
 
-  # 3. tmux 세션 생성 또는 기존 재사용
+  # 2. tmux 세션 생성 또는 기존 재사용
   if tmux has-session -t "$sess" 2>/dev/null; then
     echo "기존 tmux 세션 '$sess' 재사용 (boot-manager로 생성됨)"
   else
@@ -444,9 +509,14 @@ cmd_boot() {
     echo "tmux 세션 '$sess' 생성됨"
   fi
 
-  # 4. 각 에이전트 부팅
+  # 3. 각 에이전트 부팅
   local agents
   agents="$(get_active_agents "$project")"
+
+  if [ -z "$agents" ]; then
+    echo "Error: project.md에서 활성 에이전트를 찾을 수 없다." >&2
+    exit 1
+  fi
 
   for role in $agents; do
     # manager는 이미 유저가 사용 중이므로 건너뛴다
@@ -471,7 +541,7 @@ cmd_boot() {
     fi
   done
 
-  # 5. monitor.sh 백그라운드 실행 (에러 로깅)
+  # 4. monitor.sh 백그라운드 실행 (에러 로깅)
   local log_dir="$(project_dir "$project")/memory/manager/logs"
   mkdir -p "$log_dir"
   # 로그 로테이션: 최근 5개만 유지
@@ -494,12 +564,13 @@ cmd_dispatch() {
   local role="$1"
   local task_file="$2"
   local project="$3"
+  validate_project_name "$project"
   local sess
   sess="$(session_name "$project")"
   local tmux_target="${sess}:${role}"
 
   # tmux 윈도우 존재 확인
-  if ! tmux list-windows -t "$sess" 2>/dev/null | grep -q "$role"; then
+  if ! tmux list-windows -t "$sess" -F '#{window_name}' 2>/dev/null | grep -q "^${role}$"; then
     echo "Error: ${role} 윈도우가 없다. 에이전트가 부팅되지 않았다." >&2
     exit 1
   fi
@@ -519,6 +590,7 @@ cmd_dual_dispatch() {
   local role="$1"
   local task_file="$2"
   local project="$3"
+  validate_project_name "$project"
   local sess
   sess="$(session_name "$project")"
 
@@ -558,6 +630,7 @@ cmd_dual_dispatch() {
 cmd_reboot() {
   local target="$1"
   local project="$2"
+  validate_project_name "$project"
   local sess
   sess="$(session_name "$project")"
 
@@ -622,6 +695,7 @@ cmd_reboot() {
 cmd_refresh() {
   local target="$1"
   local project="$2"
+  validate_project_name "$project"
   local sess
   sess="$(session_name "$project")"
 
@@ -715,6 +789,7 @@ cmd_refresh() {
 
 cmd_monitor_check() {
   local project="$1"
+  validate_project_name "$project"
   local pid_file="$(project_dir "$project")/memory/manager/monitor.pid"
   local hb_file="$(project_dir "$project")/memory/manager/monitor.heartbeat"
   local now
@@ -730,6 +805,13 @@ cmd_monitor_check() {
   local pid
   pid=$(cat "$pid_file")
 
+  # PID가 숫자인지 확인
+  if ! [[ "$pid" =~ ^[0-9]+$ ]]; then
+    echo "[monitor-check] PID 파일에 잘못된 값: '$pid'. monitor.sh 재시작 중..." >&2
+    restart_monitor "$project"
+    return
+  fi
+
   # 프로세스 생존 확인
   if ! kill -0 "$pid" 2>/dev/null; then
     echo "[monitor-check] monitor.sh 프로세스 죽음 (PID: $pid). 재시작 중..."
@@ -741,6 +823,10 @@ cmd_monitor_check() {
   if [ -f "$hb_file" ]; then
     local hb_time
     hb_time=$(cat "$hb_file")
+    if ! [[ "$hb_time" =~ ^[0-9]+$ ]]; then
+      echo "[monitor-check] heartbeat 파일에 잘못된 값. 프로세스 확인 필요."
+      return
+    fi
     local hb_age=$((now - hb_time))
     if [ "$hb_age" -gt 90 ]; then
       echo "[monitor-check] heartbeat ${hb_age}초 전 (좀비). 강제 종료 후 재시작..."
@@ -772,6 +858,7 @@ restart_monitor() {
 
 cmd_shutdown() {
   local project="$1"
+  validate_project_name "$project"
   local sess
   sess="$(session_name "$project")"
 
@@ -802,7 +889,7 @@ cmd_shutdown() {
   if [ -f "$pid_file" ]; then
     local pid
     pid=$(cat "$pid_file")
-    if kill -0 "$pid" 2>/dev/null; then
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
       kill "$pid"
       echo "monitor.sh 종료됨 (PID: $pid)"
     fi
@@ -825,6 +912,7 @@ cmd_shutdown() {
 
 cmd_status() {
   local project="$1"
+  validate_project_name "$project"
   local sess
   sess="$(session_name "$project")"
   local now
@@ -842,7 +930,8 @@ cmd_status() {
       if [ -n "$win_activity" ] && [ "$win_activity" != "0" ]; then
         idle_sec=$((now - win_activity))
         local idle_min=$((idle_sec / 60))
-        echo "  ${win_name} (idle: ${idle_min}분 ${idle_sec}초)"
+        local idle_rem=$((idle_sec % 60))
+        echo "  ${win_name} (idle: ${idle_min}분 ${idle_rem}초)"
       else
         echo "  ${win_name} (idle: 알 수 없음)"
       fi
@@ -856,16 +945,22 @@ cmd_status() {
   if [ -f "$pid_file" ]; then
     local pid
     pid=$(cat "$pid_file")
-    if kill -0 "$pid" 2>/dev/null; then
+    if ! [[ "$pid" =~ ^[0-9]+$ ]]; then
+      echo "[monitor] PID 파일에 잘못된 값: '$pid'"
+    elif kill -0 "$pid" 2>/dev/null; then
       local hb_file="$(project_dir "$project")/memory/manager/monitor.heartbeat"
       if [ -f "$hb_file" ]; then
         local hb_time
         hb_time=$(cat "$hb_file")
-        local hb_age=$((now - hb_time))
-        if [ "$hb_age" -gt 90 ]; then
-          echo "[monitor] 실행 중 (PID: $pid) -- WARNING: heartbeat ${hb_age}초 전 (좀비 가능성)"
+        if [[ "$hb_time" =~ ^[0-9]+$ ]]; then
+          local hb_age=$((now - hb_time))
+          if [ "$hb_age" -gt 90 ]; then
+            echo "[monitor] 실행 중 (PID: $pid) -- WARNING: heartbeat ${hb_age}초 전 (좀비 가능성)"
+          else
+            echo "[monitor] 실행 중 (PID: $pid, heartbeat: ${hb_age}초 전)"
+          fi
         else
-          echo "[monitor] 실행 중 (PID: $pid, heartbeat: ${hb_age}초 전)"
+          echo "[monitor] 실행 중 (PID: $pid, heartbeat 파일에 잘못된 값)"
         fi
       else
         echo "[monitor] 실행 중 (PID: $pid, heartbeat 파일 없음)"
@@ -875,21 +970,6 @@ cmd_status() {
     fi
   else
     echo "[monitor] 미시작"
-  fi
-
-  # mailbox 상태
-  local mailbox_dir="$(project_dir "$project")/workspace/shared/mailbox"
-  if [ -d "$mailbox_dir" ]; then
-    echo "[mailbox]"
-    for role_dir in "$mailbox_dir"/*/; do
-      local role
-      role=$(basename "$role_dir")
-      local new_count
-      new_count=$(find "$role_dir/new" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
-      local cur_count
-      cur_count=$(find "$role_dir/cur" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
-      echo "  ${role}: new=${new_count}, cur=${cur_count}"
-    done
   fi
 
   # sessions.md 출력
@@ -911,6 +991,8 @@ if [ $# -lt 2 ]; then
   echo "  orchestrator.sh boot           {project}" >&2
   echo "  orchestrator.sh dispatch       {role} {task-file} {project}" >&2
   echo "  orchestrator.sh dual-dispatch  {role} {task-file} {project}" >&2
+  echo "  orchestrator.sh spawn          {role} {window-name} {project} [extra-msg]" >&2
+  echo "  orchestrator.sh kill-agent     {window-name} {project}" >&2
   echo "  orchestrator.sh shutdown       {project}" >&2
   echo "  orchestrator.sh status         {project}" >&2
   echo "  orchestrator.sh reboot         {target} {project}" >&2
@@ -939,6 +1021,14 @@ case "$command" in
     [ $# -lt 3 ] && { echo "Usage: orchestrator.sh dual-dispatch {role} {task-file} {project}" >&2; exit 1; }
     cmd_dual_dispatch "$1" "$2" "$3"
     ;;
+  spawn)
+    [ $# -lt 3 ] && { echo "Usage: orchestrator.sh spawn {role} {window-name} {project} [extra-msg]" >&2; exit 1; }
+    cmd_spawn "$1" "$2" "$3" "${4:-}"
+    ;;
+  kill-agent)
+    [ $# -lt 2 ] && { echo "Usage: orchestrator.sh kill-agent {window-name} {project}" >&2; exit 1; }
+    cmd_kill_agent "$1" "$2"
+    ;;
   shutdown)
     [ $# -lt 1 ] && { echo "Usage: orchestrator.sh shutdown {project}" >&2; exit 1; }
     cmd_shutdown "$1"
@@ -961,7 +1051,7 @@ case "$command" in
     ;;
   *)
     echo "Unknown command: $command" >&2
-    echo "Available: boot-manager, boot, dispatch, dual-dispatch, shutdown, status, reboot, refresh, monitor-check" >&2
+    echo "Available: boot-manager, boot, dispatch, dual-dispatch, spawn, kill-agent, shutdown, status, reboot, refresh, monitor-check" >&2
     exit 1
     ;;
 esac

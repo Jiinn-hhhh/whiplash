@@ -23,7 +23,7 @@
 - **구조**: `agents/`(정의, immutable) + `domains/`(도메인, immutable) + `projects/`(런타임, gitignored)
 - **각 에이전트**: `profile.md`(역할) + `techniques/`(방법론) + `tools/`(자동화)
 - **실행 모드**: solo(tmux 단일 백엔드) / dual(Claude Code + Codex 이중 실행)
-- **소통**: mailbox(실시간 알림) + 토론/회의/공지(구조화 문서)
+- **소통**: notify(실시간 알림) + 토론/회의/공지(구조화 문서)
 
 상세 아키텍처: `agents/common/README.md`
 
@@ -77,7 +77,6 @@ whiplash/
         │   └── {role}.md        #     Role-specific project guidelines
         ├── workspace/           #   Active work in progress
         │   ├── shared/          #     Cross-team discussions, meetings, announcements
-        │   │   └── mailbox/     #     Real-time agent notifications (Maildir pattern)
         │   └── teams/           #     Team-internal workspaces
         ├── memory/              #   Accumulated state
         │   ├── {role}/          #     Agent personal notes
@@ -127,9 +126,9 @@ Two execution modes (configured per-project in project.md):
 **Solo mode** (tmux-based):
 - Each agent runs in its own tmux window within session `whiplash-{project}`
 - Manager and all sub-agents use the same backend (Claude Code or Codex)
-- Agents communicate via mailbox (Maildir pattern: tmp/ → new/ → deliver → delete)
-- monitor.sh polls mailboxes and delivers notifications via tmux send-keys
-- Key tools: `orchestrator.sh`, `monitor.sh`, `mailbox.sh`
+- Agents communicate via notify.sh (tmux direct delivery: load-buffer + paste-buffer)
+- monitor.sh runs health checks (crash detection, hung detection)
+- Key tools: `orchestrator.sh`, `monitor.sh`, `notify.sh`
 
 **Dual mode** (tmux-based):
 - Same task runs on two backends (Claude Code + Codex) simultaneously

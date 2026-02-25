@@ -93,7 +93,7 @@ Claude Code의 서브에이전트, 팀 생성(TeamCreate), 병렬 태스크 등 
 2. `common/project-context.md`를 읽는다 — 프로젝트 컨벤션.
 3. 자기 에이전트 폴더의 `profile.md`를 읽는다 — 역할 정의.
 4. `projects/{name}/project.md`를 읽는다 — 현재 프로젝트 확인.
-5. `domains/{domain}/context.md`를 읽는다 — 도메인 배경.
+5. (해당 파일이 존재하는 경우) `domains/{domain}/context.md`를 읽는다 — 도메인 배경.
 6. (해당 시) `domains/{domain}/{role}.md`를 읽는다 — 도메인 특화 지침.
 7. (해당 시) `team/{role}.md`를 읽는다 — 프로젝트 특화 지침.
 8. `memory/knowledge/index.md`를 읽는다 — 프로젝트 지식 지도.
