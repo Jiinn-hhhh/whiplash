@@ -177,11 +177,11 @@ init_mailbox() {
   exec_mode="$(get_exec_mode "$project")"
 
   for role in manager researcher developer monitoring; do
-    mkdir -p "$shared_dir/$role"/{tmp,new,cur}
+    mkdir -p "$shared_dir/$role"/{tmp,new}
     # dual 모드이고 monitoring이 아닌 역할은 backend별 mailbox도 생성
     if [ "$exec_mode" = "dual" ] && [ "$role" != "manager" ] && [ "$role" != "monitoring" ]; then
-      mkdir -p "$shared_dir/${role}-claude"/{tmp,new,cur}
-      mkdir -p "$shared_dir/${role}-codex"/{tmp,new,cur}
+      mkdir -p "$shared_dir/${role}-claude"/{tmp,new}
+      mkdir -p "$shared_dir/${role}-codex"/{tmp,new}
     fi
   done
   echo "mailbox 디렉토리 초기화 완료 (mode: ${exec_mode})"

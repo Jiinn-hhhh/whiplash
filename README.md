@@ -134,7 +134,7 @@ tmux 세션: whiplash-{project}
 ```bash
 bash agents/manager/tools/orchestrator.sh boot-manager {project}  # Manager 부팅
 bash agents/manager/tools/orchestrator.sh boot {project}          # 팀원 부팅
-bash agents/manager/tools/orchestrator.sh dispatch {role} {task} {project}  # 태스크 전달
+bash agents/manager/tools/orchestrator.sh dispatch {role} {task-file} {project}  # 태스크 전달
 bash agents/manager/tools/orchestrator.sh status {project}        # 상태 확인
 bash agents/manager/tools/orchestrator.sh shutdown {project}      # 전체 종료
 ```
@@ -303,7 +303,7 @@ whiplash/
 
 | 도메인 | 설명 |
 |--------|------|
-| deep-learning | 딥러닝 프로젝트 (context.md + researcher.md) |
+| deep-learning | 딥러닝 프로젝트 (context.md + researcher.md + developer.md + monitoring.md) |
 
 ---
 

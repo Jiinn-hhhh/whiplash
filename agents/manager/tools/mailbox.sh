@@ -11,7 +11,7 @@
 #   project   -- 프로젝트 이름
 #   from      -- 발신자 역할 (manager, researcher, developer, monitoring)
 #   to        -- 수신자 역할
-#   kind      -- 메시지 종류: task_complete | status_update | need_input | escalation | agent_ready
+#   kind      -- 메시지 종류: task_complete | status_update | need_input | escalation | agent_ready | reboot_notice | consensus_request
 #   priority  -- normal | urgent
 #   subject   -- 제목 (한 줄)
 #   content   -- 본문 (짧게. 상세 내용은 별도 문서에 두고 참조)

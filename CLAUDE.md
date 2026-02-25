@@ -62,7 +62,9 @@ whiplash/
 │   ├── README.md                #   Domain system explanation
 │   └── deep-learning/           #   Example domain
 │       ├── context.md           #     Domain background, terminology, principles
-│       └── researcher.md        #     Researcher domain-specific guidelines
+│       ├── researcher.md        #     Researcher domain-specific guidelines
+│       ├── developer.md         #     Developer domain-specific guidelines
+│       └── monitoring.md        #     Monitoring domain-specific guidelines
 │
 ├── feedback/                    # Framework improvement insights (independent module)
 │   ├── guide.md                 #   Recording rules
@@ -125,7 +127,7 @@ Two execution modes (configured per-project in project.md):
 **Solo mode** (tmux-based):
 - Each agent runs in its own tmux window within session `whiplash-{project}`
 - Manager and all sub-agents use the same backend (Claude Code or Codex)
-- Agents communicate via mailbox (Maildir pattern: tmp/ → new/ → cur/)
+- Agents communicate via mailbox (Maildir pattern: tmp/ → new/ → deliver → delete)
 - monitor.sh polls mailboxes and delivers notifications via tmux send-keys
 - Key tools: `orchestrator.sh`, `monitor.sh`, `mailbox.sh`
 

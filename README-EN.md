@@ -134,7 +134,7 @@ These commands are run internally by the Manager agent. Users do not run them di
 ```bash
 bash agents/manager/tools/orchestrator.sh boot-manager {project}  # Boot Manager
 bash agents/manager/tools/orchestrator.sh boot {project}          # Boot agents
-bash agents/manager/tools/orchestrator.sh dispatch {role} {task} {project}  # Send task
+bash agents/manager/tools/orchestrator.sh dispatch {role} {task-file} {project}  # Send task
 bash agents/manager/tools/orchestrator.sh status {project}        # Check status
 bash agents/manager/tools/orchestrator.sh shutdown {project}      # Shutdown all
 ```
@@ -303,7 +303,7 @@ Details: `domains/README.md`
 
 | Domain | Description |
 |--------|-------------|
-| deep-learning | Deep learning projects (context.md + researcher.md) |
+| deep-learning | Deep learning projects (context.md + researcher.md + developer.md + monitoring.md) |
 
 ---
 

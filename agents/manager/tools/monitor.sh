@@ -51,7 +51,7 @@ send_crash_alert() {
     echo "[monitor] MANAGER CRASH: $message" >&2
   else
     bash "$TOOLS_DIR/mailbox.sh" "$PROJECT" monitor manager \
-      escalation urgent "${role} 크래시" "$message"
+      reboot_notice urgent "${role} 크래시" "$message"
   fi
 }
 

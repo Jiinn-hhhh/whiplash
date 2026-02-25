@@ -36,7 +36,6 @@ projects/{name}/
         {role}/
           tmp/               #   작성 중 (원자적 전달용)
           new/               #   도착한 메시지
-          cur/               #   처리된 메시지
     teams/
       research/
       developer/
