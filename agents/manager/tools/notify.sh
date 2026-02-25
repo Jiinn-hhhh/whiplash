@@ -73,7 +73,7 @@ if tmux has-session -t "$session" 2>/dev/null; then
     trap "rm -f '$tmpfile'" EXIT
     printf '%s' "$notification" > "$tmpfile"
     # 고유 버퍼 이름으로 동시 실행 시 경합 방지
-    buf_name="notify-$$"
+    buf_name="notify-$$-${RANDOM}"
     tmux load-buffer -b "$buf_name" "$tmpfile"
     tmux paste-buffer -b "$buf_name" -t "$tmux_target" -d
     tmux send-keys -t "$tmux_target" Enter

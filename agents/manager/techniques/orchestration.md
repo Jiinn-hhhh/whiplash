@@ -11,7 +11,7 @@
 | 모드 | 설명 | 결정 시점 |
 |------|------|-----------|
 | 단독 (solo) | Manager가 역할별 에이전트 1개씩 실행 | 온보딩 시 유저 선택 |
-| 멀티 (dual) | 같은 태스크를 두 백엔드(Claude Code + Codex CLI)로 이중 실행 → Manager가 합의 도출 | 온보딩 시 유저 선택 |
+| 멀티 (dual, 실험적) | 같은 태스크를 두 백엔드(Claude Code + Codex CLI)로 이중 실행 → Manager가 합의 도출. **E2E 미검증** — Codex CLI 호환성 미확인 | 온보딩 시 유저 선택 |
 
 - project.md `운영 방식`에 `실행 모드: solo | dual` 기록
 - Solo와 Dual 모드를 모두 지원한다. `orchestrator.sh boot` 시 project.md에서 실행 모드를 파싱하여 자동 분기한다.

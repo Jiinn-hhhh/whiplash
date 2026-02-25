@@ -2,5 +2,8 @@
 projects/*
 !projects/.gitkeep
 
+# 프레임워크 외부 프로젝트
+pixel-agents/
+
 # OS
 .DS_Store

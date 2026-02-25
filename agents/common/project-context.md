@@ -37,6 +37,12 @@ projects/{name}/
       developer/
   memory/                  # 축적된 상태
     manager/
+      sessions.md          #   활성 세션 추적 (orchestrator.sh 자동 관리)
+      monitor.pid          #   monitor.sh PID
+      monitor.heartbeat    #   monitor.sh heartbeat
+      logs/                #   monitor 로그, notify 감사 로그
+      reboot-counts/       #   에이전트별 리부팅 카운터
+      hung-flags/          #   에이전트별 hung 감지 플래그
     researcher/
     developer/
     monitoring/

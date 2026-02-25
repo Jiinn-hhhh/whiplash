@@ -32,7 +32,7 @@ cd whiplash
 | Mode | Description | Pros | Cons | Cost |
 |------|-------------|------|------|------|
 | **solo** | Manager runs one agent per role (tmux-based) | Lowest cost, stable | No concurrency | 1x |
-| **dual** | Same task runs on two backends (Claude Code + Codex) | Diverse perspectives, consensus-based | Complex infra | 2x |
+| **dual** (experimental) | Same task runs on two backends (Claude Code + Codex) | Diverse perspectives, consensus-based | Complex infra, not E2E tested | 2x |
 
 #### 3. Start
 

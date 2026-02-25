@@ -31,6 +31,22 @@ validate_project_name() {
   fi
 }
 
+sed_inplace() {
+  if [[ "$OSTYPE" == darwin* ]]; then
+    sed -i '' "$@"
+  else
+    sed -i "$@"
+  fi
+}
+
+validate_window_name() {
+  local name="$1"
+  if [ -z "$name" ] || [[ "$name" =~ [^a-zA-Z0-9_-] ]]; then
+    echo "Error: 잘못된 window 이름: '$name' (영문, 숫자, -, _ 만 허용)" >&2
+    exit 1
+  fi
+}
+
 session_name() {
   echo "whiplash-$1"
 }
@@ -97,6 +113,9 @@ get_max_turns() {
 get_domain() {
   local project="$1"
   local project_md="$(project_dir "$project")/project.md"
+  if [ ! -f "$project_md" ]; then
+    return 0
+  fi
   { grep -i "domain" "$project_md" 2>/dev/null || true; } \
     | head -1 \
     | sed 's/.*: *//' \
@@ -215,9 +234,13 @@ mark_session_status() {
   sf="$(sessions_file "$project")"
   if [ -f "$sf" ]; then
     if [ -n "$backend" ]; then
-      sed -i '' "s/| ${role} | ${backend} \(.*\)| ${old_status} |/| ${role} | ${backend} \1| ${new_status} |/g" "$sf"
+      awk -v role=" $role " -v backend=" $backend " -v old=" $old_status " -v new=" $new_status " \
+        'BEGIN{FS=OFS="|"} $2==role && $3==backend && $6==old {$6=new} 1' \
+        "$sf" > "${sf}.tmp" && mv "${sf}.tmp" "$sf"
     else
-      sed -i '' "s/| ${role} \(.*\)| ${old_status} |/| ${role} \1| ${new_status} |/g" "$sf"
+      awk -v role=" $role " -v old=" $old_status " -v new=" $new_status " \
+        'BEGIN{FS=OFS="|"} $2==role && $6==old {$6=new} 1' \
+        "$sf" > "${sf}.tmp" && mv "${sf}.tmp" "$sf"
     fi
   fi
 }
@@ -228,7 +251,7 @@ close_all_sessions() {
   local sf
   sf="$(sessions_file "$project")"
   if [ -f "$sf" ]; then
-    sed -i '' 's/| active |/| closed |/g' "$sf"
+    sed_inplace 's/| active |/| closed |/g' "$sf"
   fi
 }
 
@@ -340,6 +363,7 @@ cmd_spawn() {
   local project="$3"
   local extra_msg="${4:-}"
   validate_project_name "$project"
+  validate_window_name "$window_name"
   local sess
   sess="$(session_name "$project")"
 
@@ -375,6 +399,7 @@ cmd_kill_agent() {
   local window_name="$1"
   local project="$2"
   validate_project_name "$project"
+  validate_window_name "$window_name"
   local sess
   sess="$(session_name "$project")"
 
@@ -399,7 +424,7 @@ cmd_kill_agent() {
   local sf
   sf="$(sessions_file "$project")"
   if [ -f "$sf" ]; then
-    sed -i '' "s/| ${sess}:${window_name} | active |/| ${sess}:${window_name} | closed |/g" "$sf"
+    sed_inplace "s/| ${sess}:${window_name} | active |/| ${sess}:${window_name} | closed |/g" "$sf"
   fi
   echo "=== ${window_name} 종료 완료 ==="
 }
