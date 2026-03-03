@@ -23,6 +23,7 @@
 whiplash/
   agents/                    # 프레임워크 정의 (불변, git tracked)
   domains/                   # 도메인 특화 정의 (불변, git tracked)
+  scripts/                   # 인프라 스크립트 (orchestrator, monitor, notify 등)
   projects/                  # 프로젝트별 런타임 데이터 (가변, gitignored)
     {project-name}/
       project.md             #   프로젝트 정의 (이름, 목표, 도메인)
@@ -43,7 +44,7 @@ whiplash/
       reports/               #   사용자 열람 전용 (에이전트는 쓰기만, 읽기 참조 금지)
 ```
 
-- Git tracked = `agents/` + `domains/`. 나머지 전부 = `projects/`.
+- Git tracked = `agents/` + `domains/` + `scripts/`. 런타임 = `projects/`.
 - 에이전트 문서의 workspace/, memory/, reports/ 경로는 **현재 프로젝트 기준 상대 경로**로 해석한다.
 - 상세: [project-context.md](project-context.md), [communication.md](communication.md) §1
 
@@ -60,14 +61,13 @@ whiplash/
 ### Append-only 소통
 다른 에이전트가 쓴 내용을 수정/삭제하지 않는다. 자기 섹션만 추가한다.
 
-### 세 레이어 분리
+### 레이어 분리
 | 레이어 | 내용 | 변경 빈도 |
 |--------|------|-----------|
 | `profile.md` | **정의** — 역할, 규칙, 원칙 (무엇을/왜) | 안정적 |
 | `techniques/` | **방법론** — 자연어 절차 (어떻게) | 자유롭게 개선 |
-| `tools/` | **자동화** — 미리 짜둔 코드, 스크립트, 설정 (실행) | 필요 시 추가 |
-
 - 상위 레이어가 변하지 않아도 하위 레이어는 독립적으로 개선할 수 있다.
+- 프레임워크 인프라 스크립트(`orchestrator.sh`, `monitor.sh`, `notify.sh`, `log.py`)는 `scripts/`에 위치한다.
 
 ### 백엔드 네이티브 기능 적극 활용
 Claude Code의 서브에이전트, 팀 생성(TeamCreate), 병렬 태스크 등 백엔드가 제공하는 기능을 적극적으로 활용한다. Codex CLI도 마찬가지. 프레임워크가 모든 것을 재발명하지 않는다 — 백엔드가 잘하는 것은 백엔드에 맡긴다.
@@ -101,7 +101,7 @@ Claude Code의 서브에이전트, 팀 생성(TeamCreate), 병렬 태스크 등 
 새 에이전트를 정의할 때:
 1. [agent-spec.md](agent-spec.md)의 양식에 따라 `agents/{role}/profile.md`를 작성한다.
 2. `agents/{role}/techniques/`에 방법론을 자연어 절차로 작성한다.
-3. 필요 시 `agents/{role}/tools/`에 코드/스크립트/설정을 추가한다.
+3. 프레임워크 인프라 스크립트는 `scripts/`에 위치한다.
 
 ---
 
@@ -111,7 +111,7 @@ Claude Code의 서브에이전트, 팀 생성(TeamCreate), 병렬 태스크 등 
 |------|------|------|
 | 지도를 줘라, 백과사전을 주지 마라 | OpenAI | README.md와 index.md를 ~100줄 지도로 유지 |
 | 컨텍스트는 줄일수록 좋다 | OpenAI, MARS | 배경 지식 요약 형태, 깊이 참고는 on-demand |
-| 3-folder 분리 | 프레임워크 설계 | agents/(불변) + domains/(불변) + projects/(가변) |
+| 폴더 분리 | 프레임워크 설계 | agents/(불변) + domains/(불변) + scripts/(인프라) + projects/(가변) |
 | 프로젝트별 격리 | 프레임워크 설계 | 각 프로젝트의 workspace/memory/reports가 독립 |
 | 도메인 보충 원칙 | 프레임워크 설계 | 도메인 파일은 기본 규칙을 보충, 교체 아님 |
 | 교훈 K_m=30개 제한 + 중복 제거 | MARS | 활성 교훈 상한 + 중복 제거 규칙 |
@@ -119,4 +119,4 @@ Claude Code의 서브에이전트, 팀 생성(TeamCreate), 병렬 태스크 등 
 | Append-only 소통 | 프레임워크 설계 | 다른 에이전트의 글 수정 금지 |
 | 안티패턴 명시적 금지 | MARS | 하면 안 되는 것을 명확히 기술 |
 | 근거 제시 의무 | MARS, 6원칙 | 모든 결정/산출물에 이유 명시 |
-| 세 레이어 분리 | 프레임워크 설계 | profile.md(정의) → techniques/(방법론) → tools/(자동화) |
+| 레이어 분리 | 프레임워크 설계 | profile.md(정의) → techniques/(방법론). 인프라 스크립트는 scripts/ |

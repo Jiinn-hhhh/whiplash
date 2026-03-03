@@ -53,6 +53,7 @@ case "$priority" in
 esac
 
 repo_root="$(git rev-parse --show-toplevel)"
+TOOLS_DIR="$repo_root/scripts"
 session="whiplash-${project}"
 tmux_target="${session}:${to}"
 
@@ -68,27 +69,46 @@ notification="${prefix}
 # tmux 직접 전달 (fire-and-forget)
 if tmux has-session -t "$session" 2>/dev/null; then
   if tmux list-windows -t "$session" -F '#{window_name}' | grep -q "^${to}$"; then
+    # claude 프로세스 생존 확인
+    pane_pid=$(tmux list-panes -t "$tmux_target" -F '#{pane_pid}' 2>/dev/null | head -1)
+    if [ -n "$pane_pid" ] && ! pgrep -P "$pane_pid" claude >/dev/null 2>&1; then
+      echo "Warning: ${to} 윈도우에 claude 프로세스 없음. 전달 건너뜀." >&2
+      python3 "$TOOLS_DIR/log.py" message "$project" "$from" "$to" "$kind" "$priority" "$subject" skipped --reason "no claude process" || true
+      exit 0
+    fi
+
     tmpfile=$(mktemp)
     # shellcheck disable=SC2064
     trap "rm -f '$tmpfile'" EXIT
     printf '%s' "$notification" > "$tmpfile"
     # 고유 버퍼 이름으로 동시 실행 시 경합 방지
     buf_name="notify-$$-${RANDOM}"
-    tmux load-buffer -b "$buf_name" "$tmpfile"
-    tmux paste-buffer -b "$buf_name" -t "$tmux_target" -d
-    tmux send-keys -t "$tmux_target" Enter
+    if ! tmux load-buffer -b "$buf_name" "$tmpfile" 2>/dev/null; then
+      echo "Warning: tmux load-buffer 실패. 전달 건너뜀." >&2
+      rm -f "$tmpfile"
+      trap - EXIT
+      exit 1
+    fi
+    if ! tmux paste-buffer -b "$buf_name" -t "$tmux_target" -d 2>/dev/null; then
+      echo "Warning: tmux paste-buffer 실패. 전달 건너뜀." >&2
+      tmux delete-buffer -b "$buf_name" 2>/dev/null || true
+      rm -f "$tmpfile"
+      trap - EXIT
+      exit 1
+    fi
+    if ! tmux send-keys -t "$tmux_target" Enter 2>/dev/null; then
+      echo "Warning: tmux send-keys 실패." >&2
+    fi
     rm -f "$tmpfile"
     trap - EXIT
+    python3 "$TOOLS_DIR/log.py" message "$project" "$from" "$to" "$kind" "$priority" "$subject" delivered || true
   else
     echo "Warning: ${to} 윈도우가 없다. 알림 전달 건너뜀." >&2
+    python3 "$TOOLS_DIR/log.py" message "$project" "$from" "$to" "$kind" "$priority" "$subject" skipped --reason "no window" || true
   fi
 else
   echo "Warning: tmux 세션 '${session}'이 없다. 알림 전달 건너뜀." >&2
+  python3 "$TOOLS_DIR/log.py" message "$project" "$from" "$to" "$kind" "$priority" "$subject" skipped --reason "no session" || true
 fi
-
-# 감사 로그 기록
-audit_log="$repo_root/projects/$project/memory/manager/logs/notify-audit.log"
-mkdir -p "$(dirname "$audit_log")"
-echo "$(date -Iseconds) | ${from} → ${to} | ${kind} | ${priority} | ${subject}" >> "$audit_log"
 
 echo "전달 완료: ${from} → ${to} | ${kind}"

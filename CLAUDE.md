@@ -20,8 +20,8 @@
 **Whiplash** — AI 에이전트 팀 거버넌스 프레임워크 (한국어). 마크다운 문서로 역할, 절차, 소통 규칙을 정의하면 에이전트가 자율 협업한다.
 
 - **에이전트**: Onboarding → Manager → Developer, Researcher, Monitoring
-- **구조**: `agents/`(정의, immutable) + `domains/`(도메인, immutable) + `projects/`(런타임, gitignored)
-- **각 에이전트**: `profile.md`(역할) + `techniques/`(방법론) + `tools/`(자동화)
+- **구조**: `agents/`(정의, immutable) + `domains/`(도메인, immutable) + `scripts/`(인프라 스크립트) + `projects/`(런타임, gitignored)
+- **각 에이전트**: `profile.md`(역할) + `techniques/`(방법론)
 - **실행 모드**: solo(tmux 단일 백엔드) / dual(Claude Code + Codex 이중 실행, 실험적)
 - **소통**: notify(실시간 알림) + 토론/회의/공지(구조화 문서)
 
@@ -65,13 +65,13 @@ Two execution modes (configured per-project in project.md):
 - Manager and all sub-agents use the same backend (Claude Code or Codex)
 - Agents communicate via notify.sh (tmux direct delivery: load-buffer + paste-buffer)
 - monitor.sh runs health checks (crash detection, hung detection)
-- Key tools: `orchestrator.sh`, `monitor.sh`, `notify.sh`
+- Key scripts: `scripts/orchestrator.sh`, `scripts/monitor.sh`, `scripts/notify.sh`
 
 **Dual mode** (tmux-based):
 - Same task runs on two backends (Claude Code + Codex) simultaneously
 - Manager coordinates consensus between both results
 - Monitoring runs solo (no dual needed)
-- Key tools: same as solo + `dual-dispatch`
+- Key scripts: same as solo + `dual-dispatch`
 
 See `agents/manager/techniques/orchestration.md`
 
@@ -104,8 +104,7 @@ See `agents/manager/techniques/orchestration.md`
 1. Follow `agents/common/agent-spec.md` template
 2. Create `agents/{role}/profile.md`
 3. Add procedures in `agents/{role}/techniques/*.md`
-4. Add automation code in `agents/{role}/tools/` as needed
-5. Agent's personal memory goes in `projects/{name}/memory/{role}/` (created at runtime)
+4. Agent's personal memory goes in `projects/{name}/memory/{role}/` (created at runtime)
 
 ## Adding a New Domain
 

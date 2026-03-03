@@ -17,7 +17,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-TOOLS_DIR="$REPO_ROOT/agents/manager/tools"
+TOOLS_DIR="$REPO_ROOT/scripts"
 
 # ──────────────────────────────────────────────
 # 유틸리티 함수
@@ -81,33 +81,11 @@ get_active_agents() {
 get_model() {
   local role="$1"
   case "$role" in
-    researcher) echo "opus" ;;
-    developer)  echo "sonnet" ;;
     monitoring) echo "haiku" ;;
-    *)          echo "sonnet" ;;
+    *)          echo "opus" ;;
   esac
 }
 
-# 역할별 allowedTools
-get_allowed_tools() {
-  local role="$1"
-  case "$role" in
-    monitoring) echo "Read,Glob,Grep,Bash" ;;
-    *)          echo "Read,Glob,Grep,Write,Edit,Bash,WebSearch,WebFetch" ;;
-  esac
-}
-
-# 역할별 max-turns
-get_max_turns() {
-  local role="$1"
-  case "$role" in
-    monitoring) echo "10" ;;
-    manager)    echo "20" ;;
-    researcher) echo "30" ;;
-    developer)  echo "40" ;;
-    *)          echo "20" ;;
-  esac
-}
 
 # 역할별 도메인 파일 경로 (있으면 반환)
 get_domain() {
@@ -163,13 +141,13 @@ build_boot_message() {
 8. memory/knowledge/index.md 읽기
 9. 알림 보내기 (상황별 예시):
    태스크 완료:
-     bash agents/manager/tools/notify.sh ${project} ${agent_id} manager task_complete normal "TASK-XXX 완료" "결과 요약"
+     bash scripts/notify.sh ${project} ${agent_id} manager task_complete normal "TASK-XXX 완료" "결과 요약"
    도움 필요:
-     bash agents/manager/tools/notify.sh ${project} ${agent_id} manager need_input normal "방향 선택 필요" "상세 내용"
+     bash scripts/notify.sh ${project} ${agent_id} manager need_input normal "방향 선택 필요" "상세 내용"
    긴급 블로커:
-     bash agents/manager/tools/notify.sh ${project} ${agent_id} manager escalation urgent "블로커 발생" "상세 내용"
+     bash scripts/notify.sh ${project} ${agent_id} manager escalation urgent "블로커 발생" "상세 내용"
    다른 에이전트에게:
-     bash agents/manager/tools/notify.sh ${project} ${agent_id} {대상} status_update normal "제목" "내용"
+     bash scripts/notify.sh ${project} ${agent_id} {대상} status_update normal "제목" "내용"
 
 10. 알림 받기 — 작업 중 아래 형식의 알림이 올 수 있다:
     [notify] {보낸이} → {나} | {종류}
@@ -185,7 +163,7 @@ build_boot_message() {
     - reboot_notice: 에이전트 복구 상태 확인
 ${extra}
 온보딩이 끝나면 준비 완료를 알림으로 보고해라:
-bash agents/manager/tools/notify.sh ${project} ${agent_id} manager agent_ready normal "온보딩 완료" "${agent_id} 에이전트 준비 완료"
+bash scripts/notify.sh ${project} ${agent_id} manager agent_ready normal "온보딩 완료" "${agent_id} 에이전트 준비 완료"
 BOOTMSG
 }
 
@@ -265,10 +243,6 @@ boot_single_agent() {
   sess="$(session_name "$project")"
   local model
   model="$(get_model "$role")"
-  local allowed_tools
-  allowed_tools="$(get_allowed_tools "$role")"
-  local max_turns
-  max_turns="$(get_max_turns "$role")"
   local agent_id="$window_name"
   local boot_msg
   boot_msg="$(build_boot_message "$role" "$project" "$extra_boot_msg" "$agent_id")"
@@ -282,10 +256,9 @@ boot_single_agent() {
   result=$(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude -p "$boot_msg" \
     --model "$model" \
     --output-format json \
-    --allowedTools "$allowed_tools" \
-    --max-turns "$max_turns" \
     --dangerously-skip-permissions) || {
     echo "Warning: ${window_name} claude -p 실행 실패." >&2
+    python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot_fail "$window_name" --detail reason="claude -p 실행 실패" || true
     return 1
   }
 
@@ -294,6 +267,7 @@ boot_single_agent() {
 
   if [ -z "$session_id" ] || [ "$session_id" = "null" ]; then
     echo "Warning: ${window_name} session_id 획득 실패." >&2
+    python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot_fail "$window_name" --detail reason="session_id 획득 실패" || true
     return 1
   fi
 
@@ -302,9 +276,26 @@ boot_single_agent() {
   tmux new-window -t "$sess" -n "$window_name"
   tmux send-keys -t "$tmux_target" "env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude --resume $session_id --dangerously-skip-permissions" Enter
 
+  # 부팅 확인: claude 프로세스 시작 대기 (최대 10초)
+  local boot_pane_pid
+  boot_pane_pid=$(tmux list-panes -t "$tmux_target" -F '#{pane_pid}' 2>/dev/null | head -1)
+  if [ -n "$boot_pane_pid" ]; then
+    local i
+    for i in $(seq 1 10); do
+      pgrep -P "$boot_pane_pid" claude >/dev/null 2>&1 && break
+      sleep 1
+    done
+    if ! pgrep -P "$boot_pane_pid" claude >/dev/null 2>&1; then
+      echo "Warning: ${window_name} claude 프로세스 10초 내 미시작." >&2
+      python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot_fail "$window_name" --detail reason="claude 프로세스 미시작" || true
+      return 1
+    fi
+  fi
+
   # sessions.md에 기록
   add_session_row "$project" "$role" "$session_id" "$tmux_target" "$model" "claude"
 
+  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot "$window_name" --detail session="$session_id" || true
   echo "${window_name} 부팅 완료: session=${session_id}, tmux=${tmux_target}"
   return 0
 }
@@ -339,7 +330,7 @@ boot_codex_agent() {
   tmux new-window -t "$sess" -n "$window_name"
 
   # codex 인터랙티브 시작
-  tmux send-keys -t "$tmux_target" "codex" Enter
+  tmux send-keys -t "$tmux_target" "codex --yolo" Enter
   sleep 2
 
   # 부팅 메시지 파일 읽기 지시
@@ -349,6 +340,7 @@ boot_codex_agent() {
   # sessions.md에 기록
   add_session_row "$project" "$role" "codex-interactive" "$tmux_target" "codex" "codex"
 
+  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator codex_boot "$window_name" --detail tmux="$tmux_target" || true
   echo "${window_name} 부팅 완료: tmux=${tmux_target}"
   return 0
 }
@@ -388,6 +380,7 @@ ${extra_msg}"
     echo "Error: ${window_name} 스폰 실패." >&2
     exit 1
   }
+  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_spawn "$window_name" --detail role="$role" || true
   echo "=== ${window_name} 스폰 완료 ==="
 }
 
@@ -426,6 +419,7 @@ cmd_kill_agent() {
   if [ -f "$sf" ]; then
     sed_inplace "s/| ${sess}:${window_name} | active |/| ${sess}:${window_name} | closed |/g" "$sf"
   fi
+  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_kill "$window_name" || true
   echo "=== ${window_name} 종료 완료 ==="
 }
 
@@ -453,14 +447,10 @@ cmd_boot_manager() {
   # 2. Manager 부팅 (claude -p → session_id)
   local model
   model="$(get_model "manager")"
-  local allowed_tools
-  allowed_tools="$(get_allowed_tools "manager")"
-  local max_turns
-  max_turns="$(get_max_turns "manager")"
   local extra_boot_instructions
   extra_boot_instructions=$(cat << EXTRA
 10. 온보딩 완료 후, 아래 명령으로 팀 에이전트를 부팅해라:
-    bash agents/manager/tools/orchestrator.sh boot ${project}
+    bash scripts/orchestrator.sh boot ${project}
 11. 모든 에이전트의 agent_ready 메시지를 기다려라.
 12. 팀이 준비되면 project.md의 목표를 분석하고 첫 태스크를 분배해라.
     techniques/task-distribution.md 절차를 따른다.
@@ -474,8 +464,6 @@ EXTRA
   result=$(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude -p "$boot_msg" \
     --model "$model" \
     --output-format json \
-    --allowedTools "$allowed_tools" \
-    --max-turns "$max_turns" \
     --dangerously-skip-permissions) || {
     echo "Error: Manager claude -p 실행 실패." >&2
     exit 1
@@ -496,6 +484,7 @@ EXTRA
 
   # 4. sessions.md에 기록
   add_session_row "$project" "manager" "$session_id" "$tmux_target" "$model"
+  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator manager_boot manager --detail session="$session_id" || true
 
   echo "=== Manager 부팅 완료 ==="
   echo "session_id: $session_id"
@@ -516,6 +505,7 @@ cmd_boot() {
   exec_mode="$(get_exec_mode "$project")"
 
   echo "=== ${project} 프로젝트 부팅 (mode: ${exec_mode}) ==="
+  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator project_boot_start "$project" --detail mode="$exec_mode" || true
 
   # dual 모드 시 codex 설치 확인
   if [ "$exec_mode" = "dual" ] && ! command -v codex &>/dev/null; then
@@ -566,17 +556,16 @@ cmd_boot() {
     fi
   done
 
-  # 4. monitor.sh 백그라운드 실행 (에러 로깅)
-  local log_dir="$(project_dir "$project")/memory/manager/logs"
+  # 4. monitor.sh 백그라운드 실행
+  local log_dir="$(project_dir "$project")/logs"
   mkdir -p "$log_dir"
-  # 로그 로테이션: 최근 5개만 유지
-  ls -t "$log_dir"/monitor-*.log 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
-  local log_file="$log_dir/monitor-$(date +%Y%m%d-%H%M%S).log"
-  nohup bash "$TOOLS_DIR/monitor.sh" "$project" >> "$log_file" 2>&1 &
+  nohup bash "$TOOLS_DIR/monitor.sh" "$project" >/dev/null 2>&1 &
   local monitor_pid=$!
   echo "$monitor_pid" > "$(project_dir "$project")/memory/manager/monitor.pid"
-  echo "monitor.sh 시작됨 (PID: $monitor_pid, log: $log_file)"
+  echo "monitor.sh 시작됨 (PID: $monitor_pid)"
+  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator monitor_start monitor --detail pid="$monitor_pid" || true
 
+  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator project_boot_end "$project" || true
   echo "=== 부팅 완료 ==="
   echo "tmux attach -t $sess 로 세션에 접속하라."
 }
@@ -604,6 +593,7 @@ cmd_dispatch() {
   tmux send-keys -t "$tmux_target" \
     "${task_file} 파일에 새 작업 지시가 있다. 읽고 실행해라." Enter
 
+  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator task_dispatch "$role" --detail task="$task_file" || true
   echo "dispatch 완료: ${role} ← ${task_file}"
 }
 
@@ -645,6 +635,7 @@ cmd_dual_dispatch() {
   tmux send-keys -t "${sess}:${codex_win}" \
     "${task_file} 파일에 새 작업 지시가 있다. 읽고 실행해라." Enter
 
+  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator dual_dispatch "$role" --detail task="$task_file" || true
   echo "dual-dispatch 완료: ${role} (claude + codex) ← ${task_file}"
 }
 
@@ -710,6 +701,7 @@ cmd_reboot() {
     }
   fi
 
+  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_reboot "$window_name" || true
   echo "=== ${window_name} 리부팅 완료 ==="
 }
 
@@ -761,6 +753,7 @@ cmd_refresh() {
   echo "handoff.md 작성 지시 전송..."
   tmux send-keys -t "${sess}:${window_name}" \
     "지금까지의 작업 맥락을 memory/${role}/handoff.md에 정리해라. 현재 진행 상황, 다음 할 일, 중요 결정사항을 포함해라." Enter
+  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_refresh_start "$window_name" || true
 
   # 2. 최대 2분 대기 (handoff.md 파일 생성 감시)
   echo "handoff.md 생성 대기 (최대 120초)..."
@@ -805,6 +798,7 @@ cmd_refresh() {
     }
   fi
 
+  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_refresh_end "$window_name" || true
   echo "=== ${window_name} 리프레시 완료 ==="
 }
 
@@ -855,6 +849,7 @@ cmd_monitor_check() {
     local hb_age=$((now - hb_time))
     if [ "$hb_age" -gt 90 ]; then
       echo "[monitor-check] heartbeat ${hb_age}초 전 (좀비). 강제 종료 후 재시작..."
+      python3 "$TOOLS_DIR/log.py" system "$project" orchestrator monitor_zombie monitor --detail heartbeat_age="${hb_age}s" || true
       kill "$pid" 2>/dev/null || true
       sleep 1
       restart_monitor "$project"
@@ -868,13 +863,13 @@ cmd_monitor_check() {
 
 restart_monitor() {
   local project="$1"
-  local log_dir="$(project_dir "$project")/memory/manager/logs"
+  local log_dir="$(project_dir "$project")/logs"
   mkdir -p "$log_dir"
-  local log_file="$log_dir/monitor-$(date +%Y%m%d-%H%M%S).log"
-  nohup bash "$TOOLS_DIR/monitor.sh" "$project" >> "$log_file" 2>&1 &
+  nohup bash "$TOOLS_DIR/monitor.sh" "$project" >/dev/null 2>&1 &
   local new_pid=$!
   echo "$new_pid" > "$(project_dir "$project")/memory/manager/monitor.pid"
-  echo "[monitor-check] monitor.sh 재시작 완료 (PID: $new_pid, log: $log_file)"
+  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator monitor_restart monitor --detail pid="$new_pid" || true
+  echo "[monitor-check] monitor.sh 재시작 완료 (PID: $new_pid)"
 }
 
 # ──────────────────────────────────────────────
@@ -888,6 +883,7 @@ cmd_shutdown() {
   sess="$(session_name "$project")"
 
   echo "=== ${project} 프로젝트 종료 ==="
+  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator project_shutdown "$project" || true
 
   # 1. 각 에이전트 윈도우에 /exit 전송
   if tmux has-session -t "$sess" 2>/dev/null; then

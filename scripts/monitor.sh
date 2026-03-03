@@ -6,7 +6,7 @@
 # 10분 비활성 에이전트 감지 시 Manager에게 알림.
 #
 # Usage:
-#   nohup bash monitor.sh {project} >> {log_file} 2>&1 &
+#   nohup bash monitor.sh {project} >/dev/null 2>&1 &
 #
 # 종료:
 #   orchestrator.sh shutdown이 PID를 kill하거나, 직접 kill.
@@ -25,7 +25,7 @@ if [[ "$PROJECT" == */* ]] || [[ "$PROJECT" == *..* ]] || [ -z "$PROJECT" ]; the
   exit 1
 fi
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-TOOLS_DIR="$REPO_ROOT/agents/manager/tools"
+TOOLS_DIR="$REPO_ROOT/scripts"
 SESSION="whiplash-${PROJECT}"
 HEALTH_CHECK_INTERVAL=30
 MAX_REBOOT=3
@@ -41,11 +41,11 @@ SESSION_ABSENT_COUNT=0
 send_crash_alert() {
   local role="$1" message="$2"
   if [ "$role" = "manager" ]; then
-    echo "[monitor] MANAGER CRASH: $message" >&2
+    python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor manager_crash_alert "$role" --detail message="$message" || true
   else
     bash "$TOOLS_DIR/notify.sh" "$PROJECT" monitor manager \
       reboot_notice urgent "${role} 크래시" "$message" || \
-      echo "[monitor] Warning: 크래시 알림 전달 실패 (role=${role})" >&2
+      python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor notify_delivery_fail "$role" || true
   fi
 }
 
@@ -102,6 +102,22 @@ reset_reboot_count() {
 }
 
 # ──────────────────────────────────────────────
+# 프로세스 레벨 생존 체크
+# ──────────────────────────────────────────────
+
+is_agent_alive() {
+  local win_name="$1"
+  local tmux_target="${SESSION}:${win_name}"
+  # 윈도우 존재 + claude 프로세스 생존 둘 다 확인
+  if ! tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -q "^${win_name}$"; then
+    return 1
+  fi
+  local pane_pid
+  pane_pid=$(tmux list-panes -t "$tmux_target" -F '#{pane_pid}' 2>/dev/null | head -1)
+  [ -n "$pane_pid" ] && pgrep -P "$pane_pid" claude >/dev/null 2>&1
+}
+
+# ──────────────────────────────────────────────
 # 크래시 감지 + 자동 reboot
 # ──────────────────────────────────────────────
 
@@ -109,10 +125,10 @@ check_agent_windows() {
   if ! tmux has-session -t "$SESSION" 2>/dev/null; then
     SESSION_ABSENT_COUNT=$((SESSION_ABSENT_COUNT + 1))
     if [ "$SESSION_ABSENT_COUNT" -ge 3 ]; then
-      echo "[monitor] tmux 세션 '$SESSION' 3회 연속 부재. 종료." >&2
+      python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor monitor_exit "$SESSION" --detail reason="3회 연속 세션 부재" || true
       exit 1
     fi
-    echo "[monitor] tmux 세션 '$SESSION' 부재 (${SESSION_ABSENT_COUNT}/3). 재시도 대기." >&2
+    python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor session_absent "$SESSION" --detail count="${SESSION_ABSENT_COUNT}/3" || true
     return
   fi
   SESSION_ABSENT_COUNT=0
@@ -124,27 +140,27 @@ check_agent_windows() {
   active_window_names=$(get_active_roles)
 
   for window_name in $active_window_names; do
-    if echo "$active_windows" | grep -q "^${window_name}$"; then
+    if is_agent_alive "$window_name"; then
       reset_reboot_count "$window_name"
     else
       local count
       count=$(get_reboot_count "$window_name")
 
       if [ "$count" -lt "$MAX_REBOOT" ]; then
-        echo "[monitor] ${window_name} 윈도우 없음. 자동 reboot 시도 (${count}/${MAX_REBOOT})"
+        python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor crash_detected "$window_name" --detail count="${count}/${MAX_REBOOT}" || true
         increment_reboot_count "$window_name"
 
         if bash "$TOOLS_DIR/orchestrator.sh" reboot "$window_name" "$PROJECT" 2>&1; then
-          echo "[monitor] ${window_name} reboot 성공"
+          python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor reboot_success "$window_name" --detail count="$((count + 1))/${MAX_REBOOT}" || true
           send_crash_alert "$window_name" \
             "${window_name} 에이전트 크래시 감지. 자동 reboot 성공 ($((count + 1))/${MAX_REBOOT}회)."
         else
-          echo "[monitor] ${window_name} reboot 실패"
+          python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor reboot_failed "$window_name" --detail count="$((count + 1))/${MAX_REBOOT}" || true
           send_crash_alert "$window_name" \
             "${window_name} 에이전트 크래시 감지. 자동 reboot 실패 ($((count + 1))/${MAX_REBOOT}회). 수동 개입 필요."
         fi
       else
-        echo "[monitor] ${window_name} reboot 한도 초과 (${count}/${MAX_REBOOT}). 수동 개입 필요."
+        python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor reboot_limit "$window_name" --detail count="${count}/${MAX_REBOOT}" || true
         send_crash_alert "$window_name" \
           "${window_name} 에이전트 reboot ${MAX_REBOOT}회 시도 후 실패. 수동 개입이 필요하다. orchestrator.sh reboot ${window_name} ${PROJECT} 로 수동 복구하라."
         echo $((MAX_REBOOT + 1)) > "$REBOOT_COUNT_DIR/${window_name}.count"
@@ -181,7 +197,7 @@ check_agent_health() {
           mkdir -p "$hung_flag_dir"
           echo "$now" > "$hung_flag"
           local idle_min=$((idle_sec / 60))
-          echo "[monitor] ${win_name} ${idle_min}분 비활성. Manager에 알림."
+          python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor hung_detected "$win_name" --detail idle_min="$idle_min" || true
           bash "$TOOLS_DIR/notify.sh" "$PROJECT" monitor manager \
             escalation normal "${win_name} 비활성 경고" \
             "${win_name} 에이전트가 ${idle_min}분간 비활성 상태다. 긴 작업 중일 수도 있으니 확인 바란다." || \
@@ -190,7 +206,7 @@ check_agent_health() {
       else
         if [ -f "$hung_flag" ]; then
           rm -f "$hung_flag"
-          echo "[monitor] ${win_name} 활동 재개. hung flag 클리어."
+          python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor hung_cleared "$win_name" || true
         fi
       fi
     fi
@@ -201,7 +217,7 @@ check_agent_health() {
 # 메인: 헬스 체크 루프
 # ──────────────────────────────────────────────
 
-echo "[monitor] 시작: project=${PROJECT}, session=${SESSION}, health_check=${HEALTH_CHECK_INTERVAL}s"
+python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor monitor_started "$SESSION" --detail interval="${HEALTH_CHECK_INTERVAL}s" || true
 
 mkdir -p "$(dirname "$HEARTBEAT_FILE")"
 

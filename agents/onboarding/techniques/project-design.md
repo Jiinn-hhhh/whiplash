@@ -193,7 +193,7 @@ Onboarding이 내부적으로 Manager를 tmux 세션에 부팅한다.
 
 ```bash
 # Onboarding이 실행 (유저가 실행하지 않음)
-bash agents/manager/tools/orchestrator.sh boot-manager {project-name}
+bash scripts/orchestrator.sh boot-manager {project-name}
 ```
 
 정상 부팅 확인 후 유저에게 안내:
