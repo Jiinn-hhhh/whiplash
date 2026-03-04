@@ -1,11 +1,11 @@
 #!/bin/bash
-# notify.sh -- tmux 직접 전달 방식의 에이전트 간 알림
+# message.sh -- tmux 직접 전달 방식의 에이전트 간 알림
 #
 # 수신자의 tmux 윈도우에 직접 전달한다.
 # tmux load-buffer + paste-buffer로 안정적인 멀티라인 전달.
 #
 # Usage:
-#   notify.sh {project} {from} {to} {kind} {priority} {subject} {content}
+#   message.sh {project} {from} {to} {kind} {priority} {subject} {content}
 #
 # Arguments:
 #   project   -- 프로젝트 이름
@@ -19,7 +19,7 @@
 set -euo pipefail
 
 if [ $# -lt 7 ]; then
-  echo "Usage: notify.sh {project} {from} {to} {kind} {priority} {subject} {content}" >&2
+  echo "Usage: message.sh {project} {from} {to} {kind} {priority} {subject} {content}" >&2
   exit 1
 fi
 

@@ -1,3 +1,7 @@
+<!-- agent-meta
+model: opus
+allowed-tools: Read,Glob,Grep,Bash,WebSearch,WebFetch
+-->
 # Agent: Manager
 
 ## 신원
@@ -26,13 +30,22 @@
 - 다른 에이전트의 텍스트를 수정/삭제하지 않는다 (append-only)
 
 ## 기억
-### 배경 지식
+### 배경 지식 (Progressive Disclosure)
+
+**필수 읽기 (Layer 1 — 온보딩 즉시)**
 - `common/README.md` — 공통 규칙
-- `common/project-context.md` — 프로젝트 컨벤션
+- 이 파일 (`agents/manager/profile.md`) — 역할 정의
 - `projects/{name}/project.md` — 현재 프로젝트 정의 (목표, 도메인)
+
+**작업 시작 시 (Layer 2)**
+- `memory/knowledge/index.md` — 지식 지도 (참조용)
+- `techniques/*.md` — 해당 작업에 필요한 방법론
 - `domains/{domain}/context.md` — 도메인 배경 (해당 시)
-- `memory/knowledge/index.md` — 지식 지도
 - `workspace/shared/announcements/` — 현재 공지 사항
+
+**필요 시 읽기 (Layer 3)**
+- `common/project-context.md` — 프로젝트 컨벤션 (경로 해석 등)
+- `team/manager.md` — 프로젝트 특화 지침 (해당 시)
 
 ### 장기 기억
 - `memory/manager/` — 개인 메모

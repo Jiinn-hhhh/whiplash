@@ -1,3 +1,7 @@
+<!-- agent-meta
+model: opus
+allowed-tools: Read,Glob,Grep,Write,Edit,Bash
+-->
 # Agent: Onboarding
 
 ## 신원

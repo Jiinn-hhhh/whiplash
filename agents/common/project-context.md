@@ -37,7 +37,7 @@ projects/{name}/
       developer/
   memory/                  # 축적된 상태
     manager/
-      sessions.md          #   활성 세션 추적 (orchestrator.sh 자동 관리)
+      sessions.md          #   활성 세션 추적 (cmd.sh 자동 관리)
       monitor.pid          #   monitor.sh PID
       monitor.heartbeat    #   monitor.sh heartbeat
       logs/                #   monitor 로그, notify 감사 로그
@@ -75,7 +75,7 @@ projects/{name}/
 # Project: {이름}
 
 ## 기본 정보
-- **Domain**: {도메인 이름} (예: deep-learning, game-dev, general)
+- **Domain** (또는 **도메인**): {도메인 이름} (예: deep-learning, game-dev, general)
 - **Started**: YYYY-MM-DD
 
 ## 목표
@@ -106,6 +106,7 @@ projects/{name}/
 - **보고 채널**: {reports/ 파일 / Slack / 이메일 / 대화 내 등}
 - **자율 범위**: {팀이 알아서 진행할 수 있는 범위 / 유저 확인이 필요한 것}
 - **긴급 알림**: {블로커 발생 시 즉시 / 모아서 보고}
+- **프레임워크 디버깅**: {on | off} (에이전트가 프레임워크 비효율을 feedback/insights.md에 기록할지 여부)
 - **기술적 전제조건**: {운영 방식 실현에 필요한 인프라, 설정 등 또는 "없음"}
 
 ## 팀 구성

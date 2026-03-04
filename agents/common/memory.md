@@ -62,12 +62,17 @@
 
 ---
 
-## 5. 아카이브
+## 5. 아카이브 (Semantic Compaction)
 
 - `memory/knowledge/archives/` — **교훈 순환 전용**.
 - 활성 30개 초과 시 밀려난 교훈만 보관한다.
 - 아카이브된 교훈도 검색 가능하지만 배경 지식에 자동 포함되지 않는다.
 - 아카이브된 교훈이 다시 필요해지면 `memory/knowledge/lessons/`로 복원할 수 있다 (활성 상한 내에서).
+
+### 아카이빙 원칙
+- **원본 보존, 요약 참조**: 아카이브된 교훈의 원본은 절대 삭제하지 않는다. `index.md`에서 1줄 요약 + archive 참조 링크를 남겨 언제든 찾아갈 수 있게 한다.
+- **인용 기반 선별**: 인용 횟수(`Cite LESSON-NNN` grep 카운트)가 적은 교훈부터 아카이브한다.
+- **구체적 절차**: `agents/manager/techniques/knowledge-management.md` §3 참조.
 
 ---
 

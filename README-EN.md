@@ -55,6 +55,47 @@ tmux attach -t whiplash-{project-name}
 
 ---
 
+## Onboarding Process
+
+When a user starts a new project, the Onboarding agent designs it through conversation. Not a survey — it identifies gaps in the user's answers and digs in naturally.
+
+<details>
+<summary>Phase 0–7 details</summary>
+
+| Phase | Description | Output |
+|-------|-------------|--------|
+| Pre-question | Execution mode selection (solo / dual) | project.md draft, directory structure |
+| 0. Existing work | Thoroughly analyze existing code/repos if any | — |
+| 1. Big picture | Project type, goal, motivation | project.md name & goal |
+| 2. Existing resources | Code, data, reference materials | project.md resources section |
+| 3. Constraints | Environment, time, budget, tech limitations | project.md constraints section |
+| 4. Success criteria | Quantitative/qualitative goals | project.md success criteria |
+| 5. Operations | Reporting frequency/channel, autonomy scope, notification verification | project.md operations section |
+| 6. Team customization | Per-agent focus adjustment (if needed) | team/{role}.md |
+| 7. Review & finalize | Full review → hand off to Manager | Manager tmux boot |
+
+**Progressive recording**: Each Phase writes to project.md immediately — nothing is deferred to the end.
+
+</details>
+
+<details>
+<summary>Phase 5: Notification channel selection + verification</summary>
+
+In Phase 5, the user is asked to choose a reporting channel. When an external channel is selected, a test notification is sent to verify actual delivery.
+
+Options:
+- `reports/` files (default, no verification needed)
+- Slack webhook → send test message, confirm receipt
+- Email → send test email, confirm receipt
+
+If delivery fails, fix the configuration immediately. **The process does not proceed without verification.**
+
+Technical prerequisites (webhook URL, email service integration, etc.) are recorded in project.md and prioritized for Developer to set up after Manager handoff.
+
+</details>
+
+---
+
 ## Core Philosophy
 
 - Using agents well is **environment engineering, not prompt engineering**.
@@ -79,13 +120,13 @@ Manager — user ↔ team hub. Creates agents, distributes tasks, coordinates, r
 <details>
 <summary>Agent details</summary>
 
-| Agent | Role | Model |
-|-------|------|-------|
-| **Onboarding** | Designs projects via user conversation. Creates project.md, hands off to Manager | - |
-| **Manager** | User ↔ team hub. Agent lifecycle, task distribution, coordination, reporting | sonnet |
-| **Researcher** | Source collection/analysis, experiments (prototype-level), direction proposals | opus |
-| **Developer** | Production code, architecture design, infrastructure | sonnet |
-| **Monitoring** | Independent observer. Infra/environment health checks | haiku |
+| Agent | Role | Model | Allowed Tools |
+|-------|------|-------|---------------|
+| **Onboarding** | Designs projects via user conversation. Creates project.md, hands off to Manager | opus | Read,Glob,Grep,Write,Edit,Bash |
+| **Manager** | User ↔ team hub. Agent lifecycle, task distribution, coordination, reporting | opus | Read,Glob,Grep,Bash,WebSearch,WebFetch |
+| **Researcher** | Source collection/analysis, experiments (prototype-level), direction proposals | opus | Read,Glob,Grep,Bash,WebSearch,WebFetch |
+| **Developer** | Production code, architecture design, infrastructure | opus | All |
+| **Monitoring** | Independent observer. Infra/environment health checks | haiku | Read,Glob,Grep,Bash |
 
 </details>
 
@@ -104,110 +145,99 @@ tmux session: whiplash-{project}
   └─ [4] researcher-2          ← dynamically spawned (on demand)
 ```
 
-<details>
-<summary>Boot flow</summary>
+**Boot** — When the user starts onboarding, the Onboarding agent designs the project (project.md) and boots Manager. Manager then boots team agents (Researcher, Developer, Monitoring) and distributes the first tasks.
 
-```
-User: "Start onboarding"
-  │
-  ▼
-Onboarding → project.md created
-  │
-  ├─ orchestrator.sh boot-manager → tmux session created
-  └─ User gets "tmux attach" instructions
-       │
-       ▼
-Manager (inside tmux, automated)
-  │
-  ├─ orchestrator.sh boot → Researcher, Developer, Monitoring booted
-  ├─ monitor.sh running in background
-  ├─ agent_ready received → first task distribution
-  └─ Team operation begins
-```
+**Communication** — Combines real-time notifications (instant delivery for task completion, status updates, etc.) with structured documents (discussions, meetings, announcements recorded as markdown).
+
+**Tasks** — Manager writes a directive and delivers it to an agent. The agent reports back upon completion. In dual mode, the same task runs on both backends and Manager drives consensus.
+
+**Dynamic spawn** — When an agent is busy with a long task, an additional instance of the same role is deployed. Each agent works in an isolated git worktree; squash merge on termination.
+
+**Failure recovery** — Health check every 30 seconds. Auto-recovery on crash (max 3 attempts), alert to Manager on 10-minute inactivity. Heartbeat monitors the monitor itself for zombie detection.
+
+<details>
+<summary>Boot technical details</summary>
+
+Onboarding runs `cmd.sh boot-manager` to boot Manager. Manager runs `cmd.sh boot` to boot the team.
 
 Per-agent boot process:
-1. `claude -p "{boot_message}" --output-format json` → session_id
-2. `tmux new-window -n {role}` → window created
-3. `claude --resume {session_id}` → interactive session starts
-4. Recorded in `sessions.md`
+1. Parse model and allowed tools from `profile.md`'s `<!-- agent-meta -->` block
+2. `claude -p "{boot_message}" --model {model} --allowedTools {tools} --output-format json` → session_id
+3. `tmux new-window -n {role}` → window created
+4. `claude --resume {session_id} --allowedTools {tools}` → interactive session starts (`--resume` doesn't inherit flags, so re-passed)
+5. Recorded in `sessions.md`
 
 </details>
 
 <details>
-<summary>Communication</summary>
+<summary>Communication technical details</summary>
 
-| Channel | Purpose | Method |
-|---------|---------|--------|
-| **Notify** (notify.sh) | Real-time status delivery | tmux direct delivery (fire-and-forget) |
-| **Discussions** (DISC-NNN.md) | Structured discussion | Markdown append-only |
-| **Meetings** (MEET-NNN.md) | 3-round debate | Position → response → synthesis |
-| **Announcements** (announcements/) | Task directives | Markdown files |
+| Channel | Implementation |
+|---------|---------------|
+| Real-time notifications | `message.sh` → tmux `load-buffer` + `paste-buffer` to recipient's window |
+| Discussions | `workspace/shared/discussions/DISC-NNN.md` (append-only) |
+| Meetings | `workspace/shared/meetings/MEET-NNN.md` (3 rounds: position → response → synthesis) |
+| Announcements | `workspace/shared/announcements/` |
 
 Notification types: task_complete, status_update, need_input, escalation, agent_ready, reboot_notice, consensus_request
 
 </details>
 
 <details>
-<summary>Task execution</summary>
+<summary>Task & spawn technical details</summary>
 
-1. Manager writes directive → `orchestrator.sh dispatch {role} {task-file}`
-2. Delivered to agent via tmux send-keys
-3. Agent completes → reports task_complete via notify.sh
-4. Dual mode: `dual-dispatch` to both backends → Manager drives consensus
-
-</details>
-
-<details>
-<summary>Dynamic spawn</summary>
-
-Spawn an additional instance of the same role when an agent is busy:
-
+Task delivery:
 ```bash
-orchestrator.sh spawn researcher researcher-2 myproject     # spawn
-orchestrator.sh kill-agent researcher-2 myproject            # terminate
+cmd.sh dispatch {role} {task-file} {project}       # single backend
+cmd.sh dual-dispatch {role} {task-file} {project}   # dual backend
 ```
+Delivered via `tmux send-keys`. Agent reports `task_complete` via `message.sh`.
 
-- Shares the same project memory/workspace. No concurrent edits to the same file
-- monitor.sh automatically watches spawned agents (including crash reboot)
-
-</details>
-
-<details>
-<summary>Failure recovery</summary>
-
-`monitor.sh` is a 30-second health-check daemon:
-
-- **Crash detection**: tmux window disappearance → `orchestrator.sh reboot` (max 3 attempts)
-- **Hung detection**: 10-minute inactivity → one-time alert to Manager (no auto-kill)
-- **Heartbeat**: writes timestamp every 30s. If 90s+ stale → zombie verdict → restart
-- **Session refresh**: when context grows too large, `orchestrator.sh refresh` → handoff to new session
+Dynamic spawn:
+```bash
+cmd.sh spawn {role} {window-name} {project}     # spawn
+cmd.sh kill-agent {window-name} {project}        # terminate
+```
+Each agent works in an isolated git worktree. Squash merge on termination. `monitor.sh` auto-watches spawned agents.
 
 </details>
 
 <details>
-<summary>CLI commands (Manager-internal)</summary>
+<summary>Failure recovery technical details</summary>
+
+`monitor.sh` is a nohup background daemon:
+
+- **Crash detection**: parses active roles from `sessions.md` → detects tmux window disappearance → `cmd.sh reboot` (max 3 attempts)
+- **Hung detection**: 10-minute inactivity → `message.sh` alert to Manager (no auto-kill). Auto-clears when activity resumes
+- **Heartbeat**: writes timestamp to `monitor.heartbeat` every 30s. Manager calls `cmd.sh monitor-check` → 90s+ stale = zombie → restart
+- **Session refresh**: when context grows too large, `cmd.sh refresh` → handoff to new session
+
+</details>
+
+<details>
+<summary>Full CLI commands (Manager-internal)</summary>
 
 These are run internally by the Manager agent. Users do not run them directly.
 
 ```bash
 # Boot/Shutdown
-orchestrator.sh boot-manager   {project}
-orchestrator.sh boot           {project}
-orchestrator.sh shutdown       {project}
+cmd.sh boot-manager   {project}
+cmd.sh boot           {project}
+cmd.sh shutdown       {project}
 
 # Tasks
-orchestrator.sh dispatch       {role} {task-file} {project}
-orchestrator.sh dual-dispatch  {role} {task-file} {project}
+cmd.sh dispatch       {role} {task-file} {project}
+cmd.sh dual-dispatch  {role} {task-file} {project}
 
 # Dynamic Spawn
-orchestrator.sh spawn          {role} {window-name} {project}
-orchestrator.sh kill-agent     {window-name} {project}
+cmd.sh spawn          {role} {window-name} {project}
+cmd.sh kill-agent     {window-name} {project}
 
 # Recovery/Management
-orchestrator.sh reboot         {target} {project}
-orchestrator.sh refresh        {target} {project}
-orchestrator.sh status         {project}
-orchestrator.sh monitor-check  {project}
+cmd.sh reboot         {target} {project}
+cmd.sh refresh        {target} {project}
+cmd.sh status         {project}
+cmd.sh monitor-check  {project}
 ```
 
 </details>
@@ -216,43 +246,26 @@ orchestrator.sh monitor-check  {project}
 
 ## Logging
 
-Infrastructure scripts automatically log to `logs/`. Agents are unaware of logging.
-
-| File | Content |
-|------|---------|
-| `logs/system.log` | Infrastructure events (boot/shutdown/crash/dispatch etc.) |
-| `logs/message.log` | Agent-to-agent message delivery history |
+Infrastructure events (agent boot, shutdown, crash, task dispatch, etc.) are automatically recorded in `system.log`. Notification delivery and failures between agents are recorded in `message.log`. Agents themselves are unaware of logging.
 
 <details>
-<summary>system.log example</summary>
+<summary>Log format + examples</summary>
 
+**system.log** — infrastructure events:
 ```
-2026-03-03 18:44:35 [info] test-project 프로젝트 부팅 시작 mode=solo
 2026-03-03 18:44:35 [info] researcher 부팅 session=abc-123
-2026-03-03 18:44:35 [info] developer 부팅 session=def-456
-2026-03-03 18:44:35 [error] monitoring 부팅 실패 reason=claude -p execution failed
-2026-03-03 18:44:35 [info] 모니터 시작 pid=12345
-2026-03-03 18:44:35 [info] researcher 태스크 전달 task=TASK-001.md
 2026-03-03 18:44:35 [warn] developer 크래시 감지 count=0/3
-2026-03-03 18:44:35 [info] developer 리부팅 성공 count=1/3
-2026-03-03 18:44:35 [error] developer 리부팅 실패 count=2/3
 2026-03-03 18:44:35 [error] developer 리부팅 한도 초과 count=3/3
-2026-03-03 18:44:35 [warn] researcher 비활성 감지 idle_min=12
-2026-03-03 18:44:35 [info] researcher 활동 재개
 2026-03-03 18:44:35 [info] test-project 프로젝트 종료
 ```
 
-</details>
-
-<details>
-<summary>message.log example</summary>
-
+**message.log** — message delivery history:
 ```
 2026-03-03 18:44:35 [delivered] researcher → manager "TASK-001 completed"
-2026-03-03 18:44:35 [delivered] developer → manager "TASK-002 implemented"
 2026-03-03 18:44:35 [skipped] manager → researcher "Direction choice needed" reason="no claude process"
-2026-03-03 18:44:35 [skipped] monitor → manager "developer crash" reason="no window"
 ```
+
+Written by: `cmd.sh` and `monitor.sh` call `log.py system`; `message.sh` calls `log.py message`.
 
 </details>
 
@@ -260,23 +273,16 @@ Infrastructure scripts automatically log to `logs/`. Agents are unaware of loggi
 <summary>Filtering with grep</summary>
 
 ```bash
-# Errors only
-grep "\[error\]" logs/system.log
-
-# Crash/reboot history
-grep -E "크래시|리부팅" logs/system.log
-
-# Failed messages
-grep "skipped" logs/message.log
-
-# Specific agent
-grep "researcher" logs/system.log
+grep "\[error\]" logs/system.log           # errors only
+grep -E "크래시|리부팅" logs/system.log     # crash/reboot history
+grep "skipped" logs/message.log            # failed messages
+grep "researcher" logs/system.log          # specific agent
 ```
 
 </details>
 
 <details>
-<summary>Auto log level</summary>
+<summary>Log level + rotation</summary>
 
 Level is auto-determined by event type:
 
@@ -286,23 +292,8 @@ Level is auto-determined by event type:
 | **warn** | Crash detected, hung detected, agent kill, monitor restart, session absent, notify delivery failure |
 | **info** | Everything else (boot, dispatch, shutdown — normal operations) |
 
-Override with `--level` option.
-
-</details>
-
-<details>
-<summary>Rotation</summary>
-
-Each log file auto-rotates when exceeding 10MB:
-
-```
-system.log      ← current
-system.log.1    ← previous
-system.log.2    ← older
-system.log.3    ← oldest (deleted after)
-```
-
-Concurrent write protection: `fcntl.flock()` ensures safety when multiple scripts write simultaneously.
+Rotation: 10MB rolling with max 3 generations (`.1` → `.2` → `.3`).
+Concurrent write protection: `fcntl.flock()`.
 
 </details>
 
@@ -314,7 +305,7 @@ Concurrent write protection: `fcntl.flock()` ensures safety when multiple script
 whiplash/
 ├── agents/                      # Agent definitions (immutable, git tracked)
 ├── domains/                     # Domain-specific definitions (git tracked)
-├── scripts/                     # Infrastructure scripts (orchestrator, monitor, notify, log)
+├── scripts/                     # Infrastructure scripts (cmd, monitor, message, log)
 ├── feedback/                    # Framework improvement insights
 └── projects/                    # Per-project runtime (mutable, gitignored)
     └── {project-name}/
@@ -418,6 +409,11 @@ Details: `domains/README.md`
 | Environment Engineering | Repo structure and file conventions have more leverage than prompts |
 | 3-Folder Separation | Immutable (agents/ + domains/) and mutable (projects/) separated at folder level |
 | Context Minimization | Give a map, not an encyclopedia. Index ~100 lines, lessons capped at 30 |
+| Progressive Disclosure | Documents split into 3 layers (required/on-task/on-demand) to save context window |
+| Git Worktree Isolation | Each agent works in an independent worktree. Squash merge on termination |
+| Backpressure Gate | Self-verification required before task_complete. No unverified completion reports |
+| Semantic Compaction | Inactive lessons move to archive/ with 1-line summary reference. Originals preserved |
+| Role-based Tool Restriction | Allowed tools defined in profile.md metadata, enforced by cmd.sh via --allowedTools |
 | Harness = Competitive Edge | Changing structure yields more than changing models |
 | Fail-safe | When agents fail, improve the environment instead of having humans take over |
 
@@ -425,15 +421,21 @@ Details: `domains/README.md`
 
 ## For Agents
 
-If you are an agent, read these files in order:
+If you are an agent, use **Progressive Disclosure** — read only what you need, when you need it:
 
+**Layer 1 — Required (immediately on onboarding)**
 1. `agents/common/README.md` — common rules, onboarding procedure
-2. `agents/common/project-context.md` — project conventions
-3. Your agent's `profile.md` — role definition
-4. `projects/{name}/project.md` — current project
-5. `domains/{domain}/context.md` — domain background
-6. (If exists) `domains/{domain}/{role}.md` — domain-specific guidelines
-7. (If exists) `team/{role}.md` — project-specific guidelines
-8. `memory/knowledge/index.md` — project knowledge map
+2. Your agent's `profile.md` — role definition
+3. `projects/{name}/project.md` — current project
+
+**Layer 2 — On task start**
+4. `memory/knowledge/index.md` — knowledge map (reference only, not full read)
+5. Relevant `techniques/*.md` for the task at hand
+6. (If exists) `domains/{domain}/context.md` — domain background
+
+**Layer 3 — On demand**
+7. `agents/common/project-context.md` — path resolution conventions, when needed
+8. (If exists) `domains/{domain}/{role}.md` — domain-specific guidelines
+9. (If exists) `team/{role}.md` — project-specific guidelines
 
 If you find inefficiencies in the framework itself, read `feedback/guide.md` and record them in `feedback/insights.md`.

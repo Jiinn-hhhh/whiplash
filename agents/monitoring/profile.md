@@ -1,3 +1,7 @@
+<!-- agent-meta
+model: haiku
+allowed-tools: Read,Glob,Grep,Bash
+-->
 # Agent: Monitoring
 
 ## 신원

@@ -67,7 +67,7 @@ whiplash/
 | `profile.md` | **정의** — 역할, 규칙, 원칙 (무엇을/왜) | 안정적 |
 | `techniques/` | **방법론** — 자연어 절차 (어떻게) | 자유롭게 개선 |
 - 상위 레이어가 변하지 않아도 하위 레이어는 독립적으로 개선할 수 있다.
-- 프레임워크 인프라 스크립트(`orchestrator.sh`, `monitor.sh`, `notify.sh`, `log.py`)는 `scripts/`에 위치한다.
+- 프레임워크 인프라 스크립트(`cmd.sh`, `monitor.sh`, `message.sh`, `log.py`)는 `scripts/`에 위치한다.
 
 ### 백엔드 네이티브 기능 적극 활용
 Claude Code의 서브에이전트, 팀 생성(TeamCreate), 병렬 태스크 등 백엔드가 제공하는 기능을 적극적으로 활용한다. Codex CLI도 마찬가지. 프레임워크가 모든 것을 재발명하지 않는다 — 백엔드가 잘하는 것은 백엔드에 맡긴다.
@@ -75,10 +75,23 @@ Claude Code의 서브에이전트, 팀 생성(TeamCreate), 병렬 태스크 등 
 ### 안티패턴 명시
 에이전트 정의 시 "하면 안 되는 것"을 구체적으로 기술한다.
 
+### 역할별 도구 제한
+각 에이전트의 허용 도구가 `profile.md`의 `<!-- agent-meta -->` 블록에 정의된다. cmd.sh가 부팅 시 `--allowedTools`로 자동 적용한다. 허용되지 않은 도구는 사용 불가.
+
 ### 컨텍스트 최소화
 - `knowledge/index.md`는 ~100줄 이내의 지도로 유지한다.
 - 활성 교훈은 최대 30개. 초과 시 순환한다.
 - 상세 내용은 필요할 때 원본을 찾아 읽는다.
+
+### 프레임워크 개선 피드백
+project.md `운영 방식`에 `프레임워크 디버깅: on`이 설정된 경우, 작업 중 프레임워크 자체의 비효율(절차, 소통, 구조, 도구 등)을 발견하면 `feedback/guide.md`를 읽고 `feedback/insights.md`에 기록한다.
+
+### 문서 로딩 원칙 (Progressive Disclosure)
+필요한 문서만 필요한 시점에 읽는다. 컨텍스트 윈도우는 유한한 자원이다.
+- **Layer 1 (필수)**: common/README.md, profile.md, project.md — 온보딩 즉시 읽는다.
+- **Layer 2 (작업 시작 시)**: index.md(지도), 해당 techniques/*.md, domain context — 첫 태스크 수신 시 읽는다.
+- **Layer 3 (필요 시)**: project-context.md, domain/{role}.md, team/{role}.md, 개별 교훈 — 해당 정보가 필요할 때만 읽는다.
+- `index.md`는 **지도**다. 전체를 읽는 것이 아니라 필요한 참조를 찾아가는 용도다.
 
 ---
 
@@ -87,16 +100,24 @@ Claude Code의 서브에이전트, 팀 생성(TeamCreate), 병렬 태스크 등 
 ### 새 프로젝트 시작
 새 프로젝트를 시작할 때는 **온보딩 에이전트**(`agents/onboarding/`)가 유저와 대화하며 project.md를 설계한다. project.md가 생성되어야 다른 에이전트가 온보딩 가능하다.
 
-### 기존 프로젝트 투입
-에이전트가 기존 프로젝트에서 작업을 시작할 때:
+### 기존 프로젝트 투입 (Progressive Disclosure)
+에이전트가 기존 프로젝트에서 작업을 시작할 때, 3단계로 나누어 읽는다:
+
+**Layer 1 — 필수 (온보딩 즉시)**
 1. 이 파일(`common/README.md`)을 읽는다 — 공통 규칙.
-2. `common/project-context.md`를 읽는다 — 프로젝트 컨벤션.
-3. 자기 에이전트 폴더의 `profile.md`를 읽는다 — 역할 정의.
-4. `projects/{name}/project.md`를 읽는다 — 현재 프로젝트 확인.
-5. (해당 파일이 존재하는 경우) `domains/{domain}/context.md`를 읽는다 — 도메인 배경.
-6. (해당 시) `domains/{domain}/{role}.md`를 읽는다 — 도메인 특화 지침.
-7. (해당 시) `team/{role}.md`를 읽는다 — 프로젝트 특화 지침.
-8. `memory/knowledge/index.md`를 읽는다 — 프로젝트 지식 지도.
+2. 자기 에이전트 폴더의 `profile.md`를 읽는다 — 역할 정의.
+3. `projects/{name}/project.md`를 읽는다 — 현재 프로젝트 확인.
+
+**Layer 2 — 작업 시작 시**
+4. `memory/knowledge/index.md`를 읽는다 — 지식 지도 (참조용, 전체 읽기 아님).
+5. 해당 작업에 필요한 `techniques/*.md`를 읽는다.
+6. (해당 시) `domains/{domain}/context.md`를 읽는다 — 도메인 배경.
+
+**Layer 3 — 필요 시 (on-demand)**
+7. `common/project-context.md` — 경로 해석 등 필요 시.
+8. (해당 시) `domains/{domain}/{role}.md` — 도메인 특화 지침.
+9. (해당 시) `team/{role}.md` — 프로젝트 특화 지침.
+10. 개별 교훈/문서 — `index.md`에서 참조를 찾아 필요한 것만.
 
 새 에이전트를 정의할 때:
 1. [agent-spec.md](agent-spec.md)의 양식에 따라 `agents/{role}/profile.md`를 작성한다.

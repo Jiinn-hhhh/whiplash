@@ -37,9 +37,9 @@
 
 1. `projects/{project}/project.md`를 읽어 프로젝트 정보와 실행 모드 확인
 2. 유저에게 "{project} 프로젝트를 재개합니다" 안내
-3. `orchestrator.sh boot-manager {project}` 실행 → tmux 세션에 Manager 부팅
+3. `cmd.sh boot-manager {project}` 실행 → tmux 세션에 Manager 부팅
 4. 유저에게 tmux 접속 안내: `tmux attach -t whiplash-{project}`
-5. Manager가 tmux 안에서 `orchestrator.sh boot`으로 팀 부팅 → 작업 재개
+5. Manager가 tmux 안에서 `cmd.sh boot`으로 팀 부팅 → 작업 재개
 
 Onboarding 에이전트는 Manager 부팅 확인 후 종료한다.
 
@@ -47,9 +47,16 @@ Onboarding 에이전트는 Manager 부팅 확인 후 종료한다.
 
 유저가 새 프로젝트를 선택하면, Phase 0("기존 작업물 확인" — "이미 작업중이던 코드나 레포가 있어?")부터 시작한다. 이후 사전 질문(실행 모드) → Phase 1-7 정상 진행.
 
-### 사전 질문: 에이전트 실행 모드
+### 사전 질문 1: 프레임워크 디버깅
 
-대화 시작 시 프로젝트 내용에 들어가기 전에 먼저 물어본다.
+프로젝트 내용에 들어가기 전에 먼저 물어본다.
+
+**질문**: "프레임워크 디버깅 모드를 켤까? 켜면 에이전트들이 작업 중 프레임워크 자체의 비효율(절차, 소통, 도구 등)을 발견할 때마다 `feedback/insights.md`에 기록한다."
+
+- **켜기**: project.md `운영 방식`에 `프레임워크 디버깅: on` 기록
+- **끄기**: 기록하지 않음 (기본값)
+
+### 사전 질문 2: 에이전트 실행 모드
 
 **질문**: "클로드 코드만 사용할 건지, 멀티 백엔드(Claude Code + Codex)를 사용할 건지?"
 
@@ -161,7 +168,14 @@ Onboarding 에이전트는 Manager 부팅 확인 후 종료한다.
 
 인프라가 관련된 프로젝트(ML/DL, 서버 운영 등)는 모니터링 대상을 project.md에 기록하고, Monitoring 에이전트가 초기 설정할 수 있도록 한다.
 
-**파일 작업**: project.md에 운영 방식 섹션을 기록한다. (보고 빈도, 채널, 자율 범위, 기술적 전제조건, 실행 환경)
+**알림 채널 검증**: 외부 알림 채널(Slack, 이메일 등)을 선택한 경우, 설정 직후 테스트 알림을 보내서 실제 수신되는지 확인한다.
+- Slack webhook → 테스트 메시지 전송 후 유저에게 "받았어?" 확인
+- 이메일 → 테스트 메일 전송 후 수신 확인
+- 기타 채널 → 해당 채널로 테스트 전송
+- **수신 실패 시**: 설정을 즉시 수정한다. 검증 없이 넘어가지 않는다.
+- reports/ 파일 기반은 별도 검증 불필요 (로컬 파일시스템)
+
+**파일 작업**: project.md에 운영 방식 섹션을 기록한다. (보고 빈도, 채널, 자율 범위, 기술적 전제조건, 실행 환경, 알림 검증 결과)
 
 ### Phase 6: 팀 구성 커스터마이징
 
@@ -193,7 +207,7 @@ Onboarding이 내부적으로 Manager를 tmux 세션에 부팅한다.
 
 ```bash
 # Onboarding이 실행 (유저가 실행하지 않음)
-bash scripts/orchestrator.sh boot-manager {project-name}
+bash scripts/cmd.sh boot-manager {project-name}
 ```
 
 정상 부팅 확인 후 유저에게 안내:

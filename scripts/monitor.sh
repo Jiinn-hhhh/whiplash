@@ -9,7 +9,7 @@
 #   nohup bash monitor.sh {project} >/dev/null 2>&1 &
 #
 # 종료:
-#   orchestrator.sh shutdown이 PID를 kill하거나, 직접 kill.
+#   cmd.sh shutdown이 PID를 kill하거나, 직접 kill.
 
 set -euo pipefail
 
@@ -43,7 +43,7 @@ send_crash_alert() {
   if [ "$role" = "manager" ]; then
     python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor manager_crash_alert "$role" --detail message="$message" || true
   else
-    bash "$TOOLS_DIR/notify.sh" "$PROJECT" monitor manager \
+    bash "$TOOLS_DIR/message.sh" "$PROJECT" monitor manager \
       reboot_notice urgent "${role} 크래시" "$message" || \
       python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor notify_delivery_fail "$role" || true
   fi
@@ -150,7 +150,7 @@ check_agent_windows() {
         python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor crash_detected "$window_name" --detail count="${count}/${MAX_REBOOT}" || true
         increment_reboot_count "$window_name"
 
-        if bash "$TOOLS_DIR/orchestrator.sh" reboot "$window_name" "$PROJECT" 2>&1; then
+        if bash "$TOOLS_DIR/cmd.sh" reboot "$window_name" "$PROJECT" 2>&1; then
           python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor reboot_success "$window_name" --detail count="$((count + 1))/${MAX_REBOOT}" || true
           send_crash_alert "$window_name" \
             "${window_name} 에이전트 크래시 감지. 자동 reboot 성공 ($((count + 1))/${MAX_REBOOT}회)."
@@ -162,7 +162,7 @@ check_agent_windows() {
       else
         python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor reboot_limit "$window_name" --detail count="${count}/${MAX_REBOOT}" || true
         send_crash_alert "$window_name" \
-          "${window_name} 에이전트 reboot ${MAX_REBOOT}회 시도 후 실패. 수동 개입이 필요하다. orchestrator.sh reboot ${window_name} ${PROJECT} 로 수동 복구하라."
+          "${window_name} 에이전트 reboot ${MAX_REBOOT}회 시도 후 실패. 수동 개입이 필요하다. cmd.sh reboot ${window_name} ${PROJECT} 로 수동 복구하라."
         echo $((MAX_REBOOT + 1)) > "$REBOOT_COUNT_DIR/${window_name}.count"
       fi
     fi
@@ -198,7 +198,7 @@ check_agent_health() {
           echo "$now" > "$hung_flag"
           local idle_min=$((idle_sec / 60))
           python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor hung_detected "$win_name" --detail idle_min="$idle_min" || true
-          bash "$TOOLS_DIR/notify.sh" "$PROJECT" monitor manager \
+          bash "$TOOLS_DIR/message.sh" "$PROJECT" monitor manager \
             escalation normal "${win_name} 비활성 경고" \
             "${win_name} 에이전트가 ${idle_min}분간 비활성 상태다. 긴 작업 중일 수도 있으니 확인 바란다." || \
             echo "[monitor] Warning: 비활성 알림 전달 실패 (${win_name})" >&2

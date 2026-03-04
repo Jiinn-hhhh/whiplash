@@ -63,9 +63,9 @@ Two execution modes (configured per-project in project.md):
 **Solo mode** (tmux-based):
 - Each agent runs in its own tmux window within session `whiplash-{project}`
 - Manager and all sub-agents use the same backend (Claude Code or Codex)
-- Agents communicate via notify.sh (tmux direct delivery: load-buffer + paste-buffer)
+- Agents communicate via message.sh (tmux direct delivery: load-buffer + paste-buffer)
 - monitor.sh runs health checks (crash detection, hung detection)
-- Key scripts: `scripts/orchestrator.sh`, `scripts/monitor.sh`, `scripts/notify.sh`
+- Key scripts: `scripts/cmd.sh`, `scripts/monitor.sh`, `scripts/message.sh`
 
 **Dual mode** (tmux-based):
 - Same task runs on two backends (Claude Code + Codex) simultaneously
@@ -88,16 +88,25 @@ See `agents/manager/techniques/orchestration.md`
 - **Document IDs**: `LESSON-NNN`, `DISC-NNN`, `MEET-NNN`, `ADR-NNN` (3-digit sequential).
 - **Project-relative paths**: `workspace/`, `memory/`, `reports/` in agent docs resolve to current project's directories.
 
-## Agent Onboarding Sequence
+## Agent Onboarding Sequence (Progressive Disclosure)
 
+3단계로 나누어 필요한 시점에 필요한 문서만 읽는다. 컨텍스트 윈도우를 절약하기 위함.
+
+### Layer 1 — 필수 (온보딩 즉시)
 1. Read `agents/common/README.md` — common rules
-2. Read `agents/common/project-context.md` — project convention
-3. Read your agent's `profile.md` — role definition
-4. Read `projects/{name}/project.md` — current project
-5. Read `domains/{domain}/context.md` — domain background
-6. (If exists) Read `domains/{domain}/{role}.md` — domain-specific guidelines
-7. (If exists) Read `team/{role}.md` — project-specific guidelines
-8. Read `memory/knowledge/index.md` — project knowledge map
+2. Read your agent's `profile.md` — role definition
+3. Read `projects/{name}/project.md` — current project
+
+### Layer 2 — 작업 시작 시
+4. Read `memory/knowledge/index.md` — project knowledge map (지도만, 전체 읽기 아님)
+5. Read `agents/{role}/techniques/*.md` — 해당 작업에 필요한 방법론만
+6. (If exists) Read `domains/{domain}/context.md` — domain background
+
+### Layer 3 — 필요 시 (on-demand)
+7. Read `agents/common/project-context.md` — project convention (경로 해석 등 필요 시)
+8. (If exists) Read `domains/{domain}/{role}.md` — domain-specific guidelines
+9. (If exists) Read `team/{role}.md` — project-specific guidelines
+10. 개별 교훈/문서 — `index.md`에서 참조를 찾아 필요한 것만 읽기
 
 ## Adding a New Agent
 

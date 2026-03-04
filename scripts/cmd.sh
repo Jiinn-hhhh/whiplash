@@ -1,5 +1,5 @@
 #!/bin/bash
-# orchestrator.sh -- tmux 기반 멀티 에이전트 오케스트레이션
+# cmd.sh -- tmux 기반 멀티 에이전트 오케스트레이션
 #
 # 서브커맨드:
 #   boot-manager   {project}                   -- Manager 부팅 + tmux 세션 생성
@@ -77,13 +77,111 @@ get_active_agents() {
     | grep -v '^$'
 }
 
-# 역할별 모델 선택
+# ──────────────────────────────────────────────
+# Git Worktree 격리
+# ──────────────────────────────────────────────
+
+# 에이전트용 worktree 생성
+# 반환: worktree 경로
+create_agent_worktree() {
+  local project="$1"
+  local agent_id="$2"  # window_name (researcher, dev-hotfix 등)
+  local worktree_base="$(project_dir "$project")/worktrees"
+  local worktree_path="${worktree_base}/${agent_id}"
+  local branch_name="whiplash/${project}/${agent_id}"
+
+  mkdir -p "$worktree_base"
+
+  # 이미 존재하면 경로만 반환
+  if [ -d "$worktree_path" ]; then
+    echo "$worktree_path"
+    return 0
+  fi
+
+  # 현재 HEAD 기준으로 worktree 생성
+  git worktree add -b "$branch_name" "$worktree_path" HEAD 2>/dev/null || {
+    # 브랜치가 이미 존재하면 -b 없이 재시도
+    git worktree add "$worktree_path" "$branch_name" 2>/dev/null || {
+      echo "Warning: worktree 생성 실패 (${agent_id}). 메인 디렉토리에서 작업." >&2
+      echo ""
+      return 1
+    }
+  }
+
+  echo "$worktree_path"
+}
+
+# 에이전트용 worktree 제거 (squash merge 후 정리)
+remove_agent_worktree() {
+  local project="$1"
+  local agent_id="$2"
+  local worktree_path="$(project_dir "$project")/worktrees/${agent_id}"
+  local branch_name="whiplash/${project}/${agent_id}"
+
+  if [ ! -d "$worktree_path" ]; then
+    return 0
+  fi
+
+  # worktree에 커밋이 있으면 squash merge 시도
+  local main_branch
+  main_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || main_branch="main"
+  local worktree_head
+  worktree_head=$(git -C "$worktree_path" rev-parse HEAD 2>/dev/null) || worktree_head=""
+  local base_head
+  base_head=$(git rev-parse HEAD 2>/dev/null) || base_head=""
+
+  if [ -n "$worktree_head" ] && [ -n "$base_head" ] && [ "$worktree_head" != "$base_head" ]; then
+    echo "  ${agent_id} worktree에 변경 있음. squash merge 시도..."
+    git merge --squash "$branch_name" 2>/dev/null && \
+      git commit -m "Merge ${agent_id} worktree (squash)" --no-edit 2>/dev/null || {
+        echo "  Warning: ${agent_id} squash merge 실패. 수동 merge 필요." >&2
+        echo "  브랜치: ${branch_name}, 경로: ${worktree_path}" >&2
+        return 1
+      }
+  fi
+
+  # worktree 제거
+  git worktree remove "$worktree_path" --force 2>/dev/null || {
+    rm -rf "$worktree_path" 2>/dev/null
+  }
+
+  # 브랜치 정리
+  git branch -D "$branch_name" 2>/dev/null || true
+}
+
+# profile.md의 <!-- agent-meta --> 블록에서 키 값 추출
+parse_agent_meta() {
+  local role="$1"
+  local key="$2"
+  local profile="$REPO_ROOT/agents/${role}/profile.md"
+  if [ ! -f "$profile" ]; then
+    return 0
+  fi
+  sed -n '/<!-- agent-meta/,/-->/p' "$profile" \
+    | grep "^${key}:" \
+    | sed "s/^${key}: *//"
+}
+
+# 역할별 모델 선택 (profile.md 메타데이터 → fallback 하드코딩)
 get_model() {
   local role="$1"
+  local meta_model
+  meta_model=$(parse_agent_meta "$role" "model")
+  if [ -n "$meta_model" ]; then
+    echo "$meta_model"
+    return
+  fi
+  # fallback: 메타데이터 없을 때
   case "$role" in
     monitoring) echo "haiku" ;;
     *)          echo "opus" ;;
   esac
+}
+
+# 역할별 허용 도구 (profile.md 메타데이터)
+get_allowed_tools() {
+  local role="$1"
+  parse_agent_meta "$role" "allowed-tools"
 }
 
 
@@ -94,7 +192,7 @@ get_domain() {
   if [ ! -f "$project_md" ]; then
     return 0
   fi
-  { grep -i "domain" "$project_md" 2>/dev/null || true; } \
+  { grep -iE "domain|도메인" "$project_md" 2>/dev/null || true; } \
     | head -1 \
     | sed 's/.*: *//' \
     | sed 's/ *(.*//' \
@@ -130,26 +228,34 @@ build_boot_message() {
 레포 루트: ${REPO_ROOT}
 현재 프로젝트: projects/${project}/
 
-아래 온보딩 절차를 순서대로 따라라:
-1. agents/common/README.md 읽기
-2. agents/common/project-context.md 읽기
-3. agents/${role}/profile.md 읽기
-4. projects/${project}/project.md 읽기
-5. (해당 시) domains/${domain}/context.md 읽기
-6. (해당 시) domains/${domain}/${role}.md 읽기
-7. (해당 시) projects/${project}/team/${role}.md 읽기
-8. memory/knowledge/index.md 읽기
-9. 알림 보내기 (상황별 예시):
-   태스크 완료:
-     bash scripts/notify.sh ${project} ${agent_id} manager task_complete normal "TASK-XXX 완료" "결과 요약"
-   도움 필요:
-     bash scripts/notify.sh ${project} ${agent_id} manager need_input normal "방향 선택 필요" "상세 내용"
-   긴급 블로커:
-     bash scripts/notify.sh ${project} ${agent_id} manager escalation urgent "블로커 발생" "상세 내용"
-   다른 에이전트에게:
-     bash scripts/notify.sh ${project} ${agent_id} {대상} status_update normal "제목" "내용"
+아래 온보딩 절차를 순서대로 따라라 (Progressive Disclosure — 필요한 것만 필요한 시점에):
 
-10. 알림 받기 — 작업 중 아래 형식의 알림이 올 수 있다:
+[Layer 1 — 필수, 지금 즉시 읽기]
+1. agents/common/README.md 읽기
+2. agents/${role}/profile.md 읽기
+3. projects/${project}/project.md 읽기
+
+[Layer 2 — 첫 태스크 수신 시 읽기]
+4. memory/knowledge/index.md 읽기 (지도만, 전체 읽기 아님)
+5. 해당 작업에 필요한 agents/${role}/techniques/*.md 읽기
+6. (해당 시) domains/${domain}/context.md 읽기
+
+[Layer 3 — 필요할 때만 읽기]
+7. agents/common/project-context.md (경로 해석 등 필요 시)
+8. (해당 시) domains/${domain}/${role}.md
+9. (해당 시) projects/${project}/team/${role}.md
+
+10. 알림 보내기 (상황별 예시):
+   태스크 완료:
+     bash scripts/message.sh ${project} ${agent_id} manager task_complete normal "TASK-XXX 완료" "결과 요약"
+   도움 필요:
+     bash scripts/message.sh ${project} ${agent_id} manager need_input normal "방향 선택 필요" "상세 내용"
+   긴급 블로커:
+     bash scripts/message.sh ${project} ${agent_id} manager escalation urgent "블로커 발생" "상세 내용"
+   다른 에이전트에게:
+     bash scripts/message.sh ${project} ${agent_id} {대상} status_update normal "제목" "내용"
+
+11. 알림 받기 — 작업 중 아래 형식의 알림이 올 수 있다:
     [notify] {보낸이} → {나} | {종류}
     제목: {제목}
     내용: {내용}
@@ -163,7 +269,7 @@ build_boot_message() {
     - reboot_notice: 에이전트 복구 상태 확인
 ${extra}
 온보딩이 끝나면 준비 완료를 알림으로 보고해라:
-bash scripts/notify.sh ${project} ${agent_id} manager agent_ready normal "온보딩 완료" "${agent_id} 에이전트 준비 완료"
+bash scripts/message.sh ${project} ${agent_id} manager agent_ready normal "온보딩 완료" "${agent_id} 에이전트 준비 완료"
 BOOTMSG
 }
 
@@ -241,8 +347,17 @@ boot_single_agent() {
   local window_name="${4:-$role}"
   local sess
   sess="$(session_name "$project")"
+
+  # 멱등성 가드: 이미 윈도우가 존재하면 건너뜀
+  if tmux list-windows -t "${sess}" -F '#{window_name}' 2>/dev/null | grep -q "^${window_name}$"; then
+    echo "Info: ${window_name} 윈도우가 이미 존재. 부팅 건너뜀." >&2
+    return 0
+  fi
+
   local model
   model="$(get_model "$role")"
+  local tools
+  tools="$(get_allowed_tools "$role")"
   local agent_id="$window_name"
   local boot_msg
   boot_msg="$(build_boot_message "$role" "$project" "$extra_boot_msg" "$agent_id")"
@@ -250,13 +365,22 @@ boot_single_agent() {
 
   echo "--- ${window_name} (${model}) 부팅 중 ---"
 
+  # worktree 생성 (실패 시 메인 디렉토리에서 작업)
+  local worktree_path
+  worktree_path=$(create_agent_worktree "$project" "$window_name") || true
+  if [ -n "$worktree_path" ]; then
+    echo "  worktree: ${worktree_path}"
+  fi
+
   # claude -p로 초기 세션 생성하여 session_id 획득
   # env -u CLAUDECODE: Manager가 Claude Code 안에서 호출할 때 중첩 세션 에러 방지
+  local tools_flag=""
+  [ -n "$tools" ] && tools_flag="--allowedTools $tools"
   local result
   result=$(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude -p "$boot_msg" \
     --model "$model" \
     --output-format json \
-    --dangerously-skip-permissions) || {
+    --dangerously-skip-permissions $tools_flag) || {
     echo "Warning: ${window_name} claude -p 실행 실패." >&2
     python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot_fail "$window_name" --detail reason="claude -p 실행 실패" || true
     return 1
@@ -274,7 +398,14 @@ boot_single_agent() {
   # tmux 윈도우 생성 후 claude --resume으로 인터랙티브 세션 시작
   # env -u CLAUDECODE: Manager가 Claude Code 안에서 호출할 때 중첩 세션 에러 방지
   tmux new-window -t "$sess" -n "$window_name"
-  tmux send-keys -t "$tmux_target" "env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude --resume $session_id --dangerously-skip-permissions" Enter
+  # worktree가 있으면 해당 디렉토리로 이동 후 시작
+  if [ -n "$worktree_path" ]; then
+    tmux send-keys -t "$tmux_target" "cd '$worktree_path'" Enter
+    sleep 0.5
+  fi
+  local resume_tools_flag=""
+  [ -n "$tools" ] && resume_tools_flag=" --allowedTools $tools"
+  tmux send-keys -t "$tmux_target" "env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude --resume $session_id --dangerously-skip-permissions${resume_tools_flag}" Enter
 
   # 부팅 확인: claude 프로세스 시작 대기 (최대 10초)
   local boot_pane_pid
@@ -371,10 +502,11 @@ cmd_spawn() {
     exit 1
   fi
 
-  # 부팅 (동일한 프로젝트 맥락, 메모리 공유)
+  # 부팅 (동일한 프로젝트 맥락, 메모리 공유, 별도 worktree)
   local spawn_note="
 참고: 너는 동적으로 스폰된 추가 에이전트다 (${window_name}).
-다른 에이전트가 현재 수정 중인 파일은 건드리지 마라.
+너는 별도의 git worktree에서 작업한다. 다른 에이전트와 파일 충돌이 없다.
+작업 완료 후 kill-agent 시 자동으로 squash merge된다.
 ${extra_msg}"
   boot_single_agent "$role" "$project" "$spawn_note" "$window_name" || {
     echo "Error: ${window_name} 스폰 실패." >&2
@@ -413,6 +545,9 @@ cmd_kill_agent() {
   sleep 3
   tmux kill-window -t "${sess}:${window_name}" 2>/dev/null || true
 
+  # worktree 정리 (merge + 제거)
+  remove_agent_worktree "$project" "$window_name" || true
+
   # sessions.md 업데이트
   local sf
   sf="$(sessions_file "$project")"
@@ -447,24 +582,34 @@ cmd_boot_manager() {
   # 2. Manager 부팅 (claude -p → session_id)
   local model
   model="$(get_model "manager")"
+  local mgr_tools
+  mgr_tools="$(get_allowed_tools "manager")"
   local extra_boot_instructions
   extra_boot_instructions=$(cat << EXTRA
 10. 온보딩 완료 후, 아래 명령으로 팀 에이전트를 부팅해라:
-    bash scripts/orchestrator.sh boot ${project}
+    bash scripts/cmd.sh boot ${project}
 11. 모든 에이전트의 agent_ready 메시지를 기다려라.
 12. 팀이 준비되면 project.md의 목표를 분석하고 첫 태스크를 분배해라.
     techniques/task-distribution.md 절차를 따른다.
+13. 에이전트로부터 알림([notify] 형식)을 받으면 즉시 내용을 분석하고 적절히 대응해라:
+    - task_complete → 결과를 확인하고, 후속 태스크가 있으면 디스패치. 모든 태스크 완료 시 유저에게 보고.
+    - need_input → 판단하여 응답. 유저 판단이 필요하면 에스컬레이션.
+    - escalation → 심각도 평가 후 대응. 필요 시 유저에게 전달.
+    - status_update → 진행 상황 기록. 계획 조정이 필요하면 조정.
+    - reboot_notice → 해당 에이전트 상태 확인 후 재디스패치 여부 결정.
 EXTRA
 )
   local boot_msg
   boot_msg="$(build_boot_message "manager" "$project" "$extra_boot_instructions")"
 
   # env -u CLAUDECODE: Claude Code 안에서 호출할 때 중첩 세션 에러 방지
+  local mgr_tools_flag=""
+  [ -n "$mgr_tools" ] && mgr_tools_flag="--allowedTools $mgr_tools"
   local result
   result=$(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude -p "$boot_msg" \
     --model "$model" \
     --output-format json \
-    --dangerously-skip-permissions) || {
+    --dangerously-skip-permissions $mgr_tools_flag) || {
     echo "Error: Manager claude -p 실행 실패." >&2
     exit 1
   }
@@ -480,7 +625,9 @@ EXTRA
   # 3. tmux 세션 생성 + Manager 투입
   tmux new-session -d -s "$sess" -n manager
   local tmux_target="${sess}:manager"
-  tmux send-keys -t "$tmux_target" "env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude --resume $session_id --dangerously-skip-permissions" Enter
+  local mgr_resume_flag=""
+  [ -n "$mgr_tools" ] && mgr_resume_flag=" --allowedTools $mgr_tools"
+  tmux send-keys -t "$tmux_target" "env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude --resume $session_id --dangerously-skip-permissions${mgr_resume_flag}" Enter
 
   # 4. sessions.md에 기록
   add_session_row "$project" "manager" "$session_id" "$tmux_target" "$model"
@@ -489,7 +636,7 @@ EXTRA
   echo "=== Manager 부팅 완료 ==="
   echo "session_id: $session_id"
   echo "tmux attach -t $sess 로 접속하라."
-  echo "Manager가 orchestrator.sh boot ${project} 로 나머지 에이전트를 부팅한다."
+  echo "Manager가 cmd.sh boot ${project} 로 나머지 에이전트를 부팅한다."
 }
 
 # ──────────────────────────────────────────────
@@ -920,7 +1067,21 @@ cmd_shutdown() {
   # 5. sessions.md 업데이트
   close_all_sessions "$project"
 
-  # 6. 런타임 파일 정리 (reboot 카운터, heartbeat)
+  # 6. 전체 worktree 정리
+  local worktree_base="$(project_dir "$project")/worktrees"
+  if [ -d "$worktree_base" ]; then
+    echo "worktree 정리 중..."
+    for wt_dir in "$worktree_base"/*/; do
+      if [ -d "$wt_dir" ]; then
+        local wt_name
+        wt_name=$(basename "$wt_dir")
+        remove_agent_worktree "$project" "$wt_name" || true
+      fi
+    done
+    rmdir "$worktree_base" 2>/dev/null || true
+  fi
+
+  # 7. 런타임 파일 정리 (reboot 카운터, heartbeat)
   rm -rf "$(project_dir "$project")/memory/manager/reboot-counts"
   rm -f "$(project_dir "$project")/memory/manager/monitor.heartbeat"
 
@@ -1008,17 +1169,17 @@ cmd_status() {
 
 if [ $# -lt 2 ]; then
   echo "Usage:" >&2
-  echo "  orchestrator.sh boot-manager   {project}" >&2
-  echo "  orchestrator.sh boot           {project}" >&2
-  echo "  orchestrator.sh dispatch       {role} {task-file} {project}" >&2
-  echo "  orchestrator.sh dual-dispatch  {role} {task-file} {project}" >&2
-  echo "  orchestrator.sh spawn          {role} {window-name} {project} [extra-msg]" >&2
-  echo "  orchestrator.sh kill-agent     {window-name} {project}" >&2
-  echo "  orchestrator.sh shutdown       {project}" >&2
-  echo "  orchestrator.sh status         {project}" >&2
-  echo "  orchestrator.sh reboot         {target} {project}" >&2
-  echo "  orchestrator.sh refresh        {target} {project}" >&2
-  echo "  orchestrator.sh monitor-check  {project}" >&2
+  echo "  cmd.sh boot-manager   {project}" >&2
+  echo "  cmd.sh boot           {project}" >&2
+  echo "  cmd.sh dispatch       {role} {task-file} {project}" >&2
+  echo "  cmd.sh dual-dispatch  {role} {task-file} {project}" >&2
+  echo "  cmd.sh spawn          {role} {window-name} {project} [extra-msg]" >&2
+  echo "  cmd.sh kill-agent     {window-name} {project}" >&2
+  echo "  cmd.sh shutdown       {project}" >&2
+  echo "  cmd.sh status         {project}" >&2
+  echo "  cmd.sh reboot         {target} {project}" >&2
+  echo "  cmd.sh refresh        {target} {project}" >&2
+  echo "  cmd.sh monitor-check  {project}" >&2
   exit 1
 fi
 
@@ -1027,47 +1188,47 @@ shift
 
 case "$command" in
   boot-manager)
-    [ $# -lt 1 ] && { echo "Usage: orchestrator.sh boot-manager {project}" >&2; exit 1; }
+    [ $# -lt 1 ] && { echo "Usage: cmd.sh boot-manager {project}" >&2; exit 1; }
     cmd_boot_manager "$1"
     ;;
   boot)
-    [ $# -lt 1 ] && { echo "Usage: orchestrator.sh boot {project}" >&2; exit 1; }
+    [ $# -lt 1 ] && { echo "Usage: cmd.sh boot {project}" >&2; exit 1; }
     cmd_boot "$1"
     ;;
   dispatch)
-    [ $# -lt 3 ] && { echo "Usage: orchestrator.sh dispatch {role} {task-file} {project}" >&2; exit 1; }
+    [ $# -lt 3 ] && { echo "Usage: cmd.sh dispatch {role} {task-file} {project}" >&2; exit 1; }
     cmd_dispatch "$1" "$2" "$3"
     ;;
   dual-dispatch)
-    [ $# -lt 3 ] && { echo "Usage: orchestrator.sh dual-dispatch {role} {task-file} {project}" >&2; exit 1; }
+    [ $# -lt 3 ] && { echo "Usage: cmd.sh dual-dispatch {role} {task-file} {project}" >&2; exit 1; }
     cmd_dual_dispatch "$1" "$2" "$3"
     ;;
   spawn)
-    [ $# -lt 3 ] && { echo "Usage: orchestrator.sh spawn {role} {window-name} {project} [extra-msg]" >&2; exit 1; }
+    [ $# -lt 3 ] && { echo "Usage: cmd.sh spawn {role} {window-name} {project} [extra-msg]" >&2; exit 1; }
     cmd_spawn "$1" "$2" "$3" "${4:-}"
     ;;
   kill-agent)
-    [ $# -lt 2 ] && { echo "Usage: orchestrator.sh kill-agent {window-name} {project}" >&2; exit 1; }
+    [ $# -lt 2 ] && { echo "Usage: cmd.sh kill-agent {window-name} {project}" >&2; exit 1; }
     cmd_kill_agent "$1" "$2"
     ;;
   shutdown)
-    [ $# -lt 1 ] && { echo "Usage: orchestrator.sh shutdown {project}" >&2; exit 1; }
+    [ $# -lt 1 ] && { echo "Usage: cmd.sh shutdown {project}" >&2; exit 1; }
     cmd_shutdown "$1"
     ;;
   status)
-    [ $# -lt 1 ] && { echo "Usage: orchestrator.sh status {project}" >&2; exit 1; }
+    [ $# -lt 1 ] && { echo "Usage: cmd.sh status {project}" >&2; exit 1; }
     cmd_status "$1"
     ;;
   reboot)
-    [ $# -lt 2 ] && { echo "Usage: orchestrator.sh reboot {target} {project}" >&2; exit 1; }
+    [ $# -lt 2 ] && { echo "Usage: cmd.sh reboot {target} {project}" >&2; exit 1; }
     cmd_reboot "$1" "$2"
     ;;
   refresh)
-    [ $# -lt 2 ] && { echo "Usage: orchestrator.sh refresh {target} {project}" >&2; exit 1; }
+    [ $# -lt 2 ] && { echo "Usage: cmd.sh refresh {target} {project}" >&2; exit 1; }
     cmd_refresh "$1" "$2"
     ;;
   monitor-check)
-    [ $# -lt 1 ] && { echo "Usage: orchestrator.sh monitor-check {project}" >&2; exit 1; }
+    [ $# -lt 1 ] && { echo "Usage: cmd.sh monitor-check {project}" >&2; exit 1; }
     cmd_monitor_check "$1"
     ;;
   *)

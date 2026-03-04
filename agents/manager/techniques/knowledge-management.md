@@ -36,17 +36,40 @@
 
 ---
 
-## 3. 교훈 순환 관리
+## 3. 교훈 순환 관리 (Semantic Compaction)
 
 ### 상한
 - 활성 교훈: 최대 30개 (`memory/knowledge/lessons/`)
 
+### 트리거
+- 새 교훈 추가 후 활성 교훈이 30개를 초과할 때 실행한다.
+
 ### 순환 절차 (30개 초과 시)
-1. 인용 횟수가 가장 적은 교훈을 식별한다.
-2. 인용 횟수가 같으면 가장 오래된 교훈을 선택한다.
-3. 선택된 교훈을 `memory/knowledge/archives/`로 이동한다.
-4. `memory/knowledge/index.md`에서 해당 항목을 제거한다.
-5. 아카이브된 교훈은 삭제하지 않는다.
+
+**1단계: 인용 횟수 카운트**
+```bash
+# 각 교훈의 인용 횟수를 grep으로 집계
+for lesson in memory/knowledge/lessons/LESSON-*.md; do
+  id=$(basename "$lesson" .md)
+  count=$(grep -r "Cite ${id}" memory/ workspace/ reports/ 2>/dev/null | wc -l)
+  echo "${count} ${id}"
+done | sort -n
+```
+
+**2단계: 아카이브 대상 선별**
+- 인용 횟수가 가장 적은 교훈을 선택한다.
+- 인용 횟수가 같으면 가장 오래된 교훈(낮은 번호)을 선택한다.
+- 30개 이하가 될 때까지 반복한다.
+
+**3단계: 아카이브 실행**
+- 선택된 교훈을 `memory/knowledge/archives/`로 이동한다.
+- `memory/knowledge/index.md`에서 해당 항목을 **1줄 요약 + archive 참조 링크**로 교체한다.
+  - 예: `- ~~LESSON-005~~: [요약] (→ archives/LESSON-005.md)`
+- 원본은 archives/에 그대로 보존한다. 삭제하지 않는다.
+
+**4단계: 검증**
+- `lessons/` 폴더의 파일 수가 30개 이하인지 확인한다.
+- `index.md`에서 아카이브 참조가 올바르게 남아있는지 확인한다.
 
 ---
 

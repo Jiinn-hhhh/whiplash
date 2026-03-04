@@ -30,6 +30,10 @@ agents/{role}/
 ## 양식
 
 ```markdown
+<!-- agent-meta
+model: [모델명 — opus | sonnet | haiku]
+allowed-tools: [허용 도구 — 쉼표 구분. 예: Read,Glob,Grep,Write,Edit,Bash,WebSearch,WebFetch]
+-->
 # Agent: [에이전트명]
 
 ## 신원
