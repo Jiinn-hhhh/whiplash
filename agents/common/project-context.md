@@ -112,6 +112,7 @@ projects/{name}/
 - **실행 모드**: {solo | dual}
 - **보고 빈도**: {매일 / 마일스톤마다 / 요청 시 등}
 - **보고 채널**: {reports/ 파일 / Slack / 이메일 / 대화 내 등}
+- Slack을 쓰는 프로젝트면 `bash scripts/slack.sh {project} "제목" "내용" [level]`로 webhook 전송 가능
 - **자율 범위**: {팀이 알아서 진행할 수 있는 범위 / 유저 확인이 필요한 것}
 - **긴급 알림**: {블로커 발생 시 즉시 / 모아서 보고}
 - **프레임워크 디버깅**: {on | off} (에이전트가 프레임워크 비효율을 feedback/insights.md에 기록할지 여부)
