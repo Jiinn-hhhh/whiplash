@@ -209,6 +209,15 @@ create_fake_agent() {
   sleep 2
 }
 
+create_fake_codex_exec_agent() {
+  local win_name="$1"
+  tmux new-window -t "$SESSION" -n "$win_name"
+  # pane shell의 자식 bash 프로세스가 살아 있도록 중첩 bash 루프를 띄운다.
+  tmux send-keys -t "${SESSION}:${win_name}" \
+    "bash -lc 'exec bash -lc \"while true; do sleep 60; done\"'" Enter
+  sleep 2
+}
+
 # sessions.md에 가짜 에이전트 등록
 register_fake_agent() {
   local win_name="$1" role="$2"
@@ -225,6 +234,23 @@ HEADER
   local today
   today="$(date +%Y-%m-%d)"
   echo "| ${role} | claude | fake-session | ${SESSION}:${win_name} | active | ${today} | test | |" >> "$sf"
+}
+
+register_fake_codex_exec_agent() {
+  local win_name="$1" role="$2"
+  local sf="$PROJECT_DIR/memory/manager/sessions.md"
+  mkdir -p "$(dirname "$sf")"
+  if [ ! -f "$sf" ]; then
+    cat > "$sf" << 'HEADER'
+# 활성 에이전트 세션
+
+| 역할 | 백엔드 | Session ID | tmux Target | 상태 | 시작일 | 모델 | 비고 |
+|------|--------|-----------|-------------|------|--------|------|------|
+HEADER
+  fi
+  local today
+  today="$(date +%Y-%m-%d)"
+  echo "| ${role} | codex | codex-exec | ${SESSION}:${win_name} | active | ${today} | test | |" >> "$sf"
 }
 
 # ──────────────────────────────────────────────
@@ -880,6 +906,60 @@ EOF
 }
 
 # ──────────────────────────────────────────────
+# 시나리오 12: queued codex-exec 메시지 drain → codex-inbox
+# ──────────────────────────────────────────────
+
+test_scenario_12() {
+  echo ""
+  echo "=== 시나리오 12: queued codex exec drain → inbox ==="
+  cleanup
+  setup_test_project
+
+  tmux new-session -d -s "$SESSION" -n manager
+  create_fake_codex_exec_agent "developer-codex"
+  register_fake_codex_exec_agent "developer-codex" "developer"
+
+  local pane_pid
+  pane_pid=$(tmux list-panes -t "${SESSION}:developer-codex" -F '#{pane_pid}' 2>/dev/null | head -1) || pane_pid=""
+  assert_true "developer-codex exec alive 확인" bash -c \
+    "[ -n '$pane_pid' ] && pgrep -P '$pane_pid' bash >/dev/null 2>&1"
+
+  local queue_dir="$PROJECT_DIR/memory/manager/message-queue"
+  mkdir -p "$queue_dir"
+  local queue_file="$queue_dir/$(date +%s)-researcher-developer-codex.msg"
+  cat > "$queue_file" << 'EOF'
+from=researcher
+to=developer-codex
+kind=status_update
+priority=normal
+subject=queued-codex-exec
+content=codex exec drain smoke
+EOF
+
+  bash "$TOOLS_DIR/cmd.sh" monitor-check "$PROJECT" >/dev/null 2>&1
+
+  local inbox_dir="$PROJECT_DIR/memory/developer/codex-inbox"
+  local notify_file=""
+  local attempt
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    notify_file=$(find "$inbox_dir" -name '*.notify' 2>/dev/null | head -1) || notify_file=""
+    if [ -n "$notify_file" ] && [ ! -f "$queue_file" ]; then
+      break
+    fi
+    sleep 1
+  done
+
+  assert_file_not_exists "queued codex exec 메시지 제거됨" "$queue_file"
+  assert_file_exists "codex inbox notify 생성됨" "$notify_file"
+  if [ -n "$notify_file" ]; then
+    assert_file_contains "codex inbox notify 제목 보존" "$notify_file" "queued-codex-exec"
+    assert_file_contains "codex inbox notify 내용 보존" "$notify_file" "codex exec drain smoke"
+  fi
+
+  echo "  시나리오 12 완료"
+}
+
+# ──────────────────────────────────────────────
 # 메인
 # ──────────────────────────────────────────────
 
@@ -904,6 +984,7 @@ test_scenario_8
 test_scenario_9
 test_scenario_10
 test_scenario_11
+test_scenario_12
 
 echo ""
 echo "============================================"

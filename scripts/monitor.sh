@@ -33,6 +33,7 @@ source "$TOOLS_DIR/tmux-submit.sh"
 HEALTH_CHECK_INTERVAL=30
 MAX_REBOOT=5
 HUNG_THRESHOLD=600  # 10분 (초)
+QUEUE_TTL=86400  # 24시간
 REBOOT_COUNT_DIR="$REPO_ROOT/projects/$PROJECT/memory/manager/reboot-counts"
 HEARTBEAT_FILE="$REPO_ROOT/projects/$PROJECT/memory/manager/monitor.heartbeat"
 SESSION_ABSENT_COUNT=0
@@ -123,10 +124,12 @@ reset_reboot_count() {
 
 get_window_backend() {
   local win_name="$1"
-  if [[ "$win_name" == *-codex ]]; then
+  case "$win_name" in
+    *-codex|*-codex-*)
     echo "codex"
     return
-  fi
+    ;;
+  esac
 
   local sessions_file="$REPO_ROOT/projects/$PROJECT/memory/manager/sessions.md"
   if [ -f "$sessions_file" ]; then
@@ -145,6 +148,92 @@ get_window_backend() {
   fi
 
   echo "claude"
+}
+
+heuristic_agent_role() {
+  local win_name="$1"
+  printf '%s\n' "$win_name" | sed -E 's/-(claude|codex)(-.+)?$//'
+}
+
+resolve_agent_role() {
+  local win_name="$1"
+  local sessions_file="$REPO_ROOT/projects/$PROJECT/memory/manager/sessions.md"
+  if [ -f "$sessions_file" ]; then
+    local role
+    role=$(
+      awk -F'|' -v target="${SESSION}:${win_name}" '
+        function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+        trim($5) == target && trim($6) == "active" { role = trim($2) }
+        END { print role }
+      ' "$sessions_file"
+    )
+    if [ -n "$role" ]; then
+      echo "$role"
+      return
+    fi
+  fi
+
+  heuristic_agent_role "$win_name"
+}
+
+resolve_codex_mode() {
+  local win_name="$1"
+  local sessions_file="$REPO_ROOT/projects/$PROJECT/memory/manager/sessions.md"
+  if [ ! -f "$sessions_file" ]; then
+    echo "unknown"
+    return
+  fi
+
+  local session_id
+  session_id=$(
+    awk -F'|' -v target="${SESSION}:${win_name}" '
+      function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+      trim($5) == target && trim($6) == "active" { sid = trim($4) }
+      END { print sid }
+    ' "$sessions_file"
+  )
+
+  case "$session_id" in
+    codex-interactive) echo "interactive" ;;
+    codex-exec)        echo "exec" ;;
+    *)                 echo "unknown" ;;
+  esac
+}
+
+build_notification() {
+  local msg_from="$1"
+  local msg_to="$2"
+  local msg_kind="$3"
+  local msg_priority="$4"
+  local msg_subject="$5"
+  local msg_content="$6"
+  local prefix="[notify] ${msg_from} → ${msg_to} | ${msg_kind}"
+  if [ "$msg_priority" = "urgent" ]; then
+    prefix="[URGENT] ${msg_from} → ${msg_to} | ${msg_kind}"
+  fi
+  printf '%s\n' "${prefix}
+제목: ${msg_subject}
+내용: ${msg_content}"
+}
+
+deliver_codex_inbox_message() {
+  local msg_to="$1"
+  local msg_from="$2"
+  local notification="$3"
+  local agent_role
+  agent_role="$(resolve_agent_role "$msg_to")"
+  [ -n "$agent_role" ] || return 1
+
+  local inbox_dir="$REPO_ROOT/projects/$PROJECT/memory/${agent_role}/codex-inbox"
+  mkdir -p "$inbox_dir"
+
+  local ts suffix tmp_file notify_file
+  ts=$(date +%s)
+  suffix="${msg_from}-${msg_to}-${RANDOM}"
+  tmp_file="${inbox_dir}/.${ts}-${suffix}.notify.tmp"
+  notify_file="${inbox_dir}/${ts}-${suffix}.notify"
+  printf '%s' "$notification" > "$tmp_file"
+  mv "$tmp_file" "$notify_file"
 }
 
 # ──────────────────────────────────────────────
@@ -327,7 +416,6 @@ drain_message_queue() {
 
   local now
   now=$(date +%s)
-  local ttl=1800  # 30분
 
   for msg_file in "$queue_dir"/*.msg; do
     [ -f "$msg_file" ] || continue
@@ -335,7 +423,8 @@ drain_message_queue() {
     # TTL 확인 (파일명의 첫 필드가 타임스탬프)
     local msg_ts
     msg_ts=$(basename "$msg_file" | cut -d'-' -f1)
-    if [[ "$msg_ts" =~ ^[0-9]+$ ]] && [ $((now - msg_ts)) -gt $ttl ]; then
+    if [[ "$msg_ts" =~ ^[0-9]+$ ]] && [ $((now - msg_ts)) -gt "$QUEUE_TTL" ]; then
+      python3 "$TOOLS_DIR/log.py" message "$PROJECT" queue system queue_expire normal "$(basename "$msg_file")" skipped --reason "queue-ttl-expired" || true
       rm -f "$msg_file"
       continue
     fi
@@ -351,26 +440,40 @@ drain_message_queue() {
 
     [ -z "$msg_to" ] && { rm -f "$msg_file"; continue; }
 
-    # 수신자 프로세스 alive 확인
+    if [ "$msg_to" = "user" ]; then
+      rm -f "$msg_file"
+      python3 "$TOOLS_DIR/log.py" message "$PROJECT" "$msg_from" "$msg_to" "$msg_kind" "$msg_priority" "$msg_subject" delivered --reason "queued-user-alert" || true
+      continue
+    fi
+
+    local msg_backend msg_codex_mode notification tmux_target
+    msg_backend="$(get_window_backend "$msg_to")"
+    msg_codex_mode="unknown"
+    if [ "$msg_backend" = "codex" ]; then
+      msg_codex_mode="$(resolve_codex_mode "$msg_to")"
+    fi
+
+    notification="$(build_notification "$msg_from" "$msg_to" "$msg_kind" "$msg_priority" "$msg_subject" "$msg_content")"
+    tmux_target="${SESSION}:${msg_to}"
+
+    if [ "$msg_backend" = "codex" ] && [ "$msg_codex_mode" = "exec" ]; then
+      if ! is_agent_alive "$msg_to"; then
+        continue
+      fi
+      if deliver_codex_inbox_message "$msg_to" "$msg_from" "$notification"; then
+        rm -f "$msg_file"
+        python3 "$TOOLS_DIR/log.py" message "$PROJECT" "$msg_from" "$msg_to" "$msg_kind" "$msg_priority" "$msg_subject" delivered --reason "codex-inbox-drain" || true
+      fi
+      continue
+    fi
+
     if ! is_agent_alive "$msg_to"; then
       continue  # 아직 죽어 있으면 다음 주기에 재시도
     fi
 
-    # 직접 tmux 전달 (message.sh 재호출 안 함 → 재큐 루프 방지)
-    local tmux_target="${SESSION}:${msg_to}"
-    local prefix="[notify] ${msg_from} → ${msg_to} | ${msg_kind}"
-    if [ "$msg_priority" = "urgent" ]; then
-      prefix="[URGENT] ${msg_from} → ${msg_to} | ${msg_kind}"
-    fi
-    local notification="${prefix}
-제목: ${msg_subject}
-내용: ${msg_content}"
-
     if tmux_submit_pasted_payload "$tmux_target" "$notification" "drain"; then
       rm -f "$msg_file"
-      python3 "$TOOLS_DIR/log.py" message "$PROJECT" "$msg_from" "$msg_to" "$msg_kind" "$msg_priority" "$msg_subject" delivered || true
-    else
-      python3 "$TOOLS_DIR/log.py" message "$PROJECT" "$msg_from" "$msg_to" "$msg_kind" "$msg_priority" "$msg_subject" skipped --reason "tmux-target-unavailable" || true
+      python3 "$TOOLS_DIR/log.py" message "$PROJECT" "$msg_from" "$msg_to" "$msg_kind" "$msg_priority" "$msg_subject" delivered --reason "queued-drain" || true
     fi
   done
 }

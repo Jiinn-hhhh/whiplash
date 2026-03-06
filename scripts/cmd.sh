@@ -1558,6 +1558,7 @@ cmd_shutdown() {
   # 6. 런타임 파일 정리 (reboot 카운터, heartbeat, 메시지 큐, reboot lock)
   rm -rf "$(project_dir "$project")/memory/manager/reboot-counts"
   rm -f "$(project_dir "$project")/memory/manager/monitor.heartbeat"
+  rm -f "$(project_dir "$project")/memory/manager/monitor.nudge"
   rm -rf "$(project_dir "$project")/memory/manager/message-queue"
   rm -rf "$(project_dir "$project")/memory/manager/reboot-locks"
   rm -rf "$(project_dir "$project")/memory/manager/idle-checks"

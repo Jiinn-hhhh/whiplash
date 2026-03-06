@@ -112,6 +112,8 @@ tmux_submit__enter_until_cleared() {
   local settle_attempts="${3:-8}"
   local settle_delay="${4:-0.25}"
   local repeat_delay="${5:-0.9}"
+  local max_repeat_enters="${6:-4}"
+  local sent_repeat_enters=0
 
   while :; do
     if tmux_submit__wait_for_payload_state "$tmux_target" "$payload" cleared "$settle_attempts" "$settle_delay"; then
@@ -122,10 +124,15 @@ tmux_submit__enter_until_cleared() {
       return 1
     fi
 
+    if [ "$sent_repeat_enters" -ge "$max_repeat_enters" ]; then
+      return 1
+    fi
+
     sleep "$repeat_delay"
     if ! tmux send-keys -t "$tmux_target" Enter 2>/dev/null; then
       return 1
     fi
+    sent_repeat_enters=$((sent_repeat_enters + 1))
   done
 }
 
@@ -162,5 +169,5 @@ tmux_submit_pasted_payload() {
     return 1
   fi
 
-  tmux_submit__enter_until_cleared "$tmux_target" "$payload" 8 0.25 0.9
+  tmux_submit__enter_until_cleared "$tmux_target" "$payload" 8 0.25 0.9 4
 }

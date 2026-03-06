@@ -118,10 +118,12 @@ complete_assignment() {
 
 resolve_backend() {
   local window_name="$1"
-  if [[ "$window_name" == *-codex ]]; then
+  case "$window_name" in
+    *-codex|*-codex-*)
     echo "codex"
     return
-  fi
+    ;;
+  esac
 
   local sf="$repo_root/projects/$project/memory/manager/sessions.md"
   if [ -f "$sf" ]; then
@@ -140,6 +142,32 @@ resolve_backend() {
   fi
 
   echo "claude"
+}
+
+heuristic_agent_role() {
+  local window_name="$1"
+  printf '%s\n' "$window_name" | sed -E 's/-(claude|codex)(-.+)?$//'
+}
+
+resolve_agent_role() {
+  local window_name="$1"
+  local sf="$repo_root/projects/$project/memory/manager/sessions.md"
+  if [ -f "$sf" ]; then
+    local role
+    role=$(
+      awk -F'|' -v target="${session}:${window_name}" '
+        function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+        trim($5) == target && trim($6) == "active" { role = trim($2) }
+        END { print role }
+      ' "$sf"
+    )
+    if [ -n "$role" ]; then
+      echo "$role"
+      return
+    fi
+  fi
+
+  heuristic_agent_role "$window_name"
 }
 
 resolve_codex_mode() {
@@ -176,6 +204,26 @@ deliver_codex_tui_message() {
   tmux_submit_pasted_payload "$tmux_target" "$notification" "notify-codex"
 }
 
+deliver_codex_inbox_message() {
+  local window_name="$1"
+  local message_body="$2"
+  local sender="${3:-$from}"
+  local codex_role
+  codex_role="$(resolve_agent_role "$window_name")"
+  [ -n "$codex_role" ] || return 1
+
+  local inbox_dir="$repo_root/projects/$project/memory/${codex_role}/codex-inbox"
+  mkdir -p "$inbox_dir"
+
+  local ts suffix tmp_file notify_file
+  ts=$(date +%s)
+  suffix="${sender}-${window_name}-${RANDOM}"
+  tmp_file="${inbox_dir}/.${ts}-${suffix}.notify.tmp"
+  notify_file="${inbox_dir}/${ts}-${suffix}.notify"
+  printf '%s' "$message_body" > "$tmp_file"
+  mv "$tmp_file" "$notify_file"
+}
+
 # task_assign / task_complete 시 assignments.md 자동 동기화 (INS-003)
 if [[ "$kind" == "task_assign" ]]; then
   record_assignment "$to" "$subject"
@@ -187,8 +235,12 @@ fi
 queue_message() {
   local queue_dir="$repo_root/projects/$project/memory/manager/message-queue"
   mkdir -p "$queue_dir"
-  local filename="$(date +%s)-${from}-${to}.msg"
-  cat > "${queue_dir}/${filename}" << MSGEOF
+  local ts suffix tmp_file queue_file
+  ts=$(date +%s)
+  suffix="${from}-${to}-${RANDOM}"
+  tmp_file="${queue_dir}/.${ts}-${suffix}.msg.tmp"
+  queue_file="${queue_dir}/${ts}-${suffix}.msg"
+  cat > "${tmp_file}" << MSGEOF
 from=${from}
 to=${to}
 kind=${kind}
@@ -196,8 +248,33 @@ priority=${priority}
 subject=${subject}
 content=${content}
 MSGEOF
+  mv "$tmp_file" "$queue_file"
   python3 "$TOOLS_DIR/log.py" message "$project" "$from" "$to" "$kind" "$priority" "$subject" skipped --reason "queued" || true
-  echo "메시지 큐 저장: ${queue_dir}/${filename}" >&2
+  nudge_monitor_for_queue
+  echo "메시지 큐 저장: ${queue_file}" >&2
+}
+
+nudge_monitor_for_queue() {
+  local nudge_file="$repo_root/projects/$project/memory/manager/monitor.nudge"
+  local now last=0
+  now=$(date +%s)
+
+  if [ -f "$nudge_file" ]; then
+    last=$(cat "$nudge_file" 2>/dev/null || echo "0")
+  fi
+  if ! [[ "${last:-0}" =~ ^[0-9]+$ ]]; then
+    last=0
+  fi
+
+  mkdir -p "$(dirname "$nudge_file")"
+  if [ $((now - last)) -lt 15 ]; then
+    return 0
+  fi
+
+  printf '%s\n' "$now" > "$nudge_file"
+  (
+    bash "$TOOLS_DIR/cmd.sh" monitor-check "$project" >/dev/null 2>&1 || true
+  ) &
 }
 
 # 알림 형식 구성
@@ -231,18 +308,19 @@ if [[ "$to_backend" == "codex" ]]; then
     && deliver_codex_tui_message; then
     python3 "$TOOLS_DIR/log.py" message "$project" "$from" "$to" "$kind" "$priority" "$subject" delivered --reason "codex-tui" || true
   elif [[ "$to_codex_mode" == "exec" ]]; then
-    # codex-agent.sh가 폴링하는 inbox 디렉토리에 .notify 파일 드롭 (exec 모드 fallback)
-    # role 추출: "developer-codex" → "developer", "manager" → "manager"
-    codex_role="${to%-codex}"
-    inbox_dir="$repo_root/projects/$project/memory/${codex_role}/codex-inbox"
-    mkdir -p "$inbox_dir"
-    ts=$(date +%s)
-    notify_file="${inbox_dir}/${ts}-${from}.notify"
-    printf '%s' "$notification" > "$notify_file"
+    # exec 모드는 codex-agent.sh inbox로 전달한다.
+    if ! deliver_codex_inbox_message "$to" "$notification" "$from"; then
+      echo "Warning: ${to} codex inbox 전달 실패. 큐에 저장." >&2
+      queue_message
+      echo "전달 보류: ${from} → ${to} | ${kind} (queued)"
+      exit 0
+    fi
     python3 "$TOOLS_DIR/log.py" message "$project" "$from" "$to" "$kind" "$priority" "$subject" delivered --reason "codex-inbox" || true
   else
     echo "Warning: ${to} codex interactive 직접 전달 실패. 큐에 저장." >&2
     queue_message
+    echo "전달 보류: ${from} → ${to} | ${kind} (queued)"
+    exit 0
   fi
 
 # Claude Code 에이전트: tmux 직접 전달 (기존 방식)
@@ -253,6 +331,7 @@ elif tmux has-session -t "$session" 2>/dev/null; then
     if [ -n "$pane_pid" ] && ! pgrep -P "$pane_pid" "claude" >/dev/null 2>&1 && ! pgrep -P "$pane_pid" "codex" >/dev/null 2>&1; then
       echo "Warning: ${to} 윈도우에 에이전트 프로세스 없음. 큐에 저장." >&2
       queue_message
+      echo "전달 보류: ${from} → ${to} | ${kind} (queued)"
       exit 0
     fi
 
@@ -261,14 +340,20 @@ elif tmux has-session -t "$session" 2>/dev/null; then
     else
       echo "Warning: ${to} tmux target 제출 경로 확보 실패. 큐에 저장." >&2
       queue_message
+      echo "전달 보류: ${from} → ${to} | ${kind} (queued)"
+      exit 0
     fi
   else
     echo "Warning: ${to} 윈도우가 없다. 큐에 저장." >&2
     queue_message
+    echo "전달 보류: ${from} → ${to} | ${kind} (queued)"
+    exit 0
   fi
 else
   echo "Warning: tmux 세션 '${session}'이 없다. 큐에 저장." >&2
   queue_message
+  echo "전달 보류: ${from} → ${to} | ${kind} (queued)"
+  exit 0
 fi
 
 echo "전달 완료: ${from} → ${to} | ${kind}"
