@@ -18,6 +18,8 @@
 
 에이전트 정의 파일(`agents/`)과 도메인 파일(`domains/`)의 경로는 레포 루트 기준이다.
 
+**프로젝트 폴더**: project.md에 `프로젝트 폴더` 경로가 지정되어 있으면, 모든 코드 작업(파일 생성, 수정, 빌드, 테스트 등)은 해당 경로에서 수행한다. 프레임워크 산출물(workspace/, memory/, reports/)과 코드 작업 경로는 별개다.
+
 ---
 
 ## 2. 프로젝트 구조
@@ -40,9 +42,9 @@ projects/{name}/
       sessions.md          #   활성 세션 추적 (cmd.sh 자동 관리)
       monitor.pid          #   monitor.sh PID
       monitor.heartbeat    #   monitor.sh heartbeat
-      logs/                #   monitor 로그, notify 감사 로그
       reboot-counts/       #   에이전트별 리부팅 카운터
-      hung-flags/          #   에이전트별 hung 감지 플래그
+      reboot-locks/        #   동시 reboot 경합 방지 lock
+      message-queue/       #   전달 실패 메시지 보관
     researcher/
     developer/
     monitoring/
@@ -53,6 +55,7 @@ projects/{name}/
       meetings/
       archives/
       index.md
+  logs/                    # system.log, message.log
   reports/                 # 사용자 열람 전용 (에이전트는 쓰기만, 읽기 참조 금지)
 ```
 
@@ -83,6 +86,11 @@ projects/{name}/
 
 ## 배경
 왜 이걸 하는지, 어떤 맥락에서 시작됐는지. 2-3문장.
+
+## 프로젝트 폴더
+- **경로**: {절대 경로 또는 "없음"}
+  - 코드 작업이 있는 프로젝트: 모든 에이전트가 이 경로에서 코드 작업 수행
+  - "없음": 코드 작업 없는 프로젝트 (연구, 문서 등)
 
 ## 기존 자원
 - **코드**: {레포 경로 또는 "없음"}

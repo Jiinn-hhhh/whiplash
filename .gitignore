@@ -4,6 +4,20 @@ projects/*
 
 # 프레임워크 외부 프로젝트
 pixel-agents/
+pixel_agent*
+
+# 개발 작업 노트
+system_develop/
+
+# Preflight 마커
+.preflight-ok
+
+# Python 캐시 / 툴 캐시
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
 
 # OS
 .DS_Store

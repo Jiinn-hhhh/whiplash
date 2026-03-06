@@ -1,0 +1,968 @@
+#!/usr/bin/env python3
+"""Whiplash 라이브 대시보드 — Rich Live TUI.
+
+Usage:
+  python3 dashboard/dashboard.py {project}              # 기본 5초 갱신
+  python3 dashboard/dashboard.py {project} --interval 2 # 2초 갱신
+"""
+
+import argparse
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+from glob import glob
+from typing import Any
+
+try:
+    from rich.console import Group
+    from rich.live import Live
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
+except ImportError:
+    Group = Live = Panel = Table = Text = None
+
+# ──────────────────────────────────────────────
+# 상수
+# ──────────────────────────────────────────────
+
+_KST = timezone(timedelta(hours=9))
+
+_ROLE_ABBR = {
+    "manager": "mgr",
+    "developer": "dev",
+    "researcher": "res",
+    "monitoring": "mon",
+    "monitor": "mon",
+}
+
+_SUCCESS_EVENTS = frozenset({
+    "agent_boot", "agent_spawn", "task_dispatch", "dual_dispatch",
+    "reboot_success", "agent_refresh_end", "project_boot_end",
+    "idle_cleared", "session_recovered",
+})
+
+_WARN_EVENTS = frozenset({
+    "idle_detected", "idle_recheck", "crash_detected", "session_absent",
+    "session_absent_confirmed", "monitor_restart",
+    "notify_delivery_fail", "agent_kill", "reboot_count_reset",
+})
+
+_ERROR_EVENTS = frozenset({
+    "agent_boot_fail", "reboot_failed", "reboot_limit",
+    "monitor_exit", "monitor_zombie", "manager_crash_alert",
+})
+
+# ──────────────────────────────────────────────
+# 유틸리티
+# ──────────────────────────────────────────────
+
+def _repo_root() -> str:
+    return subprocess.check_output(
+        ["git", "rev-parse", "--show-toplevel"],
+        text=True,
+    ).strip()
+
+
+def _now_kst() -> datetime:
+    return datetime.now(_KST)
+
+
+def _relative_time(dt: datetime) -> str:
+    """datetime을 'N분 전', 'N초 전' 형태로 변환."""
+    diff = _now_kst() - dt
+    secs = int(diff.total_seconds())
+    if secs < 0:
+        return "방금"
+    if secs < 60:
+        return f"{secs}초 전"
+    mins = secs // 60
+    if mins < 60:
+        return f"{mins}분 전"
+    hours = mins // 60
+    return f"{hours}시간 전"
+
+
+def _format_idle(seconds: int) -> str:
+    """초를 'm분 s초' 형태로 변환."""
+    if seconds < 0:
+        return "--"
+    m, s = divmod(seconds, 60)
+    if m > 0:
+        return f"{m}m {s}s"
+    return f"{s}s"
+
+
+def _read_file(path: str) -> str | None:
+    """파일 읽기, 없으면 None."""
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def _read_tail(path: str, lines: int) -> list[str]:
+    """파일 마지막 N줄 읽기."""
+    try:
+        with open(path) as f:
+            all_lines = f.readlines()
+        return [l.rstrip("\n") for l in all_lines[-lines:]]
+    except OSError:
+        return []
+
+
+def _abbr(name: str) -> str:
+    return _ROLE_ABBR.get(name, name[:3])
+
+
+def _clean_project_value(value: str) -> str:
+    value = value.replace("**", "").replace("`", "").strip()
+    return re.sub(r"\s+\(.*\)$", "", value).strip()
+
+
+def _parse_project_heading(line: str) -> str | None:
+    match = re.match(r"^#\s+(.+)$", line)
+    if not match:
+        return None
+
+    title = match.group(1).strip()
+    if ":" in title:
+        key, value = title.split(":", 1)
+        if key.strip().lower() in {"project", "프로젝트"}:
+            return _clean_project_value(value)
+
+    return _clean_project_value(title)
+
+
+def _parse_project_field(line: str) -> tuple[str, str] | None:
+    match = re.match(r"^-\s+(.+?):\s*(.+)$", line)
+    if not match:
+        return None
+
+    key = _clean_project_value(match.group(1)).lower()
+    value = _clean_project_value(match.group(2))
+
+    if "domain" in key or "도메인" in key:
+        return "domain", value
+    if "execution mode" in key or "실행 모드" in key:
+        return "mode", value
+    return None
+
+
+def _require_rich() -> None:
+    if None in (Group, Live, Panel, Table, Text):
+        print("rich 라이브러리가 필요합니다: pip install rich", file=sys.stderr)
+        sys.exit(1)
+
+
+# ──────────────────────────────────────────────
+# 파서
+# ──────────────────────────────────────────────
+
+def parse_project_md(project_dir: str) -> dict[str, str]:
+    """project.md에서 프로젝트 이름, 도메인, 실행 모드 추출."""
+    content = _read_file(os.path.join(project_dir, "project.md"))
+    info: dict[str, str] = {
+        "name": os.path.basename(os.path.normpath(project_dir)),
+        "mode": "solo",
+        "domain": "general",
+    }
+    if not content:
+        return info
+
+    for line in content.splitlines():
+        name = _parse_project_heading(line)
+        if name:
+            info["name"] = name
+            continue
+
+        field = _parse_project_field(line)
+        if not field:
+            continue
+
+        key, value = field
+        if key == "mode":
+            if "dual" in value.lower():
+                info["mode"] = "dual"
+            else:
+                info["mode"] = "solo"
+        elif key == "domain" and value:
+            info["domain"] = value
+
+    return info
+
+
+def parse_sessions_md(project_dir: str) -> list[dict[str, str]]:
+    """sessions.md 파싱 → 에이전트 목록."""
+    content = _read_file(
+        os.path.join(project_dir, "memory", "manager", "sessions.md")
+    )
+    if not content:
+        return []
+    agents = []
+    for line in content.splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            continue
+        cols = [c.strip() for c in line.split("|")]
+        # cols[0]은 빈 문자열 (| 앞), cols[-1]도 빈 문자열
+        cols = [c for c in cols if c]
+        if len(cols) < 7:
+            continue
+        # 헤더/구분선 건너뛰기
+        if cols[0] in ("역할", "------", "---") or cols[0].startswith("-"):
+            continue
+        agents.append({
+            "role": cols[0],
+            "backend": cols[1],
+            "session_id": cols[2],
+            "tmux_target": cols[3],
+            "status": cols[4],
+            "start_date": cols[5],
+            "model": cols[6],
+        })
+    return agents
+
+
+def get_tmux_activity(session_name: str) -> dict[str, int]:
+    """tmux 윈도우별 마지막 활동 시각(epoch) 반환."""
+    try:
+        out = subprocess.check_output(
+            ["tmux", "list-windows", "-t", session_name,
+             "-F", "#{window_name}|#{window_activity}"],
+            text=True, stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return {}
+    result = {}
+    for line in out.strip().splitlines():
+        parts = line.split("|", 1)
+        if len(parts) == 2 and parts[1].isdigit():
+            result[parts[0]] = int(parts[1])
+    return result
+
+
+def check_monitor(project_dir: str) -> dict[str, Any]:
+    """모니터 상태 확인."""
+    info: dict[str, Any] = {
+        "pid": None, "alive": False, "heartbeat_age": None, "queued": 0,
+    }
+    pid_str = _read_file(
+        os.path.join(project_dir, "memory", "manager", "monitor.pid")
+    )
+    if pid_str:
+        pid_str = pid_str.strip()
+        if pid_str.isdigit():
+            info["pid"] = int(pid_str)
+            try:
+                os.kill(info["pid"], 0)
+                info["alive"] = True
+            except OSError:
+                pass
+
+    hb_str = _read_file(
+        os.path.join(project_dir, "memory", "manager", "monitor.heartbeat")
+    )
+    if hb_str:
+        hb_str = hb_str.strip()
+        if hb_str.isdigit():
+            info["heartbeat_age"] = int(time.time()) - int(hb_str)
+
+    queue_dir = os.path.join(project_dir, "memory", "manager", "message-queue")
+    if os.path.isdir(queue_dir):
+        info["queued"] = len(glob(os.path.join(queue_dir, "*.msg")))
+
+    return info
+
+
+def parse_boot_times(project_dir: str) -> dict[str, datetime]:
+    """system.log에서 각 에이전트의 마지막 부팅 시각 추출."""
+    lines = _read_tail(
+        os.path.join(project_dir, "logs", "system.log"), 200
+    )
+    pattern = re.compile(
+        r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \[\w+\] (\S+)\s+.*부팅'
+    )
+    boot_times: dict[str, datetime] = {}
+    for line in lines:
+        m = pattern.match(line)
+        if not m:
+            continue
+        ts_str, agent_name = m.groups()
+        try:
+            ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=_KST
+            )
+        except ValueError:
+            continue
+        boot_times[agent_name] = ts  # 마지막 부팅이 덮어씀
+    return boot_times
+
+
+def parse_system_log(project_dir: str, count: int = 20) -> list[dict]:
+    """system.log 마지막 N줄 파싱."""
+    lines = _read_tail(
+        os.path.join(project_dir, "logs", "system.log"), count
+    )
+    pattern = re.compile(
+        r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \[(\w+)\] (.+)$'
+    )
+    entries = []
+    for line in lines:
+        m = pattern.match(line)
+        if not m:
+            continue
+        ts_str, level, message = m.groups()
+        try:
+            ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=_KST
+            )
+        except ValueError:
+            continue
+        entries.append({"ts": ts, "level": level, "message": message})
+    return entries
+
+
+def parse_message_log(project_dir: str, count: int = 10) -> list[dict]:
+    """message.log 마지막 N줄 파싱."""
+    lines = _read_tail(
+        os.path.join(project_dir, "logs", "message.log"), count
+    )
+    # 새 포맷: kind+priority 포함, 하위 호환: kind/priority 없는 기존 로그도 파싱
+    pattern = re.compile(
+        r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) '
+        r'\[(\w+)\] '
+        r'(\S+) → (\S+) '
+        r'(?:(\S+) (\S+) )?'
+        r'"([^"]+)"'
+    )
+    entries = []
+    for line in lines:
+        m = pattern.match(line)
+        if not m:
+            continue
+        ts_str, status, sender, receiver, kind, priority, subject = m.groups()
+        try:
+            ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=_KST
+            )
+        except ValueError:
+            continue
+        entries.append({
+            "ts": ts, "status": status,
+            "sender": sender, "receiver": receiver,
+            "kind": kind or "", "priority": priority or "",
+            "subject": subject,
+        })
+    return entries
+
+
+
+def get_reboot_counts(project_dir: str) -> dict[str, int]:
+    """reboot-counts 디렉토리에서 각 역할의 리부팅 횟수 반환."""
+    counts_dir = os.path.join(
+        project_dir, "memory", "manager", "reboot-counts"
+    )
+    if not os.path.isdir(counts_dir):
+        return {}
+    result = {}
+    for f in os.listdir(counts_dir):
+        if f.endswith(".count"):
+            role = f[:-6]
+            content = _read_file(os.path.join(counts_dir, f))
+            if content and content.strip().isdigit():
+                c = int(content.strip())
+                if c > 0:
+                    result[role] = c
+    return result
+
+
+def _read_task_title(project_dir: str, task_path: str) -> str:
+    """태스크 파일 첫 줄에서 제목 추출. '# TASK-013: 설명' → '설명'."""
+    # 절대경로면 그대로, repo-root 상대경로는 repo_root 기준,
+    # 그 외 상대경로는 project_dir 기준 결합
+    if os.path.isabs(task_path):
+        full = task_path
+    elif task_path.startswith("projects/"):
+        repo_root = os.path.dirname(os.path.dirname(project_dir))
+        full = os.path.join(repo_root, task_path)
+    else:
+        full = os.path.join(project_dir, task_path)
+    content = _read_file(full)
+    if not content:
+        return ""
+    first = content.splitlines()[0]
+    # "# TASK-NNN: 제목" 패턴
+    m = re.match(r'^#\s*TASK-\d{3}:\s*(.+)', first)
+    return m.group(1).strip() if m else ""
+
+
+def parse_assignments_md(project_dir: str) -> dict[str, dict]:
+    """assignments.md에서 active/stale 태스크 매핑 (role → {id, title, started, stale})."""
+    content = _read_file(
+        os.path.join(project_dir, "memory", "manager", "assignments.md")
+    )
+    if not content:
+        return {}
+    result = {}
+    task_re = re.compile(r'TASK-\d{3}')
+    for line in content.splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            continue
+        cols = [c.strip() for c in line.split("|")]
+        cols = [c for c in cols if c]
+        if len(cols) < 4:
+            continue
+        if cols[0] in ("역할", "에이전트", "------", "---") or cols[0].startswith("-"):
+            continue
+        # cols: [에이전트, 태스크파일, 할당시각, 상태, ...]
+        status = cols[3].lower() if len(cols) > 3 else ""
+        if "active" not in status and "stale" not in status:
+            continue
+        role = cols[0]
+        task_file = cols[1]
+        assign_ts_str = cols[2] if len(cols) > 2 else ""
+        is_stale = "stale" in status
+
+        # 할당 시각 파싱
+        started = None
+        try:
+            started = datetime.strptime(
+                assign_ts_str, "%Y-%m-%d %H:%M"
+            ).replace(tzinfo=_KST)
+        except ValueError:
+            pass
+
+        task_match = task_re.search(task_file)
+        if task_match:
+            task_id = task_match.group()
+            title = _read_task_title(project_dir, task_file)
+        else:
+            task_id = "WORK"
+            title = task_file[:30] + ("..." if len(task_file) > 30 else "")
+
+        result[role] = {"id": task_id, "title": title, "started": started, "stale": is_stale}
+    return result
+
+
+# ──────────────────────────────────────────────
+# 데이터 수집
+# ──────────────────────────────────────────────
+
+def collect(project_dir: str, session_name: str,
+            project_info: dict) -> dict[str, Any]:
+    """모든 데이터 소스를 읽어 하나의 dict로 반환."""
+    now = _now_kst()
+    now_epoch = int(time.time())
+
+    agents = parse_sessions_md(project_dir)
+    tmux_activity = get_tmux_activity(session_name)
+    reboot_counts = get_reboot_counts(project_dir)
+    assignments = parse_assignments_md(project_dir)
+    monitor = check_monitor(project_dir)
+    boot_times = parse_boot_times(project_dir)
+    system_log = parse_system_log(project_dir, 20)
+    message_log = parse_message_log(project_dir, 30)
+
+    # 에이전트별 uptime 및 상태 계산
+    for agent in agents:
+        role = agent["role"]
+        tmux_target = agent.get("tmux_target", "")
+        win_name = tmux_target.split(":", 1)[1] if ":" in tmux_target else role
+
+        # uptime: system.log 부팅 시각 기준
+        boot_ts = boot_times.get(win_name) or boot_times.get(role)
+        if boot_ts:
+            agent["uptime_sec"] = int((now - boot_ts).total_seconds())
+        else:
+            agent["uptime_sec"] = -1
+
+        if agent["status"] != "active":
+            agent["display_status"] = "CLOSED"
+            continue
+        elif win_name in tmux_activity:
+            agent["display_status"] = "ALIVE"
+        else:
+            agent["display_status"] = "ABSENT"
+
+        task_info = assignments.get(win_name) or assignments.get(role)
+        if task_info:
+            agent["task_id"] = task_info["id"]
+            agent["task_title"] = task_info["title"]
+            agent["task_started"] = task_info.get("started")
+            agent["task_stale"] = task_info.get("stale", False)
+        else:
+            agent["task_id"] = ""
+            agent["task_title"] = ""
+            agent["task_started"] = None
+            agent["task_stale"] = False
+            if agent["display_status"] == "ALIVE":
+                agent["display_status"] = "READY"
+        agent["reboots"] = reboot_counts.get(role, 0)
+        agent["win_name"] = win_name
+
+    return {
+        "now": now,
+        "project": project_info,
+        "agents": agents,
+        "monitor": monitor,
+        "system_log": system_log,
+        "message_log": message_log,
+        "session_exists": bool(tmux_activity),
+    }
+
+
+# ──────────────────────────────────────────────
+# 렌더링
+# ──────────────────────────────────────────────
+
+_STATUS_STYLE = {
+    "ALIVE": ("● ALIVE", "green"),
+    "READY": ("○ READY", "cyan"),
+    "CRASHED": ("✗ CRASHED", "red"),
+    "ABSENT": ("○ ABSENT", "red"),
+    "CLOSED": ("— CLOSED", "dim"),
+}
+
+
+def _render_header(state: dict) -> Panel:
+    proj = state["project"]
+    now = state["now"]
+    name = proj.get("name", "?")
+    mode = proj.get("mode", "solo")
+    time_str = now.strftime("%Y-%m-%d %H:%M:%S")
+    left = f"  WHIPLASH  {name}  {mode}"
+    title = Text()
+    title.append("  WHIPLASH", style="bold white")
+    title.append("  ")
+    title.append(name, style="bold cyan")
+    title.append("  ")
+    title.append(mode, style="bold magenta")
+    # right-align time: Panel adds ~4 chars of border
+    padding = max(1, 72 - len(left) - len(time_str))
+    title.append(" " * padding)
+    title.append(time_str, style="dim")
+    return Panel(title, style="bold blue")
+
+
+def _render_agents(state: dict) -> Table:
+    table = Table(
+        title="AGENTS",
+        title_style="bold white",
+        show_header=True,
+        header_style="bold",
+        border_style="dim",
+        pad_edge=True,
+    )
+    table.add_column("Role", min_width=10)
+    table.add_column("Status", min_width=10)
+    table.add_column("Model", min_width=5)
+    table.add_column("Task Time", min_width=7, justify="right")
+    table.add_column("Current Task", min_width=20, max_width=40)
+    table.add_column("Reboot", min_width=6, justify="right")
+
+    # CLOSED 제외
+    active_agents = [a for a in state["agents"] if a.get("display_status") != "CLOSED"]
+
+    if not active_agents:
+        msg = "⏳ Booting..." if state.get("session_exists") else "(No session)"
+        table.add_row(msg, "", "", "", "", "")
+        return table
+
+    # 역할 우선순위 정렬: manager → researcher → developer → monitoring
+    _ROLE_ORDER = {"manager": 0, "researcher": 1, "developer": 2, "monitoring": 3}
+    active_agents.sort(key=lambda a: (
+        _ROLE_ORDER.get(a["role"], 99),
+        a.get("backend", ""),  # 같은 role 내: claude < codex
+    ))
+
+    # 듀얼 모드 감지: 같은 role이 2개 이상이면 backend 표시
+    from collections import Counter
+    role_counts = Counter(a["role"] for a in active_agents)
+    is_dual = any(c > 1 for c in role_counts.values())
+
+    prev_role = None
+    for agent in active_agents:
+        # 역할 그룹 간 빈 줄 구분
+        if prev_role is not None and agent["role"] != prev_role:
+            table.add_row("", "", "", "", "", "")
+        prev_role = agent["role"]
+        ds = agent.get("display_status", "CLOSED")
+        label, style = _STATUS_STYLE.get(ds, ("?", ""))
+
+        # 태스크 작업 시간: ALIVE + 태스크 있으면 할당 시각부터 경과, 아니면 "--"
+        task_started = agent.get("task_started")
+        if ds in ("ALIVE",) and task_started:
+            elapsed = int((state["now"] - task_started).total_seconds())
+            h, rem = divmod(elapsed, 3600)
+            m = rem // 60
+            time_str = f"{h}h {m}m" if h > 0 else f"{m}m"
+        else:
+            time_str = "--"
+
+        reboot_str = str(agent["reboots"]) if agent["reboots"] > 0 else ""
+
+        # 듀얼 모드에서 같은 role이 복수면 backend 구분 표시
+        role_label = agent["role"]
+        if is_dual and role_counts[agent["role"]] > 1:
+            backend = agent.get("backend", "")
+            role_label = f"{agent['role']}/{backend}"
+
+        # 태스크 표시: 제목이 있으면 "TASK-NNN 제목", 없으면 "--"
+        task_id = agent.get("task_id", "")
+        task_title = agent.get("task_title", "")
+        if task_id and task_title:
+            task_str = f"{task_id} {task_title}"
+        elif task_id:
+            task_str = task_id
+        else:
+            task_str = "--"
+
+        task_stale = agent.get("task_stale", False)
+        table.add_row(
+            Text(role_label),
+            Text(label, style=style),
+            Text(agent.get("model", "?")),
+            Text(time_str),
+            Text(task_str, style="dim" if task_stale else ""),
+            Text(reboot_str, style="yellow" if agent["reboots"] > 0 else ""),
+        )
+    return table
+
+
+_ALERT_KINDS = frozenset({"escalation", "need_input"})
+
+
+def _render_user_alerts(state: dict) -> Panel | None:
+    """유저 대상 알림 (escalation, need_input) 패널. alert_resolve로 해결된 건 숨김."""
+    # resolve된 subject 수집
+    resolved_subjects = {
+        e["subject"]
+        for e in state["message_log"]
+        if e.get("kind") == "alert_resolve" and e.get("receiver") == "user"
+    }
+    alerts = [
+        e for e in state["message_log"]
+        if e.get("kind") in _ALERT_KINDS and e.get("receiver") == "user"
+        and e["subject"] not in resolved_subjects
+    ]
+    if not alerts:
+        return None
+    # 최근 10개, 시간순 역정렬
+    alerts.sort(key=lambda e: e["ts"], reverse=True)
+    alerts = alerts[:10]
+
+    table = Table(
+        show_header=True,
+        header_style="bold",
+        border_style="dim",
+        pad_edge=True,
+    )
+    table.add_column("Time", min_width=10)
+    table.add_column("", min_width=1)  # icon
+    table.add_column("From", min_width=8)
+    table.add_column("Subject", min_width=30)
+
+    for entry in alerts:
+        kind = entry.get("kind", "")
+        if kind == "escalation":
+            icon = Text("!", style="bold red")
+        else:
+            icon = Text("?", style="bold yellow")
+        table.add_row(
+            Text(_timeline_time(entry["ts"]), style="dim"),
+            icon,
+            Text(entry["sender"]),
+            Text(entry["subject"]),
+        )
+    return Panel(table, title="USER ALERTS", title_align="left", border_style="red", expand=False)
+
+
+def _render_health_check(state: dict) -> Panel:
+    mon = state["monitor"]
+    line = Text("  ")
+    sep = "  │  "
+    if mon["pid"]:
+        if mon["alive"]:
+            line.append("● Running", style="green")
+        else:
+            line.append("✗ Down", style="red")
+        line.append(sep, style="dim")
+        line.append(f"PID {mon['pid']}", style="")
+        if mon["heartbeat_age"] is not None:
+            hb_style = "green" if mon["heartbeat_age"] < 90 else "red"
+            line.append(sep, style="dim")
+            line.append(f"Heartbeat {mon['heartbeat_age']}s ago", style=hb_style)
+    else:
+        line.append("— Not started", style="dim")
+    line.append(sep, style="dim")
+    line.append(f"Queued {mon['queued']}", style="")
+    return Panel(line, title="HEALTH CHECK", title_align="left", border_style="dim", expand=False)
+
+
+def _event_icon(level: str, message: str) -> tuple[str, str]:
+    """이벤트 메시지에 맞는 아이콘과 스타일 반환."""
+    msg_lower = message.lower()
+    # Check for specific event keywords
+    for ev in _ERROR_EVENTS:
+        kw = ev.replace("_", " ")
+        if kw in msg_lower or ev in msg_lower:
+            return "✗", "red"
+    for ev in _WARN_EVENTS:
+        kw = ev.replace("_", " ")
+        if kw in msg_lower or ev in msg_lower:
+            return "⚠", "yellow"
+    for ev in _SUCCESS_EVENTS:
+        kw = ev.replace("_", " ")
+        if kw in msg_lower or ev in msg_lower:
+            return "✓", "green"
+
+    # Fallback: use log level
+    if level == "error":
+        return "✗", "red"
+    if level == "warn":
+        return "⚠", "yellow"
+    return "●", ""
+
+
+# Korean keyword → event type mapping for icon detection
+_KR_WARN_KEYWORDS = ["비활성 감지", "재확인", "크래시 감지", "세션 부재", "좀비"]
+_KR_SUCCESS_KEYWORDS = ["부팅", "부팅 완료", "활동 재개", "리프레시 완료",
+                         "스폰", "전달", "리부팅 성공", "복귀 감지"]
+_KR_ERROR_KEYWORDS = ["부팅 실패", "리부팅 실패", "한도 초과", "모니터 종료"]
+
+
+def _event_icon_kr(level: str, message: str) -> tuple[str, str]:
+    """한국어 메시지 기반 아이콘."""
+    for kw in _KR_ERROR_KEYWORDS:
+        if kw in message:
+            return "✗", "red"
+    for kw in _KR_WARN_KEYWORDS:
+        if kw in message:
+            return "⚠", "yellow"
+    for kw in _KR_SUCCESS_KEYWORDS:
+        if kw in message:
+            return "✓", "green"
+    return _event_icon(level, message)
+
+
+_IDLE_FILTER_EVENTS = frozenset({
+    "idle_detected", "idle_recheck", "idle_cleared",
+})
+
+_IDLE_FILTER_KR = ["비활성 감지", "재확인 예약", "비활성 재확인", "활동 재개"]
+
+_TASK_PATH_RE = re.compile(r'(?:task=|파일=)\S*/?(TASK-\d{3})\S*')
+
+_ROLE_FULL = {
+    "mgr": "manager", "dev": "developer", "res": "researcher",
+    "mon": "monitoring", "orc": "orchestrator",
+}
+
+
+def _full_name(name: str) -> str:
+    return _ROLE_FULL.get(name, name)
+
+
+def _simplify_system_message(message: str) -> str:
+    """풀 경로를 TASK-NNN만 추출하여 축약."""
+    m = _TASK_PATH_RE.search(message)
+    if m:
+        message = _TASK_PATH_RE.sub(m.group(1), message)
+    return message
+
+
+def _is_idle_event(message: str) -> bool:
+    """idle_detected/idle_recheck/idle_cleared 이벤트인지 확인."""
+    msg_lower = message.lower().replace(" ", "_")
+    for ev in _IDLE_FILTER_EVENTS:
+        if ev in msg_lower:
+            return True
+    for kw in _IDLE_FILTER_KR:
+        if kw in message:
+            return True
+    return False
+
+
+def _classify_system_event(message: str) -> tuple[str, str]:
+    """시스템 로그 메시지 → (이벤트 유형 라벨, 스타일)."""
+    checks = [
+        ("부팅 실패", "boot fail", "red"),
+        ("리부팅 실패", "reboot fail", "red"),
+        ("한도 초과", "limit hit", "red"),
+        ("모니터 종료", "monitor exit", "red"),
+        ("크래시 감지", "crash", "red"),
+        ("좀비", "zombie", "red"),
+        ("세션 부재", "absent", "yellow"),
+        ("듀얼 태스크 전달", "task dispatch", ""),
+        ("태스크 전달", "task dispatch", ""),
+        ("부팅 완료", "boot", ""),
+        ("리부팅 성공", "reboot", ""),
+        ("스폰", "spawn", ""),
+        ("리프레시", "refresh", ""),
+        ("활동 재개", "resumed", ""),
+        ("모니터 시작", "monitor", ""),
+    ]
+    for kw, label, style in checks:
+        if kw in message:
+            return label, style
+    return "system", ""
+
+
+def _timeline_time(ts: datetime) -> str:
+    """3분 이내면 'N분 N초 전', 아니면 HH:MM:SS."""
+    diff = _now_kst() - ts
+    secs = int(diff.total_seconds())
+    if secs < 0:
+        return "방금"
+    if secs < 180:
+        m, s = divmod(secs, 60)
+        if m > 0:
+            return f"{m}분 {s}초 전"
+        return f"{s}초 전"
+    return ts.strftime("%H:%M:%S")
+
+
+def _render_timeline(state: dict) -> Table:
+    table = Table(
+        title="TIMELINE",
+        title_style="bold white",
+        show_header=True,
+        header_style="bold",
+        border_style="dim",
+    )
+    table.add_column("Time", min_width=10)
+    table.add_column("Type", min_width=10)
+    table.add_column("Event", min_width=40)
+
+    # (ts, type_label, type_style, event_text)
+    merged: list[tuple[datetime, str, str, str]] = []
+
+    # system.log
+    for entry in state["system_log"]:
+        if _is_idle_event(entry["message"]):
+            continue
+        type_label, type_style = _classify_system_event(entry["message"])
+        text = _simplify_system_message(entry["message"])
+        merged.append((entry["ts"], type_label, type_style, text))
+
+    # message.log
+    for entry in state["message_log"]:
+        st = entry["status"]
+        if st == "delivered":
+            type_label, type_style = "message", ""
+        elif st == "skipped":
+            type_label, type_style = "msg skip", "yellow"
+        elif st == "queued":
+            type_label, type_style = "msg queue", "yellow"
+        else:
+            type_label, type_style = "message", ""
+        sender = _full_name(entry["sender"])
+        receiver = _full_name(entry["receiver"])
+        subject = entry["subject"]
+        tm = _TASK_PATH_RE.search(subject)
+        if tm:
+            subject = _TASK_PATH_RE.sub(tm.group(1), subject)
+        text = f'{sender} → {receiver} "{subject}"'
+        merged.append((entry["ts"], type_label, type_style, text))
+
+    merged.sort(key=lambda x: x[0])
+    recent = merged[-12:]
+
+    if not recent:
+        table.add_row("--", "--", "(로그 없음)")
+        return table
+
+    for ts, type_label, type_style, text in reversed(recent):
+        table.add_row(
+            Text(_timeline_time(ts), style="dim"),
+            Text(type_label, style=type_style),
+            Text(text),
+        )
+    return table
+
+
+def _render_footer(interval: int) -> Text:
+    text = Text()
+    text.append(" Ctrl-C to exit", style="dim")
+    text.append("  |  ", style="dim")
+    text.append(f"Refresh: {interval}s", style="dim")
+    return text
+
+
+def render(state: dict, interval: int) -> Group:
+    """전체 대시보드 렌더링."""
+    parts: list = [
+        _render_header(state),
+        Text(),
+        _render_agents(state),
+        Text(),
+        _render_health_check(state),
+    ]
+    alerts_panel = _render_user_alerts(state)
+    if alerts_panel is not None:
+        parts.append(Text())
+        parts.append(alerts_panel)
+    parts.extend([
+        Text(),
+        _render_timeline(state),
+        Text(),
+        _render_footer(interval),
+    ])
+    return Group(*parts)
+
+
+# ──────────────────────────────────────────────
+# 메인
+# ──────────────────────────────────────────────
+
+def main() -> None:
+    _require_rich()
+
+    parser = argparse.ArgumentParser(description="Whiplash 라이브 대시보드")
+    parser.add_argument("project", help="프로젝트 이름")
+    parser.add_argument(
+        "--interval", type=int, default=5,
+        help="갱신 주기 (초, 기본 5)",
+    )
+    args = parser.parse_args()
+
+    project = args.project
+    interval = max(1, args.interval)
+
+    root = _repo_root()
+    project_dir = os.path.join(root, "projects", project)
+    session_name = f"whiplash-{project}"
+
+    if not os.path.isdir(project_dir):
+        print(f"프로젝트 디렉토리 없음: {project_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    # 프로젝트 정보 (첫 로드만)
+    project_info = parse_project_md(project_dir)
+    if not project_info["name"]:
+        project_info["name"] = project
+
+    # Ctrl-C 깨끗한 종료
+    signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
+
+    initial = collect(project_dir, session_name, project_info)
+    with Live(
+        render(initial, interval),
+        refresh_per_second=1,
+        screen=False,
+    ) as live:
+        while True:
+            time.sleep(interval)
+            state = collect(project_dir, session_name, project_info)
+            live.update(render(state, interval))
+
+
+if __name__ == "__main__":
+    main()

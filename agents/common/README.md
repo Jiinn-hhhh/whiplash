@@ -24,6 +24,8 @@ whiplash/
   agents/                    # 프레임워크 정의 (불변, git tracked)
   domains/                   # 도메인 특화 정의 (불변, git tracked)
   scripts/                   # 인프라 스크립트 (orchestrator, monitor, notify 등)
+  dashboard/                 # 실시간 TUI 대시보드 (tracked)
+  feedback/                  # 프레임워크 개선 인사이트 (tracked)
   projects/                  # 프로젝트별 런타임 데이터 (가변, gitignored)
     {project-name}/
       project.md             #   프로젝트 정의 (이름, 목표, 도메인)
@@ -41,10 +43,12 @@ whiplash/
           meetings/          #       종료된 회의록 원본
           archives/          #       순환된 비활성 교훈
           index.md           #       지식 지도 (~100줄)
+      logs/                  #   system.log, message.log
       reports/               #   사용자 열람 전용 (에이전트는 쓰기만, 읽기 참조 금지)
 ```
 
-- Git tracked = `agents/` + `domains/` + `scripts/`. 런타임 = `projects/`.
+- Git tracked = `agents/` + `domains/` + `scripts/` + `dashboard/` + `feedback/`. 런타임 = `projects/`.
+- `pixel-agents/`, `system_develop/` 같은 로컬 실험/보조 폴더가 보여도 프레임워크 핵심 경로는 위 구조가 기준이다.
 - 에이전트 문서의 workspace/, memory/, reports/ 경로는 **현재 프로젝트 기준 상대 경로**로 해석한다.
 - 상세: [project-context.md](project-context.md), [communication.md](communication.md) §1
 
@@ -77,6 +81,9 @@ Claude Code의 서브에이전트, 팀 생성(TeamCreate), 병렬 태스크 등 
 
 ### 역할별 도구 제한
 각 에이전트의 허용 도구가 `profile.md`의 `<!-- agent-meta -->` 블록에 정의된다. cmd.sh가 부팅 시 `--allowedTools`로 자동 적용한다. 허용되지 않은 도구는 사용 불가.
+
+### 프로젝트 폴더 접근 규칙
+프로젝트 폴더(코드)는 **Developer만 수정 가능**. 다른 에이전트는 읽기 전용. 상세: `agents/manager/techniques/orchestration.md` §7
 
 ### 컨텍스트 최소화
 - `knowledge/index.md`는 ~100줄 이내의 지도로 유지한다.
