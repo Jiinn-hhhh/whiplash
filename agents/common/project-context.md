@@ -132,8 +132,8 @@ projects/{name}/
 에이전트가 다른 프로젝트로 전환할 때:
 
 1. `projects/{name}/project.md`를 읽는다.
-2. 도메인이 지정되어 있으면 `domains/{domain}/context.md`를 읽는다.
-3. 해당 도메인에 자기 역할 파일이 있으면 (`domains/{domain}/{role}.md`) 읽는다.
+2. 도메인이 `general`이 아니고 파일이 있으면 `domains/{domain}/context.md`를 읽는다.
+3. 해당 도메인이 `general`이 아니고 자기 역할 파일이 있으면 (`domains/{domain}/{role}.md`) 읽는다.
 4. 해당 프로젝트에 자기 역할 파일이 있으면 (`projects/{name}/team/{role}.md`) 읽는다.
 5. `projects/{name}/memory/knowledge/index.md`를 읽는다.
 6. 이후 workspace/, memory/, reports/ 경로는 해당 프로젝트 기준으로 해석한다.

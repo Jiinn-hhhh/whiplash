@@ -8,14 +8,15 @@ Usage:
 출력 형식:
   system.log:   2026-03-03 18:35:42 [info] orchestrator agent_boot researcher session=abc-123
   message.log:  2026-03-03 18:35:42 [delivered] researcher → manager task_complete normal "TASK-001 완료"
+               (kind와 priority가 subject 앞에 기록됨)
 """
 
 import argparse
 import fcntl
 import os
-import subprocess
 import sys
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 
 # ──────────────────────────────────────────────
 # 이벤트 → 레벨 자동 결정 테이블
@@ -27,8 +28,9 @@ _ERROR_EVENTS = frozenset({
 })
 
 _WARN_EVENTS = frozenset({
-    "crash_detected", "hung_detected", "agent_kill",
+    "crash_detected", "idle_detected", "idle_recheck", "agent_kill",
     "monitor_restart", "session_absent", "notify_delivery_fail",
+    "session_absent_confirmed", "reboot_count_reset",
 })
 
 
@@ -55,13 +57,16 @@ _EVENT_TEMPLATES: dict[str, str] = {
     "manager_boot": "{target} 매니저 부팅",
     "codex_boot": "{target} codex 부팅",
     "task_dispatch": "{target} 태스크 전달",
+    "task_assign": "{target} 태스크 할당 기록",
+    "task_complete": "{target} 태스크 완료 처리",
     "dual_dispatch": "{target} 듀얼 태스크 전달",
     "crash_detected": "{target} 크래시 감지",
     "reboot_success": "{target} 리부팅 성공",
     "reboot_failed": "{target} 리부팅 실패",
     "reboot_limit": "{target} 리부팅 한도 초과",
-    "hung_detected": "{target} 비활성 감지",
-    "hung_cleared": "{target} 활동 재개",
+    "idle_detected": "{target} 비활성 감지",
+    "idle_recheck": "{target} 비활성 재확인",
+    "idle_cleared": "{target} 활동 재개",
     "monitor_start": "모니터 시작",
     "monitor_started": "모니터 시작",
     "monitor_restart": "모니터 재시작",
@@ -70,6 +75,9 @@ _EVENT_TEMPLATES: dict[str, str] = {
     "session_absent": "{target} 세션 부재",
     "manager_crash_alert": "{target} 매니저 크래시",
     "notify_delivery_fail": "{target} 알림 전달 실패",
+    "session_absent_confirmed": "{target} 세션 부재 확인 (대기 모드)",
+    "session_recovered": "{target} 세션 복귀 감지",
+    "reboot_count_reset": "{target} 리부팅 카운터 리셋",
 }
 
 
@@ -78,10 +86,7 @@ _EVENT_TEMPLATES: dict[str, str] = {
 # ──────────────────────────────────────────────
 
 def _repo_root() -> str:
-    return subprocess.check_output(
-        ["git", "rev-parse", "--show-toplevel"],
-        text=True,
-    ).strip()
+    return str(Path(__file__).resolve().parent.parent)
 
 
 def _validate_project(name: str) -> None:
@@ -164,8 +169,8 @@ def cmd_message(args: argparse.Namespace) -> None:
     _validate_project(args.project)
     sender = getattr(args, "from")
 
-    # 2026-03-03 18:35:42 [delivered] researcher → manager "TASK-001 완료"
-    msg_parts = [sender, "→", args.to, f'"{args.subject}"']
+    # 2026-03-03 18:35:42 [delivered] researcher → manager task_complete normal "TASK-001 완료"
+    msg_parts = [sender, "→", args.to, args.kind, args.priority, f'"{args.subject}"']
     if args.reason:
         msg_parts.append(f'reason="{" ".join(args.reason)}"')
 
@@ -202,7 +207,7 @@ def main() -> None:
     p_msg.add_argument("kind")
     p_msg.add_argument("priority")
     p_msg.add_argument("subject")
-    p_msg.add_argument("status", choices=["delivered", "skipped"])
+    p_msg.add_argument("status", choices=["delivered", "skipped", "queued"])
     p_msg.add_argument("--reason", nargs="*", help="skipped 사유")
 
     args = parser.parse_args()

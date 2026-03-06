@@ -141,6 +141,29 @@ assert_file_contains() {
   fi
 }
 
+probe_cmd_boot_message() {
+  local role="$1"
+  local project_name="${2:-$PROJECT}"
+  WHIPLASH_SOURCE_ONLY=1 \
+  WHIPLASH_TEST_ROLE="$role" \
+  WHIPLASH_TEST_PROJECT="$project_name" \
+  bash -lc '
+    source "'"$TOOLS_DIR"'/cmd.sh"
+    build_boot_message "$WHIPLASH_TEST_ROLE" "$WHIPLASH_TEST_PROJECT"
+  '
+}
+
+invoke_cmd_function() {
+  local function_name="$1"
+  shift
+  WHIPLASH_SOURCE_ONLY=1 \
+  WHIPLASH_TEST_FUNCTION="$function_name" \
+  bash -lc '
+    source "'"$TOOLS_DIR"'/cmd.sh"
+    "$WHIPLASH_TEST_FUNCTION" "$@"
+  ' -- "$@"
+}
+
 probe_dashboard_project() {
   python3 - "$REPO_ROOT" "$PROJECT_DIR" <<'PY'
 import importlib.util
@@ -748,6 +771,115 @@ EOF
 }
 
 # ──────────────────────────────────────────────
+# 시나리오 10: general 도메인 온보딩 예외 처리
+# ──────────────────────────────────────────────
+
+test_scenario_10() {
+  echo ""
+  echo "=== 시나리오 10: general 도메인 온보딩 예외 처리 ==="
+  cleanup
+  setup_test_project
+
+  local general_msg
+  general_msg="$(probe_cmd_boot_message researcher "$PROJECT")"
+  TOTAL=$((TOTAL + 1))
+  if ! echo "$general_msg" | grep -q 'domains/general/context.md'; then
+    echo "  PASS: general 도메인에서 nonexistent context 경로 미노출"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: general 도메인에서 domains/general/context.md 노출"
+    FAIL=$((FAIL + 1))
+  fi
+
+  TOTAL=$((TOTAL + 1))
+  if echo "$general_msg" | grep -q '추가 domain context는 없다'; then
+    echo "  PASS: general 도메인 skip 문구 포함"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: general 도메인 skip 문구 누락"
+    FAIL=$((FAIL + 1))
+  fi
+
+  cat > "$PROJECT_DIR/project.md" << 'EOF'
+# Project: domain-test
+
+## 기본 정보
+- **Domain** (또는 **도메인**): deep-learning
+
+## 운영 방식
+- **실행 모드**: solo
+EOF
+
+  local domain_msg
+  domain_msg="$(probe_cmd_boot_message researcher "$PROJECT")"
+  TOTAL=$((TOTAL + 1))
+  if echo "$domain_msg" | grep -q 'domains/deep-learning/context.md'; then
+    echo "  PASS: non-general 도메인 context 경로 유지"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: non-general 도메인 context 경로 누락"
+    FAIL=$((FAIL + 1))
+  fi
+
+  echo "  시나리오 10 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 11: dual worktree 지원 디렉토리 링크
+# ──────────────────────────────────────────────
+
+test_scenario_11() {
+  echo ""
+  echo "=== 시나리오 11: dual worktree 지원 디렉토리 링크 ==="
+  cleanup
+  setup_test_project
+
+  local code_repo="$PROJECT_DIR/code-repo"
+  mkdir -p "$code_repo/configs" "$code_repo/states"
+  cat > "$code_repo/.gitignore" << 'EOF'
+states/
+EOF
+  cat > "$code_repo/configs/app.cfg" << 'EOF'
+state_path=../states/current.bin
+EOF
+  printf 'seed' > "$code_repo/states/current.bin"
+
+  git -C "$code_repo" init -b main >/dev/null 2>&1
+  git -C "$code_repo" config user.name "Whiplash Test"
+  git -C "$code_repo" config user.email "test@example.com"
+  git -C "$code_repo" add .gitignore configs/app.cfg
+  git -C "$code_repo" commit -m "init" >/dev/null 2>&1
+
+  cat > "$PROJECT_DIR/project.md" << EOF
+# Project: worktree-test
+
+## 기본 정보
+- **Domain** (또는 **도메인**): general
+
+## 프로젝트 폴더
+- **경로**: ${code_repo}
+
+## 운영 방식
+- **실행 모드**: dual
+EOF
+
+  invoke_cmd_function create_worktrees "$PROJECT" developer
+
+  local wt_dir="$code_repo/.worktrees"
+  local claude_states="$wt_dir/developer-claude/states"
+  local codex_states="$wt_dir/developer-codex/states"
+
+  assert_true "claude worktree states 링크 생성" test -L "$claude_states"
+  assert_true "codex worktree states 링크 생성" test -L "$codex_states"
+  assert_eq "claude worktree states 링크 대상" "$code_repo/states" "$(readlink "$claude_states")"
+  assert_eq "codex worktree states 링크 대상" "$code_repo/states" "$(readlink "$codex_states")"
+
+  invoke_cmd_function remove_worktrees "$PROJECT" developer
+
+  echo "  시나리오 11 완료"
+}
+
+# ──────────────────────────────────────────────
 # 메인
 # ──────────────────────────────────────────────
 
@@ -770,6 +902,8 @@ test_scenario_6
 test_scenario_7
 test_scenario_8
 test_scenario_9
+test_scenario_10
+test_scenario_11
 
 echo ""
 echo "============================================"

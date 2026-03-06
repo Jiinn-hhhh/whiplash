@@ -100,11 +100,11 @@ See `agents/manager/techniques/orchestration.md`
 ### Layer 2 — 작업 시작 시
 4. Read `memory/knowledge/index.md` — project knowledge map (지도만, 전체 읽기 아님)
 5. Read `agents/{role}/techniques/*.md` — 해당 작업에 필요한 방법론만
-6. (If exists) Read `domains/{domain}/context.md` — domain background
+6. (If domain != `general` and file exists) Read `domains/{domain}/context.md` — domain background
 
 ### Layer 3 — 필요 시 (on-demand)
 7. Read `agents/common/project-context.md` — project convention (경로 해석 등 필요 시)
-8. (If exists) Read `domains/{domain}/{role}.md` — domain-specific guidelines
+8. (If domain != `general` and file exists) Read `domains/{domain}/{role}.md` — domain-specific guidelines
 9. (If exists) Read `team/{role}.md` — project-specific guidelines
 10. 개별 교훈/문서 — `index.md`에서 참조를 찾아 필요한 것만 읽기
 

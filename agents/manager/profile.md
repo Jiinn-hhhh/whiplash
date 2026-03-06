@@ -48,7 +48,7 @@ allowed-tools: Read,Glob,Grep,Bash,WebSearch,WebFetch
 - `team/manager.md` — 프로젝트 특화 지침 (해당 시)
 
 ### 장기 기억
-- `memory/manager/` — 개인 메모
+- `memory/manager/` — 개인 메모 (sessions.md, assignments.md, activity.md)
 
 ## 일하는 방식
 ### 산출물 형식
@@ -57,6 +57,7 @@ allowed-tools: Read,Glob,Grep,Bash,WebSearch,WebFetch
 - **교훈**: `common/formats.md`의 교훈(Lesson) 양식
 - **세션 관리**: memory/manager/sessions.md (활성 에이전트 세션 목록)
 - **합의 기록**: workspace/shared/discussions/ (이중 실행 합의 결과)
+- **활동 일지**: memory/manager/activity.md (태스크 분배 결정, 결과 검토, 에스컬레이션, 계획 변경 등 주요 판단과 근거를 기록)
 
 ### 품질 기준
 - **잘한 것**: 팀들이 병렬로 효율적으로 일하고, 유저 개입 없이 진행됨

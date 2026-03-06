@@ -4,20 +4,27 @@
 # 서브커맨드:
 #   boot-manager   {project}                   -- Manager 부팅 + tmux 세션 생성
 #   boot           {project}                   -- tmux 세션 생성 + 에이전트 부팅 + monitor 시작
-#   dispatch       {role} {task-file} {project} -- 에이전트에게 태스크 전달
-#   dual-dispatch  {role} {task-file} {project} -- 양쪽 백엔드에 동일 태스크 전달 (dual 모드)
+#   dispatch       {role} {task} {project}      -- 에이전트에게 태스크 전달 (파일 경로 OR 인라인 텍스트)
+#   dual-dispatch  {role} {task} {project}      -- 양쪽 백엔드에 동일 태스크 전달 (dual 모드)
+#   assign         {agent} {task} {project}      -- 태스크 추적만 기록 (전달 없이, Manager 자기 태스크 등)
+#   complete       {agent} {project}            -- 에이전트의 active 태스크를 completed로 변경
+#   expire-stale   {project} [max-hours]        -- stale 태스크 자동 만료 (기본 4시간)
 #   spawn          {role} {window-name} {project} [extra-msg] -- 동적 에이전트 추가 스폰
 #   kill-agent     {window-name} {project}     -- 동적 에이전트 종료
 #   shutdown       {project}                   -- 세션 종료 + 정리
 #   status         {project}                   -- 세션 상태 확인
 #   reboot         {target} {project}          -- 에이전트 세션 재시작 (target: role 또는 role-backend)
 #   refresh        {target} {project}          -- 에이전트 맥락 리프레시 (target: role 또는 role-backend)
+#   merge-worktree {role} {winner} {project}     -- 듀얼 모드 합의 후 winner를 main에 merge + worktree 정리
 #   monitor-check  {project}                   -- monitor.sh 상태 확인 + 자동 재시작
 
 set -euo pipefail
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-TOOLS_DIR="$REPO_ROOT/scripts"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+TOOLS_DIR="$SCRIPT_DIR"
+# shellcheck source=/dev/null
+source "$TOOLS_DIR/tmux-submit.sh"
 
 # ──────────────────────────────────────────────
 # 유틸리티 함수
@@ -77,78 +84,6 @@ get_active_agents() {
     | grep -v '^$'
 }
 
-# ──────────────────────────────────────────────
-# Git Worktree 격리
-# ──────────────────────────────────────────────
-
-# 에이전트용 worktree 생성
-# 반환: worktree 경로
-create_agent_worktree() {
-  local project="$1"
-  local agent_id="$2"  # window_name (researcher, dev-hotfix 등)
-  local worktree_base="$(project_dir "$project")/worktrees"
-  local worktree_path="${worktree_base}/${agent_id}"
-  local branch_name="whiplash/${project}/${agent_id}"
-
-  mkdir -p "$worktree_base"
-
-  # 이미 존재하면 경로만 반환
-  if [ -d "$worktree_path" ]; then
-    echo "$worktree_path"
-    return 0
-  fi
-
-  # 현재 HEAD 기준으로 worktree 생성
-  git worktree add -b "$branch_name" "$worktree_path" HEAD 2>/dev/null || {
-    # 브랜치가 이미 존재하면 -b 없이 재시도
-    git worktree add "$worktree_path" "$branch_name" 2>/dev/null || {
-      echo "Warning: worktree 생성 실패 (${agent_id}). 메인 디렉토리에서 작업." >&2
-      echo ""
-      return 1
-    }
-  }
-
-  echo "$worktree_path"
-}
-
-# 에이전트용 worktree 제거 (squash merge 후 정리)
-remove_agent_worktree() {
-  local project="$1"
-  local agent_id="$2"
-  local worktree_path="$(project_dir "$project")/worktrees/${agent_id}"
-  local branch_name="whiplash/${project}/${agent_id}"
-
-  if [ ! -d "$worktree_path" ]; then
-    return 0
-  fi
-
-  # worktree에 커밋이 있으면 squash merge 시도
-  local main_branch
-  main_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || main_branch="main"
-  local worktree_head
-  worktree_head=$(git -C "$worktree_path" rev-parse HEAD 2>/dev/null) || worktree_head=""
-  local base_head
-  base_head=$(git rev-parse HEAD 2>/dev/null) || base_head=""
-
-  if [ -n "$worktree_head" ] && [ -n "$base_head" ] && [ "$worktree_head" != "$base_head" ]; then
-    echo "  ${agent_id} worktree에 변경 있음. squash merge 시도..."
-    git merge --squash "$branch_name" 2>/dev/null && \
-      git commit -m "Merge ${agent_id} worktree (squash)" --no-edit 2>/dev/null || {
-        echo "  Warning: ${agent_id} squash merge 실패. 수동 merge 필요." >&2
-        echo "  브랜치: ${branch_name}, 경로: ${worktree_path}" >&2
-        return 1
-      }
-  fi
-
-  # worktree 제거
-  git worktree remove "$worktree_path" --force 2>/dev/null || {
-    rm -rf "$worktree_path" 2>/dev/null
-  }
-
-  # 브랜치 정리
-  git branch -D "$branch_name" 2>/dev/null || true
-}
-
 # profile.md의 <!-- agent-meta --> 블록에서 키 값 추출
 parse_agent_meta() {
   local role="$1"
@@ -184,6 +119,67 @@ get_allowed_tools() {
   parse_agent_meta "$role" "allowed-tools"
 }
 
+get_manager_backend() {
+  local backend="${WHIPLASH_MANAGER_BACKEND:-claude}"
+  case "$backend" in
+    claude|codex) echo "$backend" ;;
+    *)            echo "claude" ;;
+  esac
+}
+
+get_codex_model() {
+  if [ -n "${WHIPLASH_CODEX_MODEL:-}" ]; then
+    echo "$WHIPLASH_CODEX_MODEL"
+    return
+  fi
+
+  local cfg="${HOME}/.codex/config.toml"
+  if [ -f "$cfg" ]; then
+    local model
+    model=$(sed -n 's/^model = "\(.*\)"/\1/p' "$cfg" | head -1)
+    if [ -n "$model" ]; then
+      echo "$model"
+      return
+    fi
+  fi
+
+  echo "codex"
+}
+
+get_codex_frontend_mode() {
+  local role="${1:-}"
+  local mode=""
+  if [ "$role" = "manager" ] && [ -n "${WHIPLASH_MANAGER_CODEX_FRONTEND:-}" ]; then
+    mode="${WHIPLASH_MANAGER_CODEX_FRONTEND}"
+  else
+    mode="${WHIPLASH_CODEX_FRONTEND:-exec}"
+  fi
+  case "$mode" in
+    interactive|exec) echo "$mode" ;;
+    *)                echo "exec" ;;
+  esac
+}
+
+build_codex_env_prefix() {
+  local env_prefix="env"
+  if [ -n "${WHIPLASH_CODEX_MODEL:-}" ]; then
+    env_prefix+=" WHIPLASH_CODEX_MODEL=$(printf '%q' "$WHIPLASH_CODEX_MODEL")"
+  fi
+  if [ -n "${WHIPLASH_CODEX_REASONING_EFFORT:-}" ]; then
+    env_prefix+=" WHIPLASH_CODEX_REASONING_EFFORT=$(printf '%q' "$WHIPLASH_CODEX_REASONING_EFFORT")"
+  fi
+  if [ -n "${WHIPLASH_CODEX_SERVICE_TIER:-}" ]; then
+    env_prefix+=" WHIPLASH_CODEX_SERVICE_TIER=$(printf '%q' "$WHIPLASH_CODEX_SERVICE_TIER")"
+  fi
+  echo "$env_prefix"
+}
+
+send_codex_prompt_tmux() {
+  local tmux_target="$1"
+  local prompt="$2"
+  tmux_submit_pasted_payload "$tmux_target" "$prompt" "codex-prompt"
+}
+
 
 # 역할별 도메인 파일 경로 (있으면 반환)
 get_domain() {
@@ -208,10 +204,204 @@ get_exec_mode() {
   mode=$({ grep -i "실행 모드" "$project_md" 2>/dev/null || true; } \
     | head -1 \
     | sed 's/.*: *//' \
+    | sed 's/ *(.*)//' \
     | tr -d '[:space:]' \
     | tr -d '*|' \
     | tr '[:upper:]' '[:lower:]')
   if [ "$mode" = "dual" ]; then echo "dual"; else echo "solo"; fi
+}
+
+# project.md에서 프로젝트 폴더 (코드 레포) 경로 추출
+get_code_repo() {
+  local project="$1"
+  local project_md="$(project_dir "$project")/project.md"
+  if [ ! -f "$project_md" ]; then
+    return 0
+  fi
+
+  local section_path
+  section_path=$(
+    awk '
+      function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+      /^##[[:space:]]+프로젝트[[:space:]]+폴더/ { in_section = 1; next }
+      /^##[[:space:]]+/ && in_section { in_section = 0 }
+      in_section && /경로/ {
+        line = $0
+        sub(/.*: */, "", line)
+        gsub(/`/, "", line)
+        gsub(/\*\*/, "", line)
+        gsub(/\|/, "", line)
+        line = trim(line)
+        sub(/ *\(.*/, "", line)
+        sub(/\/+$/, "", line)
+        print line
+        exit
+      }
+    ' "$project_md"
+  )
+  if [ -n "$section_path" ]; then
+    printf '%s\n' "$section_path"
+    return
+  fi
+
+  { grep -i "프로젝트 폴더" "$project_md" 2>/dev/null || true; } \
+    | head -1 \
+    | sed 's/.*: *//' \
+    | sed 's/ *(.*//' \
+    | sed 's#/*$##' \
+    | tr -d '[:space:]' \
+    | tr -d '*|'
+}
+
+# 듀얼 모드 worktree에서 메인 레포의 top-level ignored 지원 디렉토리를 재사용한다.
+# 예: states/, node_modules/, .venv/ 등. tracked 파일의 상대 참조가 worktree에서 깨지는 것을 막는다.
+sync_worktree_support_paths() {
+  local code_repo="$1"
+  local wt_path="$2"
+  [ -d "$code_repo" ] || return 0
+  [ -d "$wt_path" ] || return 0
+
+  local ignored_dirs
+  ignored_dirs=$(
+    git -C "$code_repo" ls-files --others --ignored --exclude-standard --directory --no-empty-directory 2>/dev/null \
+      | sed 's#/$##' \
+      | awk -F'/' 'NF { print $1 }' \
+      | sort -u
+  ) || ignored_dirs=""
+
+  [ -n "$ignored_dirs" ] || return 0
+
+  while IFS= read -r dir_name; do
+    [ -n "$dir_name" ] || continue
+    case "$dir_name" in
+      .git|.worktrees) continue ;;
+    esac
+
+    local src="${code_repo}/${dir_name}"
+    local dst="${wt_path}/${dir_name}"
+    [ -d "$src" ] || continue
+
+    if [ -L "$dst" ]; then
+      local current_target
+      current_target=$(readlink "$dst" 2>/dev/null || true)
+      if [ "$current_target" = "$src" ]; then
+        continue
+      fi
+      rm -f "$dst"
+    elif [ -e "$dst" ]; then
+      continue
+    fi
+
+    if ! ln -s "$src" "$dst" 2>/dev/null; then
+      echo "Warning: support 디렉토리 링크 실패: ${dst} -> ${src}" >&2
+    fi
+  done <<< "$ignored_dirs"
+}
+
+# 듀얼 모드용 git worktree 생성 (멱등)
+create_worktrees() {
+  local project="$1"
+  local role="$2"
+  local code_repo
+  code_repo="$(get_code_repo "$project")"
+  if [ -z "$code_repo" ] || [ ! -d "$code_repo" ]; then
+    echo "Warning: 프로젝트 폴더가 설정되지 않았거나 존재하지 않음. worktree 생성 건너뜀." >&2
+    return 0
+  fi
+
+  local wt_dir="${code_repo}/.worktrees"
+  mkdir -p "$wt_dir"
+
+  for backend in claude codex; do
+    local wt_path="${wt_dir}/${role}-${backend}"
+    local branch="dual/${role}-${backend}"
+    if [ -d "$wt_path" ]; then
+      echo "Info: worktree ${wt_path} 이미 존재. 건너뜀." >&2
+      sync_worktree_support_paths "$code_repo" "$wt_path"
+      continue
+    fi
+
+    if ! git -C "$code_repo" worktree add "$wt_path" -b "$branch" 2>&1; then
+      echo "Warning: worktree 생성 실패: ${wt_path}" >&2
+      continue
+    fi
+
+    sync_worktree_support_paths "$code_repo" "$wt_path"
+  done
+}
+
+# 듀얼 모드용 git worktree + 브랜치 정리
+remove_worktrees() {
+  local project="$1"
+  local role="$2"
+  local code_repo
+  code_repo="$(get_code_repo "$project")"
+  if [ -z "$code_repo" ] || [ ! -d "$code_repo" ]; then
+    return 0
+  fi
+
+  local wt_dir="${code_repo}/.worktrees"
+
+  for backend in claude codex; do
+    local wt_path="${wt_dir}/${role}-${backend}"
+    local branch="dual/${role}-${backend}"
+    if [ -d "$wt_path" ]; then
+      git -C "$code_repo" worktree remove "$wt_path" --force 2>/dev/null || true
+    fi
+    git -C "$code_repo" branch -D "$branch" 2>/dev/null || true
+  done
+
+  # .worktrees 디렉토리가 비었으면 삭제
+  if [ -d "$wt_dir" ] && [ -z "$(ls -A "$wt_dir" 2>/dev/null)" ]; then
+    rmdir "$wt_dir" 2>/dev/null || true
+  fi
+}
+
+create_agent_worktree() {
+  local project="$1"
+  local agent_id="$2"
+  local code_repo
+  code_repo="$(get_code_repo "$project")"
+  if [ -z "$code_repo" ] || [ ! -d "$code_repo" ]; then
+    return 0
+  fi
+
+  local wt_dir="${code_repo}/.worktrees"
+  local wt_path="${wt_dir}/${agent_id}"
+  local branch="dual/${agent_id}"
+  mkdir -p "$wt_dir"
+
+  if [ -d "$wt_path" ]; then
+    sync_worktree_support_paths "$code_repo" "$wt_path"
+    return 0
+  fi
+
+  if ! git -C "$code_repo" worktree add "$wt_path" -b "$branch" 2>&1; then
+    echo "Warning: extra agent worktree 생성 실패: ${wt_path}" >&2
+    return 1
+  fi
+
+  sync_worktree_support_paths "$code_repo" "$wt_path"
+  return 0
+}
+
+remove_agent_worktree() {
+  local project="$1"
+  local agent_id="$2"
+  local code_repo
+  code_repo="$(get_code_repo "$project")"
+  if [ -z "$code_repo" ] || [ ! -d "$code_repo" ]; then
+    return 0
+  fi
+
+  local wt_dir="${code_repo}/.worktrees"
+  local wt_path="${wt_dir}/${agent_id}"
+  local branch="dual/${agent_id}"
+
+  if [ -d "$wt_path" ]; then
+    git -C "$code_repo" worktree remove "$wt_path" --force 2>/dev/null || true
+  fi
+  git -C "$code_repo" branch -D "$branch" 2>/dev/null || true
 }
 
 # 부팅 메시지 생성
@@ -220,13 +410,27 @@ build_boot_message() {
   local project="$2"
   local extra="${3:-}"
   local agent_id="${4:-$role}"
+  local pending_task="${5:-}"
   local domain
   domain="$(get_domain "$project")"
+  domain="${domain:-general}"
+  local message_cmd="bash \"$TOOLS_DIR/message.sh\""
+  local layer2_domain_line
+  local layer3_domain_line
+
+  if [ "$domain" = "general" ]; then
+    layer2_domain_line="6. 이 프로젝트 도메인은 general이다. 추가 domain context는 없다."
+    layer3_domain_line="8. general 도메인이므로 role-specific domain 파일도 없다."
+  else
+    layer2_domain_line="6. (파일이 있으면) domains/${domain}/context.md 읽기"
+    layer3_domain_line="8. (파일이 있으면) domains/${domain}/${role}.md"
+  fi
 
   cat << BOOTMSG
 너는 ${role} 에이전트다.
 레포 루트: ${REPO_ROOT}
 현재 프로젝트: projects/${project}/
+주의: worktree나 다른 디렉토리로 이동한 뒤에도 whiplash 문서/스크립트는 위 레포 루트 기준 절대경로로 다뤄라.
 
 아래 온보딩 절차를 순서대로 따라라 (Progressive Disclosure — 필요한 것만 필요한 시점에):
 
@@ -238,22 +442,22 @@ build_boot_message() {
 [Layer 2 — 첫 태스크 수신 시 읽기]
 4. memory/knowledge/index.md 읽기 (지도만, 전체 읽기 아님)
 5. 해당 작업에 필요한 agents/${role}/techniques/*.md 읽기
-6. (해당 시) domains/${domain}/context.md 읽기
+${layer2_domain_line}
 
 [Layer 3 — 필요할 때만 읽기]
 7. agents/common/project-context.md (경로 해석 등 필요 시)
-8. (해당 시) domains/${domain}/${role}.md
+${layer3_domain_line}
 9. (해당 시) projects/${project}/team/${role}.md
 
-10. 알림 보내기 (상황별 예시):
+10. 알림 보내기 (상황별 예시. worktree 안에서도 아래 절대경로 명령을 그대로 써라):
    태스크 완료:
-     bash scripts/message.sh ${project} ${agent_id} manager task_complete normal "TASK-XXX 완료" "결과 요약"
+     ${message_cmd} ${project} ${agent_id} manager task_complete normal "TASK-XXX 완료" "결과 요약"
    도움 필요:
-     bash scripts/message.sh ${project} ${agent_id} manager need_input normal "방향 선택 필요" "상세 내용"
+     ${message_cmd} ${project} ${agent_id} manager need_input normal "방향 선택 필요" "상세 내용"
    긴급 블로커:
-     bash scripts/message.sh ${project} ${agent_id} manager escalation urgent "블로커 발생" "상세 내용"
+     ${message_cmd} ${project} ${agent_id} manager escalation urgent "블로커 발생" "상세 내용"
    다른 에이전트에게:
-     bash scripts/message.sh ${project} ${agent_id} {대상} status_update normal "제목" "내용"
+     ${message_cmd} ${project} ${agent_id} {대상} status_update normal "제목" "내용"
 
 11. 알림 받기 — 작업 중 아래 형식의 알림이 올 수 있다:
     [notify] {보낸이} → {나} | {종류}
@@ -268,9 +472,131 @@ build_boot_message() {
     - agent_ready: 에이전트 준비 확인
     - reboot_notice: 에이전트 복구 상태 확인
 ${extra}
+$(
+  # 듀얼 모드 워크트리 경로 안내
+  _exec_mode="$(get_exec_mode "$project")"
+  _code_repo="$(get_code_repo "$project")"
+  if [ "$_exec_mode" = "dual" ] && [ -n "$_code_repo" ] && { [[ "$agent_id" == *-claude ]] || [[ "$agent_id" == *-codex ]]; }; then
+    echo "작업 디렉토리: ${_code_repo}/.worktrees/${agent_id}/"
+    echo "주의: 반드시 이 디렉토리 안에서만 코드를 수정하라. 메인 레포를 직접 수정하지 마라."
+  fi
+)
 온보딩이 끝나면 준비 완료를 알림으로 보고해라:
-bash scripts/message.sh ${project} ${agent_id} manager agent_ready normal "온보딩 완료" "${agent_id} 에이전트 준비 완료"
+${message_cmd} ${project} ${agent_id} manager agent_ready normal "온보딩 완료" "${agent_id} 에이전트 준비 완료"
 BOOTMSG
+
+  # 재부팅 태스크 복구 지시 (pending_task가 있으면 추가)
+  if [ -n "$pending_task" ]; then
+    cat << TASKMSG
+
+[재부팅 후 태스크 복구]
+이전 세션에서 중단된 태스크가 있다: ${pending_task}
+해당 파일을 읽고 작업을 이어서 진행해라.
+TASKMSG
+  fi
+}
+
+# assignments.md에 태스크 할당 기록
+record_assignment() {
+  local project="$1" agent="$2" task_file="$3"
+  local pdir
+  pdir="$(project_dir "$project")"
+  local af="${pdir}/memory/manager/assignments.md"
+  mkdir -p "$(dirname "$af")"
+
+  # 절대경로 → 상대경로 정규화 (project_dir 기준)
+  if [[ "$task_file" == "$pdir"/* ]]; then
+    task_file="${task_file#"$pdir"/}"
+  elif [[ "$task_file" == "projects/$project/"* ]]; then
+    task_file="${task_file#"projects/$project/"}"
+  fi
+
+  if [ ! -f "$af" ]; then
+    cat > "$af" << 'HEADER'
+# 태스크 할당 현황
+| 에이전트 | 태스크 파일 | 할당 시각 | 상태 |
+|----------|-----------|----------|------|
+HEADER
+  fi
+  # 기존 active → completed
+  if grep -q "| ${agent} |.*| active |" "$af" 2>/dev/null; then
+    sed_inplace "s/| ${agent} |\(.*\)| active |/| ${agent} |\1| completed |/" "$af"
+  fi
+  echo "| ${agent} | ${task_file} | $(date '+%Y-%m-%d %H:%M') | active |" >> "$af"
+}
+
+# assignments.md에서 에이전트의 active 태스크를 completed로 변경
+complete_assignment() {
+  local project="$1" agent="$2"
+  local af="$(project_dir "$project")/memory/manager/assignments.md"
+  [ -f "$af" ] || return 0
+  if grep -q "| ${agent} |.*| active |" "$af" 2>/dev/null; then
+    sed_inplace "s/| ${agent} |\(.*\)| active |/| ${agent} |\1| completed |/" "$af"
+  fi
+}
+
+# 명시적 complete 커맨드
+cmd_complete() {
+  local agent="$1" project="$2"
+  validate_project_name "$project"
+  validate_window_name "$agent"
+  complete_assignment "$project" "$agent"
+  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator task_complete "$agent" || true
+  echo "complete 완료: ${agent}"
+}
+
+# 명시적 assign 커맨드 (전달 없이 추적만 기록)
+# Manager가 message.sh로 이미 전달한 태스크를 사후 등록하거나,
+# 자기 자신의 조율 태스크를 기록할 때 사용
+cmd_assign() {
+  local agent="$1" task="$2" project="$3"
+  validate_project_name "$project"
+  validate_window_name "$agent"
+  record_assignment "$project" "$agent" "$task"
+  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator task_assign "$agent" \
+    --detail task="$task" || true
+  echo "assign 완료: ${agent} ← ${task}"
+}
+
+# stale 태스크 자동 만료 (max_hours 이상 active 유지된 태스크를 stale로 표시)
+expire_stale_assignments() {
+  local project="$1" max_hours="${2:-4}"
+  local af
+  af="$(project_dir "$project")/memory/manager/assignments.md"
+  [ -f "$af" ] || return 0
+
+  local now_epoch
+  now_epoch=$(date +%s)
+
+  local tmp="${af}.tmp"
+  while IFS= read -r line; do
+    if echo "$line" | grep -q "| active |"; then
+      local ts_str
+      ts_str=$(echo "$line" | awk -F'|' '{print $4}' | sed 's/^ *//;s/ *$//')
+      if [ -n "$ts_str" ]; then
+        local ts_epoch=0
+        if [[ "$OSTYPE" == darwin* ]]; then
+          ts_epoch=$(date -j -f "%Y-%m-%d %H:%M" "$ts_str" +%s 2>/dev/null) || ts_epoch=0
+        else
+          ts_epoch=$(date -d "$ts_str" +%s 2>/dev/null) || ts_epoch=0
+        fi
+        local age_hours=$(( (now_epoch - ts_epoch) / 3600 ))
+        if [ "$ts_epoch" -gt 0 ] && [ "$age_hours" -ge "$max_hours" ]; then
+          line=$(echo "$line" | sed 's/| active |/| stale |/')
+        fi
+      fi
+    fi
+    echo "$line"
+  done < "$af" > "$tmp"
+  mv "$tmp" "$af"
+}
+
+# 에이전트의 현재 active 태스크 경로 반환
+get_active_task() {
+  local project="$1" agent="$2"
+  local af="$(project_dir "$project")/memory/manager/assignments.md"
+  [ -f "$af" ] || return 0
+  { grep "| ${agent} |" "$af" 2>/dev/null || true; } | grep "| active |" | tail -1 | awk -F'|' '{print $3}' | sed 's/^ *//;s/ *$//' || true
 }
 
 # sessions.md 초기화 (멱등: 이미 존재하면 건너뜀)
@@ -345,13 +671,21 @@ boot_single_agent() {
   local project="$2"
   local extra_boot_msg="${3:-}"
   local window_name="${4:-$role}"
+  local pending_task="${5:-}"
   local sess
   sess="$(session_name "$project")"
 
-  # 멱등성 가드: 이미 윈도우가 존재하면 건너뜀
+  # 멱등성 가드: 윈도우 존재 + claude 프로세스 alive 확인
   if tmux list-windows -t "${sess}" -F '#{window_name}' 2>/dev/null | grep -q "^${window_name}$"; then
-    echo "Info: ${window_name} 윈도우가 이미 존재. 부팅 건너뜀." >&2
-    return 0
+    local existing_pane_pid
+    existing_pane_pid=$(tmux list-panes -t "${sess}:${window_name}" -F '#{pane_pid}' 2>/dev/null | head -1)
+    if [ -n "$existing_pane_pid" ] && pgrep -P "$existing_pane_pid" claude >/dev/null 2>&1; then
+      echo "Info: ${window_name} 윈도우 + claude 프로세스 활성. 부팅 건너뜀." >&2
+      return 0
+    fi
+    # 윈도우는 있지만 프로세스가 없음 → 윈도우 kill 후 재부팅 진행
+    echo "Info: ${window_name} 윈도우 존재하나 claude 프로세스 없음. 윈도우 제거 후 재부팅." >&2
+    tmux kill-window -t "${sess}:${window_name}" 2>/dev/null || true
   fi
 
   local model
@@ -360,17 +694,10 @@ boot_single_agent() {
   tools="$(get_allowed_tools "$role")"
   local agent_id="$window_name"
   local boot_msg
-  boot_msg="$(build_boot_message "$role" "$project" "$extra_boot_msg" "$agent_id")"
+  boot_msg="$(build_boot_message "$role" "$project" "$extra_boot_msg" "$agent_id" "$pending_task")"
   local tmux_target="${sess}:${window_name}"
 
   echo "--- ${window_name} (${model}) 부팅 중 ---"
-
-  # worktree 생성 (실패 시 메인 디렉토리에서 작업)
-  local worktree_path
-  worktree_path=$(create_agent_worktree "$project" "$window_name") || true
-  if [ -n "$worktree_path" ]; then
-    echo "  worktree: ${worktree_path}"
-  fi
 
   # claude -p로 초기 세션 생성하여 session_id 획득
   # env -u CLAUDECODE: Manager가 Claude Code 안에서 호출할 때 중첩 세션 에러 방지
@@ -397,12 +724,7 @@ boot_single_agent() {
 
   # tmux 윈도우 생성 후 claude --resume으로 인터랙티브 세션 시작
   # env -u CLAUDECODE: Manager가 Claude Code 안에서 호출할 때 중첩 세션 에러 방지
-  tmux new-window -t "$sess" -n "$window_name"
-  # worktree가 있으면 해당 디렉토리로 이동 후 시작
-  if [ -n "$worktree_path" ]; then
-    tmux send-keys -t "$tmux_target" "cd '$worktree_path'" Enter
-    sleep 0.5
-  fi
+  tmux new-window -d -t "$sess" -n "$window_name"
   local resume_tools_flag=""
   [ -n "$tools" ] && resume_tools_flag=" --allowedTools $tools"
   tmux send-keys -t "$tmux_target" "env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude --resume $session_id --dangerously-skip-permissions${resume_tools_flag}" Enter
@@ -431,7 +753,9 @@ boot_single_agent() {
   return 0
 }
 
-# Codex CLI 에이전트 부팅
+# Codex CLI 에이전트 부팅 (codex exec 비대화형 모드)
+# tmux + Kitty Keyboard Protocol 비호환 문제를 근본적으로 해결.
+# codex-agent.sh 래퍼가 codex exec 기반 폴링 루프를 실행한다.
 boot_codex_agent() {
   local role="$1"
   local project="$2"
@@ -441,6 +765,12 @@ boot_codex_agent() {
   sess="$(session_name "$project")"
   local agent_id="$window_name"
   local tmux_target="${sess}:${window_name}"
+  local codex_model
+  codex_model="$(get_codex_model)"
+  local codex_env
+  codex_env="$(build_codex_env_prefix)"
+  local codex_mode
+  codex_mode="$(get_codex_frontend_mode "$role")"
 
   # codex CLI 설치 확인
   if ! command -v codex &>/dev/null; then
@@ -448,31 +778,50 @@ boot_codex_agent() {
     return 1
   fi
 
-  echo "--- ${window_name} (codex) 부팅 중 ---"
+  echo "--- ${window_name} (codex ${codex_mode} mode) 부팅 중 ---"
 
-  # 부팅 메시지를 파일에 저장 (send-keys 길이 제한 회피)
+  # 부팅 메시지를 파일에 저장
   local boot_msg
   boot_msg="$(build_boot_message "$role" "$project" "$extra_boot_msg" "$agent_id")"
   local boot_file="$(project_dir "$project")/memory/${role}/codex-boot-msg.md"
   mkdir -p "$(dirname "$boot_file")"
   echo "$boot_msg" > "$boot_file"
 
-  # tmux 윈도우 생성
-  tmux new-window -t "$sess" -n "$window_name"
+  # inbox 디렉토리 생성
+  local inbox_dir="$(project_dir "$project")/memory/${role}/codex-inbox"
+  mkdir -p "$inbox_dir"
 
-  # codex 인터랙티브 시작
-  tmux send-keys -t "$tmux_target" "codex --yolo" Enter
-  sleep 2
+  tmux new-window -d -t "$sess" -n "$window_name"
 
-  # 부팅 메시지 파일 읽기 지시
-  tmux send-keys -t "$tmux_target" \
-    "${boot_file} 파일을 읽고 그 안의 온보딩 절차를 따라라." Enter
-
-  # sessions.md에 기록
-  add_session_row "$project" "$role" "codex-interactive" "$tmux_target" "codex" "codex"
-
-  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator codex_boot "$window_name" --detail tmux="$tmux_target" || true
-  echo "${window_name} 부팅 완료: tmux=${tmux_target}"
+  if [ "$codex_mode" = "interactive" ]; then
+    tmux send-keys -t "$tmux_target" \
+      "cd $(printf '%q' "$REPO_ROOT") && ${codex_env} codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox" Enter
+    sleep 4
+    local prompt_ok=0
+    local attempt
+    for attempt in 1 2 3 4 5; do
+      if send_codex_prompt_tmux "$tmux_target" "$boot_msg"; then
+        prompt_ok=1
+        break
+      fi
+      sleep 2
+    done
+    if [ "$prompt_ok" -ne 1 ]; then
+      echo "Warning: ${window_name} codex TUI 온보딩 프롬프트 전달 실패." >&2
+      tmux kill-window -t "$tmux_target" 2>/dev/null || true
+      return 1
+    fi
+    add_session_row "$project" "$role" "codex-interactive" "$tmux_target" "$codex_model" "codex"
+    python3 "$TOOLS_DIR/log.py" system "$project" orchestrator codex_boot "$window_name" --detail tmux="$tmux_target" mode="codex-interactive" || true
+    echo "${window_name} 부팅 완료: tmux=${tmux_target} (codex interactive mode)"
+  else
+    # tmux 윈도우 생성 후 codex-agent.sh 래퍼 실행
+    tmux send-keys -t "$tmux_target" \
+      "cd $(printf '%q' "$REPO_ROOT") && ${codex_env} bash $(printf '%q' "$TOOLS_DIR/codex-agent.sh") $(printf '%q' "$project") $(printf '%q' "$role") $(printf '%q' "$window_name") $(printf '%q' "$boot_file")" Enter
+    add_session_row "$project" "$role" "codex-exec" "$tmux_target" "$codex_model" "codex"
+    python3 "$TOOLS_DIR/log.py" system "$project" orchestrator codex_boot "$window_name" --detail tmux="$tmux_target" mode="codex-exec" || true
+    echo "${window_name} 부팅 완료: tmux=${tmux_target} (codex exec mode)"
+  fi
   return 0
 }
 
@@ -480,11 +829,46 @@ boot_codex_agent() {
 # spawn 서브커맨드 — 동적 에이전트 추가 스폰
 # ──────────────────────────────────────────────
 
+normalize_spawn_role() {
+  local role="$1"
+  case "$role" in
+    researcher|researcher-claude|researcher-codex) echo "researcher" ;;
+    developer|developer-claude|developer-codex) echo "developer" ;;
+    monitoring|monitoring-claude|monitoring-codex) echo "monitoring" ;;
+    manager|manager-claude|manager-codex) echo "manager" ;;
+    *)
+      echo "Error: 지원하지 않는 spawn role: '$role'" >&2
+      exit 1
+      ;;
+  esac
+}
+
+resolve_spawn_backend() {
+  local requested_role="$1"
+  local window_name="$2"
+
+  case "$requested_role" in
+    *-codex) echo "codex"; return ;;
+    *-claude) echo "claude"; return ;;
+  esac
+
+  case "$window_name" in
+    *codex*) echo "codex"; return ;;
+    *claude*) echo "claude"; return ;;
+  esac
+
+  echo "claude"
+}
+
 cmd_spawn() {
-  local role="$1"        # researcher, developer 등
+  local requested_role="$1" # researcher, researcher-codex 등
   local window_name="$2" # researcher-2, dev-hotfix 등
   local project="$3"
   local extra_msg="${4:-}"
+  local role
+  role="$(normalize_spawn_role "$requested_role")"
+  local backend
+  backend="$(resolve_spawn_backend "$requested_role" "$window_name")"
   validate_project_name "$project"
   validate_window_name "$window_name"
   local sess
@@ -502,17 +886,29 @@ cmd_spawn() {
     exit 1
   fi
 
-  # 부팅 (동일한 프로젝트 맥락, 메모리 공유, 별도 worktree)
+  local exec_mode
+  exec_mode="$(get_exec_mode "$project")"
+  if [ "$exec_mode" = "dual" ] && { [ "$role" = "researcher" ] || [ "$role" = "developer" ]; }; then
+    create_agent_worktree "$project" "$window_name" || true
+  fi
+
+  # 부팅 (동일한 프로젝트 맥락, 메모리 공유)
   local spawn_note="
 참고: 너는 동적으로 스폰된 추가 에이전트다 (${window_name}).
-너는 별도의 git worktree에서 작업한다. 다른 에이전트와 파일 충돌이 없다.
-작업 완료 후 kill-agent 시 자동으로 squash merge된다.
+같은 프로젝트의 메모리와 workspace를 공유한다. 같은 파일 동시 수정은 금지.
 ${extra_msg}"
-  boot_single_agent "$role" "$project" "$spawn_note" "$window_name" || {
-    echo "Error: ${window_name} 스폰 실패." >&2
-    exit 1
-  }
-  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_spawn "$window_name" --detail role="$role" || true
+  if [ "$backend" = "codex" ]; then
+    boot_codex_agent "$role" "$project" "$window_name" "$spawn_note" || {
+      echo "Error: ${window_name} 스폰 실패." >&2
+      exit 1
+    }
+  else
+    boot_single_agent "$role" "$project" "$spawn_note" "$window_name" || {
+      echo "Error: ${window_name} 스폰 실패." >&2
+      exit 1
+    }
+  fi
+  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_spawn "$window_name" --detail role="$role" backend="$backend" || true
   echo "=== ${window_name} 스폰 완료 ==="
 }
 
@@ -545,7 +941,6 @@ cmd_kill_agent() {
   sleep 3
   tmux kill-window -t "${sess}:${window_name}" 2>/dev/null || true
 
-  # worktree 정리 (merge + 제거)
   remove_agent_worktree "$project" "$window_name" || true
 
   # sessions.md 업데이트
@@ -565,6 +960,10 @@ cmd_kill_agent() {
 cmd_boot_manager() {
   local project="$1"
   validate_project_name "$project"
+
+  # Preflight 검증
+  bash "$TOOLS_DIR/preflight.sh" "$project" || exit 1
+
   local sess
   sess="$(session_name "$project")"
 
@@ -579,64 +978,102 @@ cmd_boot_manager() {
   # 1. sessions.md 초기화
   init_sessions_file "$project"
 
-  # 2. Manager 부팅 (claude -p → session_id)
-  local model
-  model="$(get_model "manager")"
-  local mgr_tools
-  mgr_tools="$(get_allowed_tools "manager")"
-  local extra_boot_instructions
-  extra_boot_instructions=$(cat << EXTRA
-10. 온보딩 완료 후, 아래 명령으로 팀 에이전트를 부팅해라:
-    bash scripts/cmd.sh boot ${project}
-11. 모든 에이전트의 agent_ready 메시지를 기다려라.
-12. 팀이 준비되면 project.md의 목표를 분석하고 첫 태스크를 분배해라.
-    techniques/task-distribution.md 절차를 따른다.
-13. 에이전트로부터 알림([notify] 형식)을 받으면 즉시 내용을 분석하고 적절히 대응해라:
-    - task_complete → 결과를 확인하고, 후속 태스크가 있으면 디스패치. 모든 태스크 완료 시 유저에게 보고.
-    - need_input → 판단하여 응답. 유저 판단이 필요하면 에스컬레이션.
-    - escalation → 심각도 평가 후 대응. 필요 시 유저에게 전달.
-    - status_update → 진행 상황 기록. 계획 조정이 필요하면 조정.
-    - reboot_notice → 해당 에이전트 상태 확인 후 재디스패치 여부 결정.
-EXTRA
-)
-  local boot_msg
-  boot_msg="$(build_boot_message "manager" "$project" "$extra_boot_instructions")"
+  # 2. tmux 세션 + dashboard 먼저 생성 (부팅 과정을 실시간으로 볼 수 있도록)
+  tmux new-session -d -s "$sess" -n "dashboard"
+  # activity로 인한 자동 윈도우 전환 방지
+  tmux set-option -t "$sess" activity-action none
+  tmux set-option -t "$sess" visual-activity off
+  # 상태바 시각적 구분: 윈도우 간 구분자 + 현재 윈도우 강조
+  tmux set-option -t "$sess" window-status-separator "  "
+  tmux set-option -t "$sess" window-status-format " #I:#W "
+  tmux set-option -t "$sess" window-status-current-format " [#I:#W] "
+  tmux set-option -t "$sess" status-style "bg=black,fg=white"
+  tmux set-option -t "$sess" window-status-current-style "bg=blue,fg=white,bold"
+  tmux send-keys -t "${sess}:dashboard" \
+    "python3 \"$REPO_ROOT/dashboard/dashboard.py\" \"$project\" --interval 3" Enter
 
-  # env -u CLAUDECODE: Claude Code 안에서 호출할 때 중첩 세션 에러 방지
-  local mgr_tools_flag=""
-  [ -n "$mgr_tools" ] && mgr_tools_flag="--allowedTools $mgr_tools"
-  local result
-  result=$(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude -p "$boot_msg" \
-    --model "$model" \
-    --output-format json \
-    --dangerously-skip-permissions $mgr_tools_flag) || {
-    echo "Error: Manager claude -p 실행 실패." >&2
-    exit 1
-  }
+  echo ""
+  echo "╔══════════════════════════════════════════════╗"
+  echo "║  Dashboard 준비 완료                        ║"
+  echo "║  tmux attach -t $sess 로 실시간 모니터링    ║"
+  echo "╚══════════════════════════════════════════════╝"
+  echo ""
+  echo "Manager 세션 생성 중..."
 
-  local session_id
-  session_id=$(echo "$result" | jq -r '.session_id' 2>/dev/null) || session_id=""
-
-  if [ -z "$session_id" ] || [ "$session_id" = "null" ]; then
-    echo "Error: Manager session_id 획득 실패." >&2
-    exit 1
+  local msg_log="$(project_dir "$project")/logs/message.log"
+  local start_lines=0
+  if [ -f "$msg_log" ]; then
+    start_lines=$(wc -l < "$msg_log")
   fi
 
-  # 3. tmux 세션 생성 + Manager 투입
-  tmux new-session -d -s "$sess" -n manager
-  local tmux_target="${sess}:manager"
-  local mgr_resume_flag=""
-  [ -n "$mgr_tools" ] && mgr_resume_flag=" --allowedTools $mgr_tools"
-  tmux send-keys -t "$tmux_target" "env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude --resume $session_id --dangerously-skip-permissions${mgr_resume_flag}" Enter
+  # 3. Manager 부팅
+  local manager_backend
+  manager_backend="$(get_manager_backend)"
+  if [ "$manager_backend" = "codex" ]; then
+    boot_codex_agent "manager" "$project" "manager" || {
+      echo "Error: Manager codex 부팅 실패." >&2
+      exit 1
+    }
+  else
+    local model
+    model="$(get_model "manager")"
+    local mgr_tools
+    mgr_tools="$(get_allowed_tools "manager")"
+    # claude -p에는 온보딩만. boot/태스크 지시는 resume 후 별도 전달.
+    # (claude -p + --dangerously-skip-permissions에서 boot를 즉시 실행해버리는 문제 방지)
+    local boot_msg
+    boot_msg="$(build_boot_message "manager" "$project")"
 
-  # 4. sessions.md에 기록
-  add_session_row "$project" "manager" "$session_id" "$tmux_target" "$model"
-  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator manager_boot manager --detail session="$session_id" || true
+    # env -u CLAUDECODE: Claude Code 안에서 호출할 때 중첩 세션 에러 방지
+    local mgr_tools_flag=""
+    [ -n "$mgr_tools" ] && mgr_tools_flag="--allowedTools $mgr_tools"
+    local result
+    result=$(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude -p "$boot_msg" \
+      --model "$model" \
+      --output-format json \
+      --dangerously-skip-permissions $mgr_tools_flag) || {
+      echo "Error: Manager claude -p 실행 실패." >&2
+      exit 1
+    }
 
-  echo "=== Manager 부팅 완료 ==="
-  echo "session_id: $session_id"
+    local session_id
+    session_id=$(echo "$result" | jq -r '.session_id' 2>/dev/null) || session_id=""
+
+    if [ -z "$session_id" ] || [ "$session_id" = "null" ]; then
+      echo "Error: Manager session_id 획득 실패." >&2
+      exit 1
+    fi
+
+    # 4. Manager tmux 윈도우 생성 + 투입
+    tmux new-window -d -t "$sess" -n manager
+    local tmux_target="${sess}:manager"
+    local mgr_resume_flag=""
+    [ -n "$mgr_tools" ] && mgr_resume_flag=" --allowedTools $mgr_tools"
+    tmux send-keys -t "$tmux_target" "env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude --resume $session_id --dangerously-skip-permissions${mgr_resume_flag}" Enter
+
+    # 5. sessions.md에 기록 (dashboard가 바로 반영)
+    add_session_row "$project" "manager" "$session_id" "$tmux_target" "$model"
+    python3 "$TOOLS_DIR/log.py" system "$project" orchestrator manager_boot manager --detail session="$session_id" || true
+  fi
+
+  # 6. 매니저 온보딩 완료 대기 후 에이전트 부팅
+  echo "Manager 온보딩 대기 중..."
+  while ! tail -n +"$((start_lines + 1))" "$msg_log" 2>/dev/null | grep -q '\[delivered\] manager → manager agent_ready normal "온보딩 완료"'; do
+    sleep 2
+  done
+  echo "Manager 온보딩 완료 확인"
+
+  # 7. 나머지 에이전트 부팅 (매니저 대신 orchestrator가 순서 보장)
+  bash "$TOOLS_DIR/cmd.sh" boot "$project"
+
+  # 8. 매니저에게 팀 준비 완료 알림 → 태스크 분배 시작 트리거
+  bash "$TOOLS_DIR/message.sh" "$project" orchestrator manager status_update normal \
+    "팀 부팅 완료" \
+    "모든 에이전트 부팅이 완료되었다. agent_ready 메시지를 확인하고, project.md의 목표를 분석하여 첫 태스크를 분배해라. techniques/task-distribution.md 절차를 따른다." \
+    2>/dev/null || true
+
+  echo "=== 전체 부팅 완료 ==="
   echo "tmux attach -t $sess 로 접속하라."
-  echo "Manager가 cmd.sh boot ${project} 로 나머지 에이전트를 부팅한다."
 }
 
 # ──────────────────────────────────────────────
@@ -646,19 +1083,17 @@ EXTRA
 cmd_boot() {
   local project="$1"
   validate_project_name "$project"
-  local sess
-  sess="$(session_name "$project")"
   local exec_mode
   exec_mode="$(get_exec_mode "$project")"
 
+  # Preflight 검증
+  bash "$TOOLS_DIR/preflight.sh" "$project" --mode "$exec_mode" || exit 1
+
+  local sess
+  sess="$(session_name "$project")"
+
   echo "=== ${project} 프로젝트 부팅 (mode: ${exec_mode}) ==="
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator project_boot_start "$project" --detail mode="$exec_mode" || true
-
-  # dual 모드 시 codex 설치 확인
-  if [ "$exec_mode" = "dual" ] && ! command -v codex &>/dev/null; then
-    echo "Error: dual 모드이지만 codex CLI가 설치되어 있지 않다." >&2
-    exit 1
-  fi
 
   # 1. sessions.md 초기화 (멱등 — boot-manager에서 이미 생성했으면 건너뜀)
   init_sessions_file "$project"
@@ -671,7 +1106,7 @@ cmd_boot() {
     echo "tmux 세션 '$sess' 생성됨"
   fi
 
-  # 3. 각 에이전트 부팅
+  # 3. 각 에이전트 부팅 (manager가 이 명령을 호출하므로 manager는 이미 준비됨)
   local agents
   agents="$(get_active_agents "$project")"
 
@@ -681,13 +1116,14 @@ cmd_boot() {
   fi
 
   for role in $agents; do
-    # manager는 이미 유저가 사용 중이므로 건너뛴다
+    # manager는 이미 부팅됨
     if [ "$role" = "manager" ]; then
       continue
     fi
 
     if [ "$exec_mode" = "dual" ] && [ "$role" != "monitoring" ]; then
-      # dual 모드: claude + codex 양쪽 부팅 (monitoring은 solo)
+      # dual 모드: worktree 생성 + claude + codex 양쪽 부팅 (monitoring은 solo)
+      create_worktrees "$project" "$role"
       boot_single_agent "$role" "$project" "" "${role}-claude" || {
         echo "Warning: ${role}-claude 부팅 실패. 건너뜀." >&2
       }
@@ -703,13 +1139,33 @@ cmd_boot() {
     fi
   done
 
-  # 4. monitor.sh 백그라운드 실행
+  # 5. dashboard 윈도우 생성 (Rich Live TUI) — boot-manager에서 이미 만들었으면 건너뜀
+  if ! tmux list-windows -t "$sess" -F '#{window_name}' 2>/dev/null | grep -q '^dashboard$'; then
+    tmux new-window -d -t "$sess" -n "dashboard"
+    tmux send-keys -t "${sess}:dashboard" \
+      "python3 \"$REPO_ROOT/dashboard/dashboard.py\" \"$project\" --interval 3" Enter
+    echo "dashboard 윈도우 생성됨"
+  else
+    echo "dashboard 윈도우 이미 존재 — 건너뜀"
+  fi
+
+  # 6. monitor.sh 백그라운드 실행 (자동 재시작 wrapper)
+  # 기존 좀비 monitor 정리
+  pkill -f "monitor\\.sh[[:space:]]+${project}$" 2>/dev/null || true
+  rm -f "$(project_dir "$project")/memory/manager/monitor.lock"
+  sleep 1  # lock 파일 해제 대기
   local log_dir="$(project_dir "$project")/logs"
   mkdir -p "$log_dir"
-  nohup bash "$TOOLS_DIR/monitor.sh" "$project" >/dev/null 2>&1 &
+  nohup bash -c "
+    while true; do
+      bash \"$TOOLS_DIR/monitor.sh\" \"$project\"
+      echo \"\$(date '+%Y-%m-%d %H:%M:%S') monitor.sh 종료 감지. 10초 후 재시작...\" >&2
+      sleep 10
+    done
+  " >/dev/null 2>&1 &
   local monitor_pid=$!
   echo "$monitor_pid" > "$(project_dir "$project")/memory/manager/monitor.pid"
-  echo "monitor.sh 시작됨 (PID: $monitor_pid)"
+  echo "monitor.sh 시작됨 (PID: $monitor_pid, 자동 재시작 wrapper)"
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator monitor_start monitor --detail pid="$monitor_pid" || true
 
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator project_boot_end "$project" || true
@@ -723,25 +1179,30 @@ cmd_boot() {
 
 cmd_dispatch() {
   local role="$1"
-  local task_file="$2"
+  local task="$2"       # 태스크 파일 경로 OR 인라인 텍스트
   local project="$3"
   validate_project_name "$project"
-  local sess
-  sess="$(session_name "$project")"
-  local tmux_target="${sess}:${role}"
 
-  # tmux 윈도우 존재 확인
-  if ! tmux list-windows -t "$sess" -F '#{window_name}' 2>/dev/null | grep -q "^${role}$"; then
-    echo "Error: ${role} 윈도우가 없다. 에이전트가 부팅되지 않았다." >&2
-    exit 1
+  # stale 정리
+  expire_stale_assignments "$project"
+
+  # 태스크 파일이면 기존 방식 메시지, 아니면 인라인
+  local msg subject
+  if [ -f "$task" ]; then
+    subject="$task"
+    msg="${task} 파일에 새 작업 지시가 있다. 읽고 실행해라."
+  else
+    subject="$task"
+    msg="$task"
   fi
 
-  # 태스크 지시 전송
-  tmux send-keys -t "$tmux_target" \
-    "${task_file} 파일에 새 작업 지시가 있다. 읽고 실행해라." Enter
+  # message.sh로 전달 (robust: codex inbox, 큐잉, 프로세스 체크 전부 활용)
+  # 태스크 할당 기록은 message.sh가 kind=task_assign 시 자동 처리 (INS-003)
+  bash "$TOOLS_DIR/message.sh" "$project" "manager" "$role" "task_assign" "normal" "$subject" "$msg"
 
-  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator task_dispatch "$role" --detail task="$task_file" || true
-  echo "dispatch 완료: ${role} ← ${task_file}"
+  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator task_dispatch "$role" \
+    --detail task="$task" || true
+  echo "dispatch 완료: ${role} ← ${task}"
 }
 
 # ──────────────────────────────────────────────
@@ -750,40 +1211,33 @@ cmd_dispatch() {
 
 cmd_dual_dispatch() {
   local role="$1"
-  local task_file="$2"
+  local task="$2"       # 태스크 파일 경로 OR 인라인 텍스트
   local project="$3"
   validate_project_name "$project"
-  local sess
-  sess="$(session_name "$project")"
+
+  # stale 정리
+  expire_stale_assignments "$project"
 
   local claude_win="${role}-claude"
   local codex_win="${role}-codex"
 
-  # 양쪽 윈도우 존재 확인
-  local windows
-  windows=$(tmux list-windows -t "$sess" -F '#{window_name}' 2>/dev/null)
-
-  local ok=true
-  if ! echo "$windows" | grep -q "^${claude_win}$"; then
-    echo "Error: ${claude_win} 윈도우가 없다." >&2
-    ok=false
-  fi
-  if ! echo "$windows" | grep -q "^${codex_win}$"; then
-    echo "Error: ${codex_win} 윈도우가 없다." >&2
-    ok=false
-  fi
-  if [ "$ok" = false ]; then
-    exit 1
+  local msg subject
+  if [ -f "$task" ]; then
+    subject="$task"
+    msg="${task} 파일에 새 작업 지시가 있다. 읽고 실행해라."
+  else
+    subject="$task"
+    msg="$task"
   fi
 
-  # 양쪽에 동일 태스크 전달
-  tmux send-keys -t "${sess}:${claude_win}" \
-    "${task_file} 파일에 새 작업 지시가 있다. 읽고 실행해라." Enter
-  tmux send-keys -t "${sess}:${codex_win}" \
-    "${task_file} 파일에 새 작업 지시가 있다. 읽고 실행해라." Enter
+  # 양쪽 전달 (message.sh가 tmux/codex inbox/큐잉 전부 처리)
+  # 태스크 할당 기록은 message.sh가 kind=task_assign 시 자동 처리 (INS-003)
+  bash "$TOOLS_DIR/message.sh" "$project" "manager" "$claude_win" "task_assign" "normal" "$subject" "$msg"
+  bash "$TOOLS_DIR/message.sh" "$project" "manager" "$codex_win" "task_assign" "normal" "$subject" "$msg"
 
-  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator dual_dispatch "$role" --detail task="$task_file" || true
-  echo "dual-dispatch 완료: ${role} (claude + codex) ← ${task_file}"
+  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator dual_dispatch "$role" \
+    --detail task="$task" || true
+  echo "dual-dispatch 완료: ${role} (claude + codex) ← ${task}"
 }
 
 # ──────────────────────────────────────────────
@@ -818,9 +1272,23 @@ cmd_reboot() {
 
   echo "=== ${window_name} 에이전트 리부팅 ==="
 
+  # reboot lock 획득 (경합 방지)
+  local lock_file="$(project_dir "$project")/memory/manager/reboot-locks/${window_name}.lock"
+  mkdir -p "$(dirname "$lock_file")"
+  if [ -f "$lock_file" ]; then
+    local lock_age=$(($(date +%s) - $(cat "$lock_file")))
+    if [ "$lock_age" -lt 60 ]; then
+      echo "Info: ${window_name} 리부팅 진행 중 (${lock_age}초 전 시작). 건너뜀." >&2
+      return 0
+    fi
+    # 60초 초과 → stale lock, 강제 해제
+  fi
+  date +%s > "$lock_file"
+
   # tmux 세션 존재 확인
   if ! tmux has-session -t "$sess" 2>/dev/null; then
     echo "Error: tmux 세션 '$sess'가 없다. boot를 먼저 실행하라." >&2
+    rm -f "$lock_file"
     exit 1
   fi
 
@@ -835,18 +1303,25 @@ cmd_reboot() {
   # 2. sessions.md에서 이전 행을 crashed로 표시
   mark_session_status "$project" "$role" "active" "crashed" "$backend"
 
-  # 3. backend에 따라 적절한 부팅 함수 호출
+  # 3. 중단된 태스크 조회
+  local pending_task
+  pending_task="$(get_active_task "$project" "$window_name")" || pending_task=""
+
+  # 4. backend에 따라 적절한 부팅 함수 호출
   if [ "$backend" = "codex" ]; then
     boot_codex_agent "$role" "$project" "$window_name" || {
       echo "Error: ${window_name} 리부팅 실패." >&2
       exit 1
     }
   else
-    boot_single_agent "$role" "$project" "" "$window_name" || {
+    boot_single_agent "$role" "$project" "" "$window_name" "$pending_task" || {
       echo "Error: ${window_name} 리부팅 실패." >&2
       exit 1
     }
   fi
+
+  # reboot lock 해제
+  rm -f "$lock_file"
 
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_reboot "$window_name" || true
   echo "=== ${window_name} 리부팅 완료 ==="
@@ -1012,11 +1487,17 @@ restart_monitor() {
   local project="$1"
   local log_dir="$(project_dir "$project")/logs"
   mkdir -p "$log_dir"
-  nohup bash "$TOOLS_DIR/monitor.sh" "$project" >/dev/null 2>&1 &
+  nohup bash -c "
+    while true; do
+      bash \"$TOOLS_DIR/monitor.sh\" \"$project\"
+      echo \"\$(date '+%Y-%m-%d %H:%M:%S') monitor.sh 종료 감지. 10초 후 재시작...\" >&2
+      sleep 10
+    done
+  " >/dev/null 2>&1 &
   local new_pid=$!
   echo "$new_pid" > "$(project_dir "$project")/memory/manager/monitor.pid"
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator monitor_restart monitor --detail pid="$new_pid" || true
-  echo "[monitor-check] monitor.sh 재시작 완료 (PID: $new_pid)"
+  echo "[monitor-check] monitor.sh 재시작 완료 (PID: $new_pid, 자동 재시작 wrapper)"
 }
 
 # ──────────────────────────────────────────────
@@ -1035,55 +1516,51 @@ cmd_shutdown() {
   # 1. 각 에이전트 윈도우에 /exit 전송
   if tmux has-session -t "$sess" 2>/dev/null; then
     local windows
-    windows=$(tmux list-windows -t "$sess" -F '#{window_name}')
-    for win in $windows; do
-      echo "${win}에 /exit 전송"
-      tmux send-keys -t "${sess}:${win}" "/exit" Enter
-    done
+    windows=$(tmux list-windows -t "$sess" -F '#{window_index}:#{window_name}')
+    while IFS=: read -r win_idx win_name; do
+      [ -z "$win_idx" ] && continue
+      echo "${win_name}에 /exit 전송"
+      tmux send-keys -t "${sess}:${win_idx}" "/exit" Enter 2>/dev/null || true
+    done <<< "$windows"
 
     # 2. 5초 대기
     echo "에이전트 종료 대기 (5초)..."
     sleep 5
 
     # 3. tmux 세션 종료
-    tmux kill-session -t "$sess"
+    tmux kill-session -t "$sess" 2>/dev/null || true
     echo "tmux 세션 '$sess' 종료됨"
   else
     echo "tmux 세션 '$sess'가 없다. 이미 종료된 듯."
   fi
 
-  # 4. monitor.sh 프로세스 종료
+  # 4. monitor.sh 프로세스 종료 (wrapper + 자식 + 좀비 방지)
   local pid_file="$(project_dir "$project")/memory/manager/monitor.pid"
   if [ -f "$pid_file" ]; then
     local pid
     pid=$(cat "$pid_file")
     if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-      kill "$pid"
+      # wrapper와 자식 monitor.sh 모두 종료
+      pkill -P "$pid" 2>/dev/null || true
+      kill "$pid" 2>/dev/null || true
       echo "monitor.sh 종료됨 (PID: $pid)"
     fi
     rm -f "$pid_file"
   fi
+  # 좀비 방지: 이 프로젝트의 monitor.sh 프로세스를 모두 kill
+  # (이전 세션에서 대기 모드로 살아남은 프로세스 포함)
+  pkill -f "monitor\\.sh[[:space:]]+${project}$" 2>/dev/null || true
+  rm -f "$(project_dir "$project")/memory/manager/monitor.lock"
 
   # 5. sessions.md 업데이트
   close_all_sessions "$project"
 
-  # 6. 전체 worktree 정리
-  local worktree_base="$(project_dir "$project")/worktrees"
-  if [ -d "$worktree_base" ]; then
-    echo "worktree 정리 중..."
-    for wt_dir in "$worktree_base"/*/; do
-      if [ -d "$wt_dir" ]; then
-        local wt_name
-        wt_name=$(basename "$wt_dir")
-        remove_agent_worktree "$project" "$wt_name" || true
-      fi
-    done
-    rmdir "$worktree_base" 2>/dev/null || true
-  fi
-
-  # 7. 런타임 파일 정리 (reboot 카운터, heartbeat)
+  # 6. 런타임 파일 정리 (reboot 카운터, heartbeat, 메시지 큐, reboot lock)
   rm -rf "$(project_dir "$project")/memory/manager/reboot-counts"
   rm -f "$(project_dir "$project")/memory/manager/monitor.heartbeat"
+  rm -rf "$(project_dir "$project")/memory/manager/message-queue"
+  rm -rf "$(project_dir "$project")/memory/manager/reboot-locks"
+  rm -rf "$(project_dir "$project")/memory/manager/idle-checks"
 
   echo "=== 종료 완료 ==="
 }
@@ -1164,8 +1641,66 @@ cmd_status() {
 }
 
 # ──────────────────────────────────────────────
+# merge-worktree 서브커맨드
+# ──────────────────────────────────────────────
+
+cmd_merge_worktree() {
+  local role="$1"
+  local winner="$2"   # "claude" | "codex"
+  local project="$3"
+  validate_project_name "$project"
+
+  if [ "$winner" != "claude" ] && [ "$winner" != "codex" ]; then
+    echo "Error: winner는 'claude' 또는 'codex'만 가능하다. 입력값: '$winner'" >&2
+    exit 1
+  fi
+
+  local code_repo
+  code_repo="$(get_code_repo "$project")"
+  if [ -z "$code_repo" ] || [ ! -d "$code_repo" ]; then
+    echo "Error: 프로젝트 폴더가 설정되지 않았거나 존재하지 않음." >&2
+    exit 1
+  fi
+
+  local winner_branch="dual/${role}-${winner}"
+  local wt_dir="${code_repo}/.worktrees"
+
+  echo "=== merge-worktree: ${role} (winner: ${winner}) ==="
+
+  # 1. winner 브랜치를 main에 merge
+  local current_branch
+  current_branch=$(git -C "$code_repo" rev-parse --abbrev-ref HEAD)
+
+  # main 브랜치로 전환 (현재 브랜치가 main이 아닌 경우)
+  if [ "$current_branch" != "main" ]; then
+    git -C "$code_repo" checkout main || {
+      echo "Error: main 브랜치 checkout 실패." >&2
+      exit 1
+    }
+  fi
+
+  git -C "$code_repo" merge "$winner_branch" -m "Merge dual/${role}-${winner} (dual mode consensus winner)" || {
+    echo "Error: merge 실패. 충돌을 수동으로 해결하라." >&2
+    exit 1
+  }
+
+  echo "merge 완료: ${winner_branch} → main"
+
+  # 2. 양쪽 worktree + 브랜치 정리
+  remove_worktrees "$project" "$role"
+
+  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator merge_worktree "$role" \
+    --detail winner="$winner" branch="$winner_branch" || true
+  echo "=== merge-worktree 완료 ==="
+}
+
+# ──────────────────────────────────────────────
 # 메인
 # ──────────────────────────────────────────────
+
+if [ "${WHIPLASH_SOURCE_ONLY:-0}" = "1" ]; then
+  return 0 2>/dev/null || exit 0
+fi
 
 if [ $# -lt 2 ]; then
   echo "Usage:" >&2
@@ -1179,6 +1714,7 @@ if [ $# -lt 2 ]; then
   echo "  cmd.sh status         {project}" >&2
   echo "  cmd.sh reboot         {target} {project}" >&2
   echo "  cmd.sh refresh        {target} {project}" >&2
+  echo "  cmd.sh merge-worktree {role} {winner} {project}" >&2
   echo "  cmd.sh monitor-check  {project}" >&2
   exit 1
 fi
@@ -1227,13 +1763,29 @@ case "$command" in
     [ $# -lt 2 ] && { echo "Usage: cmd.sh refresh {target} {project}" >&2; exit 1; }
     cmd_refresh "$1" "$2"
     ;;
+  merge-worktree)
+    [ $# -lt 3 ] && { echo "Usage: cmd.sh merge-worktree {role} {winner} {project}" >&2; exit 1; }
+    cmd_merge_worktree "$1" "$2" "$3"
+    ;;
   monitor-check)
     [ $# -lt 1 ] && { echo "Usage: cmd.sh monitor-check {project}" >&2; exit 1; }
     cmd_monitor_check "$1"
     ;;
+  complete)
+    [ $# -lt 2 ] && { echo "Usage: cmd.sh complete {agent} {project}" >&2; exit 1; }
+    cmd_complete "$1" "$2"
+    ;;
+  expire-stale)
+    [ $# -lt 1 ] && { echo "Usage: cmd.sh expire-stale {project} [max-hours]" >&2; exit 1; }
+    expire_stale_assignments "$1" "${2:-4}"
+    ;;
+  assign)
+    [ $# -lt 3 ] && { echo "Usage: cmd.sh assign {agent} {task} {project}" >&2; exit 1; }
+    cmd_assign "$1" "$2" "$3"
+    ;;
   *)
     echo "Unknown command: $command" >&2
-    echo "Available: boot-manager, boot, dispatch, dual-dispatch, spawn, kill-agent, shutdown, status, reboot, refresh, monitor-check" >&2
+    echo "Available: boot-manager, boot, dispatch, dual-dispatch, assign, spawn, kill-agent, shutdown, status, reboot, refresh, merge-worktree, monitor-check, complete, expire-stale" >&2
     exit 1
     ;;
 esac
