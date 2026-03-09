@@ -18,13 +18,14 @@ from glob import glob
 from typing import Any
 
 try:
+    from rich.console import Console
     from rich.console import Group
     from rich.live import Live
     from rich.panel import Panel
     from rich.table import Table
     from rich.text import Text
 except ImportError:
-    Group = Live = Panel = Table = Text = None
+    Console = Group = Live = Panel = Table = Text = None
 
 # ──────────────────────────────────────────────
 # 상수
@@ -217,9 +218,18 @@ def _parse_project_field(line: str) -> tuple[str, str] | None:
 
 
 def _require_rich() -> None:
-    if None in (Group, Live, Panel, Table, Text):
+    if None in (Console, Group, Live, Panel, Table, Text):
         print("rich 라이브러리가 필요합니다: pip install rich", file=sys.stderr)
         sys.exit(1)
+
+
+def _build_console() -> Console:
+    """tmux 안에서는 NO_COLOR가 설정돼 있어도 컬러 TUI를 유지한다."""
+    return Console(
+        force_terminal=True,
+        color_system="truecolor",
+        no_color=False,
+    )
 
 
 # ──────────────────────────────────────────────
@@ -319,10 +329,13 @@ def get_tmux_activity(session_name: str) -> dict[str, int]:
 
 
 def get_tmux_panes(session_name: str) -> dict[str, int]:
-    """tmux 윈도우별 첫 pane pid 반환."""
+    """tmux 세션의 모든 윈도우별 첫 pane pid 반환."""
     try:
         out = subprocess.check_output(
-            ["tmux", "list-panes", "-t", session_name, "-F", "#{window_name}|#{pane_pid}"],
+            [
+                "tmux", "list-panes", "-a", "-t", session_name,
+                "-F", "#{window_name}|#{pane_pid}",
+            ],
             text=True, stderr=subprocess.DEVNULL,
         )
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -359,15 +372,21 @@ def check_monitor(project_dir: str) -> dict[str, Any]:
     manager_state = _read_tsv_map(
         os.path.join(runtime_root_dir, "manager-state.tsv")
     )
-    pid_str = manager_state.get("monitor_pid")
-    if pid_str:
-        if pid_str.isdigit():
-            info["pid"] = int(pid_str)
-            try:
-                os.kill(info["pid"], 0)
-                info["alive"] = True
-            except OSError:
-                pass
+    for key in ("monitor_lock_pid", "monitor_pid"):
+        pid_str = manager_state.get(key)
+        if not pid_str or not pid_str.isdigit():
+            continue
+        pid = int(pid_str)
+        if info["pid"] is None:
+            info["pid"] = pid
+        try:
+            os.kill(pid, 0)
+            info["pid"] = pid
+            info["alive"] = True
+            break
+        except OSError:
+            if key == "monitor_pid":
+                info["pid"] = pid
 
     hb_str = manager_state.get("monitor_heartbeat")
     if hb_str:
@@ -1092,9 +1111,11 @@ def main() -> None:
     # Ctrl-C 깨끗한 종료
     signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
 
+    console = _build_console()
     initial = collect(project_dir, session_name, project_info)
     with Live(
         render(initial, interval),
+        console=console,
         refresh_per_second=1,
         screen=False,
     ) as live:

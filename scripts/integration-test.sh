@@ -1121,12 +1121,13 @@ EOF
   queue_dir="$(runtime_message_queue_dir "$PROJECT")"
   mkdir -p "$queue_dir"
   : > "$queue_dir/queued.msg"
-  runtime_set_manager_state "$PROJECT" "monitor_pid" "$$"
+  runtime_set_manager_state "$PROJECT" "monitor_pid" "999999"
+  runtime_set_manager_state "$PROJECT" "monitor_lock_pid" "$$"
   runtime_set_manager_state "$PROJECT" "monitor_heartbeat" "$(date +%s)"
 
   local monitor_info
   monitor_info="$(probe_dashboard_monitor)"
-  assert_eq "dashboard monitor 경로 인식" "1|1|1" "$monitor_info"
+  assert_eq "dashboard monitor lock pid fallback 인식" "1|1|1" "$monitor_info"
 
   echo "  시나리오 9 완료"
 }
@@ -1158,6 +1159,26 @@ test_scenario_10() {
     PASS=$((PASS + 1))
   else
     echo "  FAIL: general 도메인 skip 문구 누락"
+    FAIL=$((FAIL + 1))
+  fi
+
+  TOTAL=$((TOTAL + 1))
+  if echo "$general_msg" | grep -q 'researcher manager agent_ready normal "온보딩 완료"'; then
+    echo "  PASS: worker agent_ready 대상은 manager 유지"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: worker agent_ready 대상이 manager가 아님"
+    FAIL=$((FAIL + 1))
+  fi
+
+  local manager_msg
+  manager_msg="$(probe_cmd_boot_message manager "$PROJECT")"
+  TOTAL=$((TOTAL + 1))
+  if echo "$manager_msg" | grep -q 'manager user agent_ready normal "온보딩 완료"'; then
+    echo "  PASS: manager agent_ready 대상은 user"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: manager agent_ready 대상이 user가 아님"
     FAIL=$((FAIL + 1))
   fi
 
@@ -1380,6 +1401,14 @@ test_scenario_14() {
     bash "$TOOLS_DIR/message.sh" "$PROJECT" researcher developer \
     task_complete normal "TASK-X 완료" "invalid"
 
+  tmux new-session -d -s "$SESSION" -n dashboard
+  create_fake_agent "manager"
+  register_fake_agent "manager" "manager"
+
+  assert_true "manager agent_ready -> user 허용" \
+    bash "$TOOLS_DIR/message.sh" "$PROJECT" manager user \
+    agent_ready normal "온보딩 완료" "ready"
+
   echo "  시나리오 14 완료"
 }
 
@@ -1546,6 +1575,8 @@ EOF
 
   bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer \
     task_assign normal "workspace/tasks/TASK-007.md" "dashboard status smoke" >/dev/null
+
+  tmux select-window -t "${SESSION}:dashboard"
 
   local dashboard_state
   dashboard_state="$(probe_dashboard_agent developer)"

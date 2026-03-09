@@ -152,6 +152,23 @@ get_codex_frontend_mode() {
   echo "interactive"
 }
 
+prepare_codex_bootstrap_file() {
+  local project="$1"
+  local agent_id="$2"
+  local boot_msg="$3"
+  local bootstrap_dir bootstrap_path
+  bootstrap_dir="$(runtime_root_dir "$project")/bootstrap"
+  bootstrap_path="${bootstrap_dir}/${agent_id}.md"
+  mkdir -p "$bootstrap_dir"
+  printf '%s\n' "$boot_msg" > "$bootstrap_path"
+  printf '%s\n' "$bootstrap_path"
+}
+
+build_codex_bootstrap_prompt() {
+  local bootstrap_path="$1"
+  printf '%s' "Read ${bootstrap_path} and follow it exactly. Start with Layer 1, continue through onboarding, run the required readiness command from that file, and then wait for the next instruction. Do not paste the file contents back."
+}
+
 build_codex_env_prefix() {
   local env_prefix="env"
   if [ -n "${WHIPLASH_CODEX_MODEL:-}" ]; then
@@ -414,12 +431,17 @@ build_boot_message() {
   local extra="${3:-}"
   local agent_id="${4:-$role}"
   local pending_task="${5:-}"
+  local ready_target="manager"
   local domain
   domain="$(get_domain "$project")"
   domain="${domain:-general}"
   local message_cmd="bash \"$TOOLS_DIR/message.sh\""
   local layer2_domain_line
   local layer3_domain_line
+
+  if [ "$role" = "manager" ]; then
+    ready_target="user"
+  fi
 
   if [ "$domain" = "general" ]; then
     layer2_domain_line="6. 이 프로젝트 도메인은 general이다. 추가 domain context는 없다."
@@ -501,7 +523,7 @@ $(
   fi
 )
 온보딩이 끝나면 준비 완료를 알림으로 보고해라:
-${message_cmd} ${project} ${agent_id} manager agent_ready normal "온보딩 완료" "${agent_id} 에이전트 준비 완료"
+${message_cmd} ${project} ${agent_id} ${ready_target} agent_ready normal "온보딩 완료" "${agent_id} 에이전트 준비 완료"
 BOOTMSG
 
   # 재부팅 태스크 복구 지시 (pending_task가 있으면 추가)
@@ -831,8 +853,10 @@ boot_codex_agent() {
 
   echo "--- ${window_name} (codex interactive mode) 부팅 중 ---"
 
-  local boot_msg
+  local boot_msg bootstrap_path bootstrap_prompt
   boot_msg="$(build_boot_message "$role" "$project" "$extra_boot_msg" "$agent_id")"
+  bootstrap_path="$(prepare_codex_bootstrap_file "$project" "$agent_id" "$boot_msg")"
+  bootstrap_prompt="$(build_codex_bootstrap_prompt "$bootstrap_path")"
 
   tmux new-window -d -t "$sess" -n "$window_name"
   tmux send-keys -t "$tmux_target" \
@@ -841,7 +865,7 @@ boot_codex_agent() {
   local prompt_ok=0
   local attempt
   for attempt in 1 2 3 4 5; do
-    if send_codex_prompt_tmux "$tmux_target" "$boot_msg"; then
+    if send_codex_prompt_tmux "$tmux_target" "$bootstrap_prompt"; then
       prompt_ok=1
       break
     fi
@@ -993,9 +1017,11 @@ cmd_kill_agent() {
 cmd_boot_manager() {
   local project="$1"
   validate_project_name "$project"
+  local exec_mode
+  exec_mode="$(get_exec_mode "$project")"
 
   # Preflight 검증
-  bash "$TOOLS_DIR/preflight.sh" "$project" || exit 1
+  bash "$TOOLS_DIR/preflight.sh" "$project" --mode "$exec_mode" || exit 1
 
   local sess
   sess="$(session_name "$project")"
@@ -1023,7 +1049,7 @@ cmd_boot_manager() {
   tmux set-option -t "$sess" status-style "bg=black,fg=white"
   tmux set-option -t "$sess" window-status-current-style "bg=blue,fg=white,bold"
   tmux send-keys -t "${sess}:dashboard" \
-    "python3 \"$REPO_ROOT/dashboard/dashboard.py\" \"$project\" --interval 3" Enter
+    "env -u NO_COLOR FORCE_COLOR=1 CLICOLOR_FORCE=1 python3 \"$REPO_ROOT/dashboard/dashboard.py\" \"$project\" --interval 3" Enter
 
   echo ""
   echo "╔══════════════════════════════════════════════╗"
@@ -1119,7 +1145,7 @@ cmd_boot_manager() {
 
   # 6. 매니저 온보딩 완료 대기 후 에이전트 부팅
   echo "Manager 온보딩 대기 중..."
-  while ! tail -n +"$((start_lines + 1))" "$msg_log" 2>/dev/null | grep -q '\[delivered\] manager → manager agent_ready normal "온보딩 완료"'; do
+  while ! tail -n +"$((start_lines + 1))" "$msg_log" 2>/dev/null | grep -q '\[delivered\] manager → user agent_ready normal "온보딩 완료"'; do
     sleep 2
   done
   echo "Manager 온보딩 완료 확인"
@@ -1204,7 +1230,7 @@ cmd_boot() {
   if ! tmux list-windows -t "$sess" -F '#{window_name}' 2>/dev/null | grep -q '^dashboard$'; then
     tmux new-window -d -t "$sess" -n "dashboard"
     tmux send-keys -t "${sess}:dashboard" \
-      "python3 \"$REPO_ROOT/dashboard/dashboard.py\" \"$project\" --interval 3" Enter
+      "env -u NO_COLOR FORCE_COLOR=1 CLICOLOR_FORCE=1 python3 \"$REPO_ROOT/dashboard/dashboard.py\" \"$project\" --interval 3" Enter
     echo "dashboard 윈도우 생성됨"
   else
     echo "dashboard 윈도우 이미 존재 — 건너뜀"
@@ -1509,28 +1535,41 @@ cmd_monitor_check() {
   local project="$1"
   validate_project_name "$project"
   ensure_manager_runtime_layout "$project"
-  local now pid hb_time
+  local now pid lock_pid active_pid hb_time
   now=$(date +%s)
 
-  # PID 파일 확인
   pid="$(runtime_get_manager_state "$project" "monitor_pid" "" 2>/dev/null || true)"
-  if [ -z "$pid" ]; then
+  lock_pid="$(runtime_get_manager_state "$project" "monitor_lock_pid" "" 2>/dev/null || true)"
+
+  if [[ "${lock_pid:-}" =~ ^[0-9]+$ ]] && kill -0 "$lock_pid" 2>/dev/null; then
+    active_pid="$lock_pid"
+  elif [[ "${pid:-}" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+    active_pid="$pid"
+  else
+    active_pid=""
+  fi
+
+  # PID 파일 확인
+  if [ -z "$pid" ] && [ -z "$active_pid" ]; then
     echo "[monitor-check] PID 파일 없음. monitor.sh 재시작 중..."
     restart_monitor "$project"
+    run_monitor_drain_once_if_queued "$project"
     return
   fi
 
   # PID가 숫자인지 확인
-  if ! [[ "$pid" =~ ^[0-9]+$ ]]; then
+  if [ -n "$pid" ] && ! [[ "$pid" =~ ^[0-9]+$ ]]; then
     echo "[monitor-check] PID 파일에 잘못된 값: '$pid'. monitor.sh 재시작 중..." >&2
     restart_monitor "$project"
+    run_monitor_drain_once_if_queued "$project"
     return
   fi
 
   # 프로세스 생존 확인
-  if ! kill -0 "$pid" 2>/dev/null; then
+  if [ -z "$active_pid" ]; then
     echo "[monitor-check] monitor.sh 프로세스 죽음 (PID: $pid). 재시작 중..."
     restart_monitor "$project"
+    run_monitor_drain_once_if_queued "$project"
     return
   fi
 
@@ -1546,12 +1585,18 @@ cmd_monitor_check() {
     if [ "$hb_age" -gt 90 ]; then
       echo "[monitor-check] heartbeat ${hb_age}초 전 (좀비). 강제 종료 후 재시작..."
       python3 "$TOOLS_DIR/log.py" system "$project" orchestrator monitor_zombie monitor --detail heartbeat_age="${hb_age}s" || true
-      kill "$pid" 2>/dev/null || true
+      if [[ "${lock_pid:-}" =~ ^[0-9]+$ ]]; then
+        kill "$lock_pid" 2>/dev/null || true
+      fi
+      if [[ "${pid:-}" =~ ^[0-9]+$ ]] && [ "${pid:-}" != "${lock_pid:-}" ]; then
+        kill "$pid" 2>/dev/null || true
+      fi
       sleep 1
       restart_monitor "$project"
+      run_monitor_drain_once_if_queued "$project"
       return
     fi
-    echo "[monitor-check] monitor.sh 정상 (PID: $pid, heartbeat: ${hb_age}초 전)"
+    echo "[monitor-check] monitor.sh 정상 (PID: $active_pid, heartbeat: ${hb_age}초 전)"
     run_monitor_drain_once_if_queued "$project"
   else
     echo "[monitor-check] heartbeat 파일 없음. 프로세스 확인 필요."

@@ -267,8 +267,8 @@ validate_routing() {
     exit 1
   fi
 
-  if [ "$kind" = "agent_ready" ] && [ "$to" != "manager" ]; then
-    echo "Error: agent_ready는 manager에게만 보낼 수 있다." >&2
+  if [ "$kind" = "agent_ready" ] && [ "$to" != "manager" ] && [ "$to" != "user" ]; then
+    echo "Error: agent_ready는 manager 또는 user에게만 보낼 수 있다." >&2
     exit 1
   fi
 
