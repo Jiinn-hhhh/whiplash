@@ -25,6 +25,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TOOLS_DIR="$SCRIPT_DIR"
 # shellcheck source=/dev/null
 source "$TOOLS_DIR/tmux-submit.sh"
+# shellcheck source=/dev/null
+source "$TOOLS_DIR/runtime-paths.sh"
 
 # ──────────────────────────────────────────────
 # 유틸리티 함수
@@ -147,17 +149,7 @@ get_codex_model() {
 }
 
 get_codex_frontend_mode() {
-  local role="${1:-}"
-  local mode=""
-  if [ "$role" = "manager" ] && [ -n "${WHIPLASH_MANAGER_CODEX_FRONTEND:-}" ]; then
-    mode="${WHIPLASH_MANAGER_CODEX_FRONTEND}"
-  else
-    mode="${WHIPLASH_CODEX_FRONTEND:-exec}"
-  fi
-  case "$mode" in
-    interactive|exec) echo "$mode" ;;
-    *)                echo "exec" ;;
-  esac
+  echo "interactive"
 }
 
 build_codex_env_prefix() {
@@ -188,12 +180,23 @@ get_domain() {
   if [ ! -f "$project_md" ]; then
     return 0
   fi
-  { grep -iE "domain|도메인" "$project_md" 2>/dev/null || true; } \
-    | head -1 \
-    | sed 's/.*: *//' \
-    | sed 's/ *(.*//' \
-    | tr -d '[:space:]' \
-    | tr -d '*'
+  awk '
+    function clean(line) {
+      gsub(/\*\*/, "", line)
+      gsub(/`/, "", line)
+      gsub(/\|/, "", line)
+      sub(/[[:space:]]*\(.*/, "", line)
+      gsub(/[[:space:]]+$/, "", line)
+      gsub(/^[[:space:]]+/, "", line)
+      return line
+    }
+    /^[[:space:]]*[-*][[:space:]]*/ && /(Domain|도메인)/ && /[:：]/ {
+      line = $0
+      sub(/^[^:：]*[:：][[:space:]]*/, "", line)
+      print clean(line)
+      exit
+    }
+  ' "$project_md"
 }
 
 # project.md에서 실행 모드 추출 (solo | dual, 기본값 solo)
@@ -449,7 +452,12 @@ ${layer2_domain_line}
 ${layer3_domain_line}
 9. (해당 시) projects/${project}/team/${role}.md
 
-10. 알림 보내기 (상황별 예시. worktree 안에서도 아래 절대경로 명령을 그대로 써라):
+10. top-level task마다 결과 보고서를 작성해라.
+    - 경로 규칙: reports/tasks/{task-id}-${agent_id}.md
+    - manager가 task_assign를 보낼 때 해당 보고서 stub 경로를 같이 알려준다.
+    - task_complete 전에 보고서를 채우고 Status를 final로 바꿔라.
+
+11. 알림 보내기 (상황별 예시. worktree 안에서도 아래 절대경로 명령을 그대로 써라):
    태스크 완료:
      ${message_cmd} ${project} ${agent_id} manager task_complete normal "TASK-XXX 완료" "결과 요약"
    도움 필요:
@@ -458,11 +466,18 @@ ${layer3_domain_line}
      ${message_cmd} ${project} ${agent_id} manager escalation urgent "블로커 발생" "상세 내용"
    다른 에이전트에게:
      ${message_cmd} ${project} ${agent_id} {대상} status_update normal "제목" "내용"
+   듀얼 합의 응답:
+     ${message_cmd} ${project} ${agent_id} manager consensus_response normal "합의 응답" "prefer_self | prefer_peer | synth 와 근거"
 
-11. 알림 받기 — 작업 중 아래 형식의 알림이 올 수 있다:
-    [notify] {보낸이} → {나} | {종류}
-    제목: {제목}
-    내용: {내용}
+    중요 라우팅 규칙:
+    - task_assign는 manager만 보낸다. manager가 아니면 보내지 마라.
+    - task_complete, agent_ready, reboot_notice의 정식 수신자는 manager다.
+    - peer direct는 status_update, need_input, escalation, consensus_request, consensus_response만 허용된다.
+    - peer direct 메시지는 manager에도 자동 미러링된다. 별도 참조 전달을 다시 할 필요 없다.
+    - 다른 에이전트에게 "완료했다"를 알릴 때는 task_complete가 아니라 status_update를 써라.
+
+12. 알림 받기 — 작업 중 아래 형식의 한 줄 알림이 올 수 있다:
+    [notify] {보낸이} → {나} | {종류} | 제목: {제목} | 내용: {내용}
 
     종류별 행동:
     - task_complete: 태스크 결과 확인 후 다음 단계
@@ -471,6 +486,10 @@ ${layer3_domain_line}
     - escalation: 긴급 처리
     - agent_ready: 에이전트 준비 확인
     - reboot_notice: 에이전트 복구 상태 확인
+    - consensus_request: 비교 문서를 읽고 consensus_response로 답변
+
+13. Claude/Codex가 제공하는 네이티브 subagent / team / parallel 기능을 적극 활용하라.
+    단, 외부에 공유하는 공식 결과는 반드시 네가 직접 검토·정리한 뒤 보고해라.
 ${extra}
 $(
   # 듀얼 모드 워크트리 경로 안내
@@ -497,6 +516,19 @@ TASKMSG
 }
 
 # assignments.md에 태스크 할당 기록
+normalize_task_ref() {
+  local project="$1"
+  local task_ref="$2"
+  local pdir
+  pdir="$(project_dir "$project")"
+  if [[ "$task_ref" == "$pdir"/* ]]; then
+    task_ref="${task_ref#"$pdir"/}"
+  elif [[ "$task_ref" == "projects/$project/"* ]]; then
+    task_ref="${task_ref#"projects/$project/"}"
+  fi
+  echo "$task_ref"
+}
+
 record_assignment() {
   local project="$1" agent="$2" task_file="$3"
   local pdir
@@ -505,11 +537,7 @@ record_assignment() {
   mkdir -p "$(dirname "$af")"
 
   # 절대경로 → 상대경로 정규화 (project_dir 기준)
-  if [[ "$task_file" == "$pdir"/* ]]; then
-    task_file="${task_file#"$pdir"/}"
-  elif [[ "$task_file" == "projects/$project/"* ]]; then
-    task_file="${task_file#"projects/$project/"}"
-  fi
+  task_file="$(normalize_task_ref "$project" "$task_file")"
 
   if [ ! -f "$af" ]; then
     cat > "$af" << 'HEADER'
@@ -540,6 +568,11 @@ cmd_complete() {
   local agent="$1" project="$2"
   validate_project_name "$project"
   validate_window_name "$agent"
+  local active_task
+  active_task="$(get_active_task "$project" "$agent")"
+  if [ -n "$active_task" ]; then
+    validate_task_report_ready "$project" "$agent" "$active_task"
+  fi
   complete_assignment "$project" "$agent"
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator task_complete "$agent" || true
   echo "complete 완료: ${agent}"
@@ -553,6 +586,7 @@ cmd_assign() {
   validate_project_name "$project"
   validate_window_name "$agent"
   record_assignment "$project" "$agent" "$task"
+  runtime_write_task_report_stub "$project" "$(normalize_task_ref "$project" "$task")" "$agent" "manager" >/dev/null
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator task_assign "$agent" \
     --detail task="$task" || true
   echo "assign 완료: ${agent} ← ${task}"
@@ -597,6 +631,28 @@ get_active_task() {
   local af="$(project_dir "$project")/memory/manager/assignments.md"
   [ -f "$af" ] || return 0
   { grep "| ${agent} |" "$af" 2>/dev/null || true; } | grep "| active |" | tail -1 | awk -F'|' '{print $3}' | sed 's/^ *//;s/ *$//' || true
+}
+
+validate_task_report_ready() {
+  local project="$1" agent="$2" task_ref="$3"
+  local report_path report_rel
+  report_path="$(runtime_task_report_path "$project" "$task_ref" "$agent")"
+  report_rel="$(runtime_project_relative_path "$project" "$report_path")"
+
+  if [ ! -f "$report_path" ]; then
+    echo "Error: 완료 전에 결과 보고서가 필요하다: ${report_rel}" >&2
+    return 1
+  fi
+
+  if ! grep -Eq '^- \*\*Status\*\*: final([[:space:]]*)$' "$report_path"; then
+    echo "Error: 결과 보고서 Status가 final이어야 한다: ${report_rel}" >&2
+    return 1
+  fi
+
+  if grep -q "작성 필요" "$report_path" 2>/dev/null; then
+    echo "Error: 결과 보고서에 미완성 placeholder가 남아 있다: ${report_rel}" >&2
+    return 1
+  fi
 }
 
 # sessions.md 초기화 (멱등: 이미 존재하면 건너뜀)
@@ -753,9 +809,7 @@ boot_single_agent() {
   return 0
 }
 
-# Codex CLI 에이전트 부팅 (codex exec 비대화형 모드)
-# tmux + Kitty Keyboard Protocol 비호환 문제를 근본적으로 해결.
-# codex-agent.sh 래퍼가 codex exec 기반 폴링 루프를 실행한다.
+# Codex CLI 에이전트 부팅 (interactive-only)
 boot_codex_agent() {
   local role="$1"
   local project="$2"
@@ -769,59 +823,38 @@ boot_codex_agent() {
   codex_model="$(get_codex_model)"
   local codex_env
   codex_env="$(build_codex_env_prefix)"
-  local codex_mode
-  codex_mode="$(get_codex_frontend_mode "$role")"
-
   # codex CLI 설치 확인
   if ! command -v codex &>/dev/null; then
     echo "Warning: codex CLI가 설치되어 있지 않다. ${window_name} 부팅 건너뜀." >&2
     return 1
   fi
 
-  echo "--- ${window_name} (codex ${codex_mode} mode) 부팅 중 ---"
+  echo "--- ${window_name} (codex interactive mode) 부팅 중 ---"
 
-  # 부팅 메시지를 파일에 저장
   local boot_msg
   boot_msg="$(build_boot_message "$role" "$project" "$extra_boot_msg" "$agent_id")"
-  local boot_file="$(project_dir "$project")/memory/${role}/codex-boot-msg.md"
-  mkdir -p "$(dirname "$boot_file")"
-  echo "$boot_msg" > "$boot_file"
-
-  # inbox 디렉토리 생성
-  local inbox_dir="$(project_dir "$project")/memory/${role}/codex-inbox"
-  mkdir -p "$inbox_dir"
 
   tmux new-window -d -t "$sess" -n "$window_name"
-
-  if [ "$codex_mode" = "interactive" ]; then
-    tmux send-keys -t "$tmux_target" \
-      "cd $(printf '%q' "$REPO_ROOT") && ${codex_env} codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox" Enter
-    sleep 4
-    local prompt_ok=0
-    local attempt
-    for attempt in 1 2 3 4 5; do
-      if send_codex_prompt_tmux "$tmux_target" "$boot_msg"; then
-        prompt_ok=1
-        break
-      fi
-      sleep 2
-    done
-    if [ "$prompt_ok" -ne 1 ]; then
-      echo "Warning: ${window_name} codex TUI 온보딩 프롬프트 전달 실패." >&2
-      tmux kill-window -t "$tmux_target" 2>/dev/null || true
-      return 1
+  tmux send-keys -t "$tmux_target" \
+    "cd $(printf '%q' "$REPO_ROOT") && ${codex_env} codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox" Enter
+  sleep 4
+  local prompt_ok=0
+  local attempt
+  for attempt in 1 2 3 4 5; do
+    if send_codex_prompt_tmux "$tmux_target" "$boot_msg"; then
+      prompt_ok=1
+      break
     fi
-    add_session_row "$project" "$role" "codex-interactive" "$tmux_target" "$codex_model" "codex"
-    python3 "$TOOLS_DIR/log.py" system "$project" orchestrator codex_boot "$window_name" --detail tmux="$tmux_target" mode="codex-interactive" || true
-    echo "${window_name} 부팅 완료: tmux=${tmux_target} (codex interactive mode)"
-  else
-    # tmux 윈도우 생성 후 codex-agent.sh 래퍼 실행
-    tmux send-keys -t "$tmux_target" \
-      "cd $(printf '%q' "$REPO_ROOT") && ${codex_env} bash $(printf '%q' "$TOOLS_DIR/codex-agent.sh") $(printf '%q' "$project") $(printf '%q' "$role") $(printf '%q' "$window_name") $(printf '%q' "$boot_file")" Enter
-    add_session_row "$project" "$role" "codex-exec" "$tmux_target" "$codex_model" "codex"
-    python3 "$TOOLS_DIR/log.py" system "$project" orchestrator codex_boot "$window_name" --detail tmux="$tmux_target" mode="codex-exec" || true
-    echo "${window_name} 부팅 완료: tmux=${tmux_target} (codex exec mode)"
+    sleep 2
+  done
+  if [ "$prompt_ok" -ne 1 ]; then
+    echo "Warning: ${window_name} codex TUI 온보딩 프롬프트 전달 실패." >&2
+    tmux kill-window -t "$tmux_target" 2>/dev/null || true
+    return 1
   fi
+  add_session_row "$project" "$role" "codex-interactive" "$tmux_target" "$codex_model" "codex"
+  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator codex_boot "$window_name" --detail tmux="$tmux_target" mode="codex-interactive" || true
+  echo "${window_name} 부팅 완료: tmux=${tmux_target} (codex interactive mode)"
   return 0
 }
 
@@ -1019,8 +1052,8 @@ cmd_boot_manager() {
     model="$(get_model "manager")"
     local mgr_tools
     mgr_tools="$(get_allowed_tools "manager")"
-    # claude -p에는 온보딩만. boot/태스크 지시는 resume 후 별도 전달.
-    # (claude -p + --dangerously-skip-permissions에서 boot를 즉시 실행해버리는 문제 방지)
+    local bootstrap_msg
+    bootstrap_msg=$'너는 Whiplash manager 세션의 bootstrap 단계다.\n지금은 session_id만 만들기 위한 초기 호출이다.\n도구를 사용하지 말고, 파일도 읽지 말고, 명령도 실행하지 말고, 한 줄로 READY만 답해라.'
     local boot_msg
     boot_msg="$(build_boot_message "manager" "$project")"
 
@@ -1028,7 +1061,7 @@ cmd_boot_manager() {
     local mgr_tools_flag=""
     [ -n "$mgr_tools" ] && mgr_tools_flag="--allowedTools $mgr_tools"
     local result
-    result=$(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude -p "$boot_msg" \
+    result=$(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude -p "$bootstrap_msg" \
       --model "$model" \
       --output-format json \
       --dangerously-skip-permissions $mgr_tools_flag) || {
@@ -1051,9 +1084,37 @@ cmd_boot_manager() {
     [ -n "$mgr_tools" ] && mgr_resume_flag=" --allowedTools $mgr_tools"
     tmux send-keys -t "$tmux_target" "env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude --resume $session_id --dangerously-skip-permissions${mgr_resume_flag}" Enter
 
+    local boot_pane_pid
+    boot_pane_pid=$(tmux list-panes -t "$tmux_target" -F '#{pane_pid}' 2>/dev/null | head -1)
+    if [ -n "$boot_pane_pid" ]; then
+      local i
+      for i in $(seq 1 10); do
+        pgrep -P "$boot_pane_pid" claude >/dev/null 2>&1 && break
+        sleep 1
+      done
+    fi
+    if [ -z "$boot_pane_pid" ] || ! pgrep -P "$boot_pane_pid" claude >/dev/null 2>&1; then
+      echo "Error: Manager claude --resume 프로세스 시작 실패." >&2
+      exit 1
+    fi
+
     # 5. sessions.md에 기록 (dashboard가 바로 반영)
     add_session_row "$project" "manager" "$session_id" "$tmux_target" "$model"
     python3 "$TOOLS_DIR/log.py" system "$project" orchestrator manager_boot manager --detail session="$session_id" || true
+
+    local prompt_ok=0
+    local attempt
+    for attempt in 1 2 3 4 5; do
+      if tmux_submit_pasted_payload "$tmux_target" "$boot_msg" "manager-boot"; then
+        prompt_ok=1
+        break
+      fi
+      sleep 2
+    done
+    if [ "$prompt_ok" -ne 1 ]; then
+      echo "Error: Manager 온보딩 프롬프트 전달 실패." >&2
+      exit 1
+    fi
   fi
 
   # 6. 매니저 온보딩 완료 대기 후 에이전트 부팅
@@ -1152,10 +1213,11 @@ cmd_boot() {
   # 6. monitor.sh 백그라운드 실행 (자동 재시작 wrapper)
   # 기존 좀비 monitor 정리
   pkill -f "monitor\\.sh[[:space:]]+${project}$" 2>/dev/null || true
-  rm -f "$(project_dir "$project")/memory/manager/monitor.lock"
+  runtime_release_manager_lock "$project" || true
   sleep 1  # lock 파일 해제 대기
   local log_dir="$(project_dir "$project")/logs"
   mkdir -p "$log_dir"
+  ensure_manager_runtime_layout "$project"
   nohup bash -c "
     while true; do
       bash \"$TOOLS_DIR/monitor.sh\" \"$project\"
@@ -1164,7 +1226,7 @@ cmd_boot() {
     done
   " >/dev/null 2>&1 &
   local monitor_pid=$!
-  echo "$monitor_pid" > "$(project_dir "$project")/memory/manager/monitor.pid"
+  runtime_set_manager_state "$project" "monitor_pid" "$monitor_pid"
   echo "monitor.sh 시작됨 (PID: $monitor_pid, 자동 재시작 wrapper)"
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator monitor_start monitor --detail pid="$monitor_pid" || true
 
@@ -1196,7 +1258,7 @@ cmd_dispatch() {
     msg="$task"
   fi
 
-  # message.sh로 전달 (robust: codex inbox, 큐잉, 프로세스 체크 전부 활용)
+  # message.sh로 전달 (interactive submit, 큐잉, 프로세스 체크 전부 활용)
   # 태스크 할당 기록은 message.sh가 kind=task_assign 시 자동 처리 (INS-003)
   bash "$TOOLS_DIR/message.sh" "$project" "manager" "$role" "task_assign" "normal" "$subject" "$msg"
 
@@ -1230,10 +1292,16 @@ cmd_dual_dispatch() {
     msg="$task"
   fi
 
-  # 양쪽 전달 (message.sh가 tmux/codex inbox/큐잉 전부 처리)
+  # 양쪽 전달 (message.sh가 interactive submit/큐잉 전부 처리)
   # 태스크 할당 기록은 message.sh가 kind=task_assign 시 자동 처리 (INS-003)
   bash "$TOOLS_DIR/message.sh" "$project" "manager" "$claude_win" "task_assign" "normal" "$subject" "$msg"
   bash "$TOOLS_DIR/message.sh" "$project" "manager" "$codex_win" "task_assign" "normal" "$subject" "$msg"
+
+  local normalized_task claude_report_rel codex_report_rel
+  normalized_task="$(normalize_task_ref "$project" "$subject")"
+  claude_report_rel="$(runtime_project_relative_path "$project" "$(runtime_task_report_path "$project" "$normalized_task" "$claude_win")")"
+  codex_report_rel="$(runtime_project_relative_path "$project" "$(runtime_task_report_path "$project" "$normalized_task" "$codex_win")")"
+  runtime_write_dual_synthesis_report_stub "$project" "$normalized_task" "$claude_report_rel" "$codex_report_rel" >/dev/null
 
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator dual_dispatch "$role" \
     --detail task="$task" || true
@@ -1273,22 +1341,23 @@ cmd_reboot() {
   echo "=== ${window_name} 에이전트 리부팅 ==="
 
   # reboot lock 획득 (경합 방지)
-  local lock_file="$(project_dir "$project")/memory/manager/reboot-locks/${window_name}.lock"
-  mkdir -p "$(dirname "$lock_file")"
-  if [ -f "$lock_file" ]; then
-    local lock_age=$(($(date +%s) - $(cat "$lock_file")))
-    if [ "$lock_age" -lt 60 ]; then
+  ensure_manager_runtime_layout "$project"
+  if ! runtime_try_claim_reboot_lock "$project" "$window_name" 60; then
+    local lock_ts lock_age
+    lock_ts="$(runtime_get_reboot_lock_ts "$project" "$window_name" 2>/dev/null || true)"
+    if [[ "${lock_ts:-}" =~ ^[0-9]+$ ]]; then
+      lock_age=$(( $(date +%s) - lock_ts ))
       echo "Info: ${window_name} 리부팅 진행 중 (${lock_age}초 전 시작). 건너뜀." >&2
-      return 0
+    else
+      echo "Info: ${window_name} 리부팅 lock 획득 실패. 건너뜀." >&2
     fi
-    # 60초 초과 → stale lock, 강제 해제
+    return 0
   fi
-  date +%s > "$lock_file"
 
   # tmux 세션 존재 확인
   if ! tmux has-session -t "$sess" 2>/dev/null; then
     echo "Error: tmux 세션 '$sess'가 없다. boot를 먼저 실행하라." >&2
-    rm -f "$lock_file"
+    runtime_clear_reboot_lock_ts "$project" "$window_name"
     exit 1
   fi
 
@@ -1311,17 +1380,19 @@ cmd_reboot() {
   if [ "$backend" = "codex" ]; then
     boot_codex_agent "$role" "$project" "$window_name" || {
       echo "Error: ${window_name} 리부팅 실패." >&2
+      runtime_clear_reboot_lock_ts "$project" "$window_name"
       exit 1
     }
   else
     boot_single_agent "$role" "$project" "" "$window_name" "$pending_task" || {
       echo "Error: ${window_name} 리부팅 실패." >&2
+      runtime_clear_reboot_lock_ts "$project" "$window_name"
       exit 1
     }
   fi
 
   # reboot lock 해제
-  rm -f "$lock_file"
+  runtime_clear_reboot_lock_ts "$project" "$window_name"
 
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_reboot "$window_name" || true
   echo "=== ${window_name} 리부팅 완료 ==="
@@ -1337,6 +1408,8 @@ cmd_refresh() {
   validate_project_name "$project"
   local sess
   sess="$(session_name "$project")"
+  local handoff_wait="${WHIPLASH_REFRESH_HANDOFF_WAIT_SECONDS:-120}"
+  local skip_handoff_request="${WHIPLASH_REFRESH_SKIP_HANDOFF_REQUEST:-0}"
 
   # target에서 role과 backend 분리 (reboot과 동일한 파싱)
   local role backend window_name
@@ -1372,25 +1445,29 @@ cmd_refresh() {
   local handoff_file="$(project_dir "$project")/memory/${role}/handoff.md"
 
   # 1. 에이전트에게 handoff.md 작성 지시
-  echo "handoff.md 작성 지시 전송..."
-  tmux send-keys -t "${sess}:${window_name}" \
-    "지금까지의 작업 맥락을 memory/${role}/handoff.md에 정리해라. 현재 진행 상황, 다음 할 일, 중요 결정사항을 포함해라." Enter
+  if [ "$skip_handoff_request" != "1" ]; then
+    echo "handoff.md 작성 지시 전송..."
+    tmux send-keys -t "${sess}:${window_name}" \
+      "지금까지의 작업 맥락을 memory/${role}/handoff.md에 정리해라. 현재 진행 상황, 다음 할 일, 중요 결정사항을 포함해라." Enter
+  fi
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_refresh_start "$window_name" || true
 
-  # 2. 최대 2분 대기 (handoff.md 파일 생성 감시)
-  echo "handoff.md 생성 대기 (최대 120초)..."
+  # 2. 최대 handoff_wait초 대기 (handoff.md 파일 생성 감시)
   local waited=0
-  while [ $waited -lt 120 ]; do
-    if [ -f "$handoff_file" ]; then
-      echo "handoff.md 생성 확인 (${waited}초 경과)"
-      break
-    fi
-    sleep 5
-    waited=$((waited + 5))
-  done
+  if [ "$handoff_wait" -gt 0 ] 2>/dev/null; then
+    echo "handoff.md 생성 대기 (최대 ${handoff_wait}초)..."
+    while [ "$waited" -lt "$handoff_wait" ]; do
+      if [ -f "$handoff_file" ]; then
+        echo "handoff.md 생성 확인 (${waited}초 경과)"
+        break
+      fi
+      sleep 5
+      waited=$((waited + 5))
+    done
+  fi
 
-  if [ ! -f "$handoff_file" ]; then
-    echo "Warning: 120초 내에 handoff.md가 생성되지 않았다. 그래도 리프레시를 진행한다." >&2
+  if [ ! -f "$handoff_file" ] && [ "$handoff_wait" -gt 0 ] 2>/dev/null; then
+    echo "Warning: ${handoff_wait}초 내에 handoff.md가 생성되지 않았다. 그래도 리프레시를 진행한다." >&2
   fi
 
   # 3. 기존 세션 종료
@@ -1431,20 +1508,17 @@ cmd_refresh() {
 cmd_monitor_check() {
   local project="$1"
   validate_project_name "$project"
-  local pid_file="$(project_dir "$project")/memory/manager/monitor.pid"
-  local hb_file="$(project_dir "$project")/memory/manager/monitor.heartbeat"
-  local now
+  ensure_manager_runtime_layout "$project"
+  local now pid hb_time
   now=$(date +%s)
 
   # PID 파일 확인
-  if [ ! -f "$pid_file" ]; then
+  pid="$(runtime_get_manager_state "$project" "monitor_pid" "" 2>/dev/null || true)"
+  if [ -z "$pid" ]; then
     echo "[monitor-check] PID 파일 없음. monitor.sh 재시작 중..."
     restart_monitor "$project"
     return
   fi
-
-  local pid
-  pid=$(cat "$pid_file")
 
   # PID가 숫자인지 확인
   if ! [[ "$pid" =~ ^[0-9]+$ ]]; then
@@ -1461,11 +1535,11 @@ cmd_monitor_check() {
   fi
 
   # heartbeat 신선도 확인 (90초 이상이면 좀비)
-  if [ -f "$hb_file" ]; then
-    local hb_time
-    hb_time=$(cat "$hb_file")
+  hb_time="$(runtime_get_manager_state "$project" "monitor_heartbeat" "" 2>/dev/null || true)"
+  if [ -n "$hb_time" ]; then
     if ! [[ "$hb_time" =~ ^[0-9]+$ ]]; then
       echo "[monitor-check] heartbeat 파일에 잘못된 값. 프로세스 확인 필요."
+      run_monitor_drain_once_if_queued "$project"
       return
     fi
     local hb_age=$((now - hb_time))
@@ -1478,8 +1552,10 @@ cmd_monitor_check() {
       return
     fi
     echo "[monitor-check] monitor.sh 정상 (PID: $pid, heartbeat: ${hb_age}초 전)"
+    run_monitor_drain_once_if_queued "$project"
   else
     echo "[monitor-check] heartbeat 파일 없음. 프로세스 확인 필요."
+    run_monitor_drain_once_if_queued "$project"
   fi
 }
 
@@ -1495,9 +1571,18 @@ restart_monitor() {
     done
   " >/dev/null 2>&1 &
   local new_pid=$!
-  echo "$new_pid" > "$(project_dir "$project")/memory/manager/monitor.pid"
+  runtime_set_manager_state "$project" "monitor_pid" "$new_pid"
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator monitor_restart monitor --detail pid="$new_pid" || true
   echo "[monitor-check] monitor.sh 재시작 완료 (PID: $new_pid, 자동 재시작 wrapper)"
+}
+
+run_monitor_drain_once_if_queued() {
+  local project="$1"
+  local queue_dir
+  queue_dir="$(runtime_message_queue_dir "$project")"
+  if compgen -G "${queue_dir}/*.msg" >/dev/null 2>&1; then
+    WHIPLASH_MONITOR_ONCE=1 bash "$TOOLS_DIR/monitor.sh" "$project" >/dev/null 2>&1 || true
+  fi
 }
 
 # ──────────────────────────────────────────────
@@ -1535,33 +1620,31 @@ cmd_shutdown() {
   fi
 
   # 4. monitor.sh 프로세스 종료 (wrapper + 자식 + 좀비 방지)
-  local pid_file="$(project_dir "$project")/memory/manager/monitor.pid"
-  if [ -f "$pid_file" ]; then
-    local pid
-    pid=$(cat "$pid_file")
-    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-      # wrapper와 자식 monitor.sh 모두 종료
-      pkill -P "$pid" 2>/dev/null || true
-      kill "$pid" 2>/dev/null || true
-      echo "monitor.sh 종료됨 (PID: $pid)"
-    fi
-    rm -f "$pid_file"
+  ensure_manager_runtime_layout "$project"
+  local pid
+  pid="$(runtime_get_manager_state "$project" "monitor_pid" "" 2>/dev/null || true)"
+  if [[ "${pid:-}" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+    # wrapper와 자식 monitor.sh 모두 종료
+    pkill -P "$pid" 2>/dev/null || true
+    kill "$pid" 2>/dev/null || true
+    echo "monitor.sh 종료됨 (PID: $pid)"
   fi
   # 좀비 방지: 이 프로젝트의 monitor.sh 프로세스를 모두 kill
   # (이전 세션에서 대기 모드로 살아남은 프로세스 포함)
   pkill -f "monitor\\.sh[[:space:]]+${project}$" 2>/dev/null || true
-  rm -f "$(project_dir "$project")/memory/manager/monitor.lock"
+  runtime_clear_manager_state "$project" "monitor_pid" || true
+  runtime_clear_manager_state "$project" "monitor_heartbeat" || true
+  runtime_clear_manager_state "$project" "monitor_nudge_ts" || true
+  runtime_release_manager_lock "$project" || true
 
   # 5. sessions.md 업데이트
   close_all_sessions "$project"
 
   # 6. 런타임 파일 정리 (reboot 카운터, heartbeat, 메시지 큐, reboot lock)
-  rm -rf "$(project_dir "$project")/memory/manager/reboot-counts"
-  rm -f "$(project_dir "$project")/memory/manager/monitor.heartbeat"
-  rm -f "$(project_dir "$project")/memory/manager/monitor.nudge"
-  rm -rf "$(project_dir "$project")/memory/manager/message-queue"
-  rm -rf "$(project_dir "$project")/memory/manager/reboot-locks"
-  rm -rf "$(project_dir "$project")/memory/manager/idle-checks"
+  rm -rf "$(runtime_message_queue_dir "$project")"
+  rm -f "$(runtime_reboot_state_file "$project")"
+  rm -f "$(runtime_idle_state_file "$project")"
+  cleanup_manager_runtime_transients "$project"
 
   echo "=== 종료 완료 ==="
 }
@@ -1601,17 +1684,15 @@ cmd_status() {
   fi
 
   # monitor.sh 확인 (PID + heartbeat 신선도)
-  local pid_file="$(project_dir "$project")/memory/manager/monitor.pid"
-  if [ -f "$pid_file" ]; then
-    local pid
-    pid=$(cat "$pid_file")
+  ensure_manager_runtime_layout "$project"
+  local pid hb_time
+  pid="$(runtime_get_manager_state "$project" "monitor_pid" "" 2>/dev/null || true)"
+  if [ -n "$pid" ]; then
     if ! [[ "$pid" =~ ^[0-9]+$ ]]; then
-      echo "[monitor] PID 파일에 잘못된 값: '$pid'"
+      echo "[monitor] PID 상태값이 잘못됨: '$pid'"
     elif kill -0 "$pid" 2>/dev/null; then
-      local hb_file="$(project_dir "$project")/memory/manager/monitor.heartbeat"
-      if [ -f "$hb_file" ]; then
-        local hb_time
-        hb_time=$(cat "$hb_file")
+      hb_time="$(runtime_get_manager_state "$project" "monitor_heartbeat" "" 2>/dev/null || true)"
+      if [ -n "$hb_time" ]; then
         if [[ "$hb_time" =~ ^[0-9]+$ ]]; then
           local hb_age=$((now - hb_time))
           if [ "$hb_age" -gt 90 ]; then
@@ -1620,10 +1701,10 @@ cmd_status() {
             echo "[monitor] 실행 중 (PID: $pid, heartbeat: ${hb_age}초 전)"
           fi
         else
-          echo "[monitor] 실행 중 (PID: $pid, heartbeat 파일에 잘못된 값)"
+          echo "[monitor] 실행 중 (PID: $pid, heartbeat 상태값이 잘못됨)"
         fi
       else
-        echo "[monitor] 실행 중 (PID: $pid, heartbeat 파일 없음)"
+        echo "[monitor] 실행 중 (PID: $pid, heartbeat 없음)"
       fi
     else
       echo "[monitor] 프로세스 죽음 (PID: $pid)"

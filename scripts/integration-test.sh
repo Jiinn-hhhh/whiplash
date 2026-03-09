@@ -12,10 +12,15 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TOOLS_DIR="$SCRIPT_DIR"
+# shellcheck source=/dev/null
+source "$TOOLS_DIR/runtime-paths.sh"
+# shellcheck source=/dev/null
+source "$TOOLS_DIR/tmux-submit.sh"
 PROJECT="_stability-test"
 SESSION="whiplash-${PROJECT}"
 PROJECT_DIR="$REPO_ROOT/projects/$PROJECT"
 FAKE_CLAUDE_BIN=""
+FAKE_CODEX_BIN=""
 PASS=0
 FAIL=0
 TOTAL=0
@@ -26,6 +31,7 @@ TOTAL=0
 
 setup_test_project() {
   mkdir -p "$PROJECT_DIR/memory/manager"
+  mkdir -p "$(runtime_root_dir "$PROJECT")"
   mkdir -p "$PROJECT_DIR/logs"
   cat > "$PROJECT_DIR/project.md" << 'EOF'
 # _stability-test
@@ -37,33 +43,248 @@ setup_test_project() {
 EOF
 }
 
-# "claude"라는 이름의 가짜 바이너리 컴파일
-# pgrep -P pane_pid claude 가 매칭되려면 프로세스 comm이 "claude"여야 함
-build_fake_claude() {
-  FAKE_CLAUDE_BIN="$PROJECT_DIR/claude"
-  if [ -f "$FAKE_CLAUDE_BIN" ]; then
+build_fake_terminal_agent() {
+  local output_bin="$1"
+  if [ -f "$output_bin" ]; then
     return 0
   fi
-  mkdir -p "$PROJECT_DIR"
+
+  mkdir -p "$(dirname "$output_bin")"
   if command -v cc &>/dev/null; then
-    printf '#include <unistd.h>\nint main(void){for(;;)pause();}\n' | \
-      cc -x c - -o "$FAKE_CLAUDE_BIN" 2>/dev/null
+    cat <<'EOF' | cc -x c - -o "$output_bin" 2>/dev/null
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <termios.h>
+#include <unistd.h>
+
+static struct termios g_saved_termios;
+static int g_termios_saved = 0;
+
+static void restore_terminal(void) {
+  if (g_termios_saved) {
+    tcsetattr(STDIN_FILENO, TCSANOW, &g_saved_termios);
+    g_termios_saved = 0;
+  }
+  write(STDOUT_FILENO, "\033[?2004l", 8);
+}
+
+static int write_all(const char *buf, size_t len) {
+  while (len > 0) {
+    ssize_t written = write(STDOUT_FILENO, buf, len);
+    if (written < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return -1;
+    }
+    buf += (size_t) written;
+    len -= (size_t) written;
+  }
+  return 0;
+}
+
+static int append_char(char **buf, size_t *len, size_t *cap, char c) {
+  if (*len + 2 > *cap) {
+    size_t next_cap = (*cap == 0) ? 256 : (*cap * 2);
+    char *next = realloc(*buf, next_cap);
+    if (next == NULL) {
+      return -1;
+    }
+    *buf = next;
+    *cap = next_cap;
+  }
+  (*buf)[(*len)++] = c;
+  (*buf)[*len] = '\0';
+  return 0;
+}
+
+static int display_char(char c) {
+  if (c == '\n') {
+    return write_all("\r\n", 2);
+  }
+  return write_all(&c, 1);
+}
+
+static int display_text(const char *buf, size_t len) {
+  for (size_t i = 0; i < len; ++i) {
+    if (display_char(buf[i]) != 0) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
+static int enable_raw_mode(void) {
+  struct termios raw;
+  if (tcgetattr(STDIN_FILENO, &g_saved_termios) != 0) {
+    return -1;
+  }
+  g_termios_saved = 1;
+  raw = g_saved_termios;
+  raw.c_iflag &= ~(ICRNL | IXON);
+  raw.c_lflag &= ~(ECHO | ICANON);
+  raw.c_oflag |= OPOST;
+  raw.c_cc[VMIN] = 1;
+  raw.c_cc[VTIME] = 0;
+  return tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+}
+
+static int handle_submit(char **draft, size_t *draft_len) {
+  if (*draft_len == 0) {
+    if (write_all("\r\n>>> ", 6) != 0) {
+      return -1;
+    }
+    return 0;
+  }
+
+  if (write_all("\r\n[submitted]\r\n", 15) != 0) {
+    return -1;
+  }
+  if (display_text(*draft, *draft_len) != 0) {
+    return -1;
+  }
+  if (write_all("\r\n>>> ", 6) != 0) {
+    return -1;
+  }
+
+  if (*draft_len == 5 && memcmp(*draft, "/exit", 5) == 0) {
+    return 1;
+  }
+
+  *draft_len = 0;
+  (*draft)[0] = '\0';
+  return 0;
+}
+
+int main(void) {
+  char *draft = NULL;
+  size_t draft_len = 0;
+  size_t draft_cap = 0;
+  int in_paste = 0;
+
+  if (enable_raw_mode() != 0) {
+    return 1;
+  }
+  atexit(restore_terminal);
+
+  if (append_char(&draft, &draft_len, &draft_cap, '\0') != 0) {
+    return 1;
+  }
+  draft_len = 0;
+
+  write_all("\033[?2004h", 8);
+  if (write_all(">>> ", 4) != 0) {
+    free(draft);
+    return 1;
+  }
+
+  while (1) {
+    unsigned char c;
+    ssize_t n = read(STDIN_FILENO, &c, 1);
+    if (n == 0) {
+      break;
+    }
+    if (n < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      break;
+    }
+
+    if (c == 0x1b) {
+      unsigned char next;
+      if (read(STDIN_FILENO, &next, 1) != 1) {
+        break;
+      }
+      if (next == '[') {
+        char seq[16];
+        size_t seq_len = 0;
+        while (seq_len + 1 < sizeof(seq)) {
+          if (read(STDIN_FILENO, &next, 1) != 1) {
+            next = '\0';
+            break;
+          }
+          seq[seq_len++] = (char) next;
+          if (next == '~' || (next < '0' || next > '9')) {
+            break;
+          }
+        }
+        seq[seq_len] = '\0';
+        if (strcmp(seq, "200~") == 0) {
+          in_paste = 1;
+          continue;
+        }
+        if (strcmp(seq, "201~") == 0) {
+          in_paste = 0;
+          continue;
+        }
+      }
+      continue;
+    }
+
+    if (!in_paste && (c == '\r' || c == '\n')) {
+      int submit_result = handle_submit(&draft, &draft_len);
+      if (submit_result != 0) {
+        free(draft);
+        return (submit_result > 0) ? 0 : 1;
+      }
+      continue;
+    }
+
+    if (!in_paste && (c == 0x7f || c == 0x08)) {
+      if (draft_len > 0) {
+        --draft_len;
+        draft[draft_len] = '\0';
+        write_all("\b \b", 3);
+      }
+      continue;
+    }
+
+    if (append_char(&draft, &draft_len, &draft_cap, (char) c) != 0) {
+      free(draft);
+      return 1;
+    }
+    if (display_char((char) c) != 0) {
+      free(draft);
+      return 1;
+    }
+  }
+
+  free(draft);
+  return 0;
+}
+EOF
   else
-    echo "ERROR: C 컴파일러(cc) 없음. 가짜 claude 바이너리 생성 불가." >&2
+    echo "ERROR: C 컴파일러(cc) 없음. 가짜 interactive 바이너리 생성 불가." >&2
     exit 1
   fi
 }
 
+# "claude"라는 이름의 가짜 바이너리 컴파일
+# pgrep -P pane_pid claude 가 매칭되려면 프로세스 comm이 "claude"여야 함
+build_fake_claude() {
+  FAKE_CLAUDE_BIN="$PROJECT_DIR/claude"
+  build_fake_terminal_agent "$FAKE_CLAUDE_BIN"
+}
+
+build_fake_codex() {
+  FAKE_CODEX_BIN="$PROJECT_DIR/codex"
+  build_fake_terminal_agent "$FAKE_CODEX_BIN"
+}
+
 cleanup() {
   tmux kill-session -t "$SESSION" 2>/dev/null || true
-  if [ -f "$PROJECT_DIR/memory/manager/monitor.pid" ]; then
-    local pid
-    pid=$(cat "$PROJECT_DIR/memory/manager/monitor.pid" 2>/dev/null) || pid=""
-    if [[ "${pid:-}" =~ ^[0-9]+$ ]]; then
-      pkill -P "$pid" 2>/dev/null || true
-      kill "$pid" 2>/dev/null || true
-    fi
+  local pid
+  pid="$(runtime_get_manager_state "$PROJECT" "monitor_pid" "" 2>/dev/null || true)"
+  if [[ "${pid:-}" =~ ^[0-9]+$ ]] && [ "$pid" != "$$" ]; then
+    pkill -P "$pid" 2>/dev/null || true
+    kill "$pid" 2>/dev/null || true
   fi
+  pkill -f "monitor\\.sh[[:space:]]+${PROJECT}$" 2>/dev/null || true
+  pkill -f "message\\.sh[[:space:]]+${PROJECT}[[:space:]]" 2>/dev/null || true
+  pkill -f "cmd\\.sh[[:space:]]+refresh[[:space:]].*[[:space:]]${PROJECT}$" 2>/dev/null || true
   rm -rf "$PROJECT_DIR"
 }
 
@@ -182,6 +403,25 @@ print(f'{info["name"]}|{info["mode"]}|{info["domain"]}')
 PY
 }
 
+probe_dashboard_sessions() {
+  python3 - "$REPO_ROOT" "$PROJECT_DIR" <<'PY'
+import importlib.util
+import pathlib
+import sys
+
+repo_root = pathlib.Path(sys.argv[1])
+project_dir = sys.argv[2]
+module_path = repo_root / "dashboard" / "dashboard.py"
+spec = importlib.util.spec_from_file_location("whiplash_dashboard", module_path)
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+sessions = module.parse_sessions_md(project_dir)
+first = sessions[0]["status"] if sessions else ""
+print(f'{len(sessions)}|{first}')
+PY
+}
+
 probe_dashboard_monitor() {
   python3 - "$REPO_ROOT" "$PROJECT_DIR" <<'PY'
 import importlib.util
@@ -200,21 +440,49 @@ print(f'{int(info["alive"])}|{info["queued"]}|{int(info["heartbeat_age"] is not 
 PY
 }
 
+probe_dashboard_agent() {
+  local window_name="$1"
+  python3 - "$REPO_ROOT" "$PROJECT_DIR" "$SESSION" "$window_name" <<'PY'
+import importlib.util
+import pathlib
+import sys
+
+repo_root = pathlib.Path(sys.argv[1])
+project_dir = sys.argv[2]
+session_name = sys.argv[3]
+window_name = sys.argv[4]
+module_path = repo_root / "dashboard" / "dashboard.py"
+spec = importlib.util.spec_from_file_location("whiplash_dashboard", module_path)
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+project_info = module.parse_project_md(project_dir)
+state = module.collect(project_dir, session_name, project_info)
+for agent in state["agents"]:
+    if agent.get("win_name") == window_name:
+        print(
+            f'{agent.get("display_status","")}|'
+            f'{agent.get("report_status","")}|'
+            f'{agent.get("task_id","")}'
+        )
+        break
+else:
+    print("missing||")
+PY
+}
+
 # 가짜 에이전트 윈도우 생성
 create_fake_agent() {
   local win_name="$1"
   tmux new-window -t "$SESSION" -n "$win_name"
-  # 컴파일된 바이너리를 실행 — 프로세스 이름이 "claude"로 표시됨
   tmux send-keys -t "${SESSION}:${win_name}" "'${FAKE_CLAUDE_BIN}'" Enter
   sleep 2
 }
 
-create_fake_codex_exec_agent() {
+create_fake_codex_agent() {
   local win_name="$1"
   tmux new-window -t "$SESSION" -n "$win_name"
-  # pane shell의 자식 bash 프로세스가 살아 있도록 중첩 bash 루프를 띄운다.
-  tmux send-keys -t "${SESSION}:${win_name}" \
-    "bash -lc 'exec bash -lc \"while true; do sleep 60; done\"'" Enter
+  tmux send-keys -t "${SESSION}:${win_name}" "'${FAKE_CODEX_BIN}'" Enter
   sleep 2
 }
 
@@ -236,7 +504,7 @@ HEADER
   echo "| ${role} | claude | fake-session | ${SESSION}:${win_name} | active | ${today} | test | |" >> "$sf"
 }
 
-register_fake_codex_exec_agent() {
+register_fake_codex_agent() {
   local win_name="$1" role="$2"
   local sf="$PROJECT_DIR/memory/manager/sessions.md"
   mkdir -p "$(dirname "$sf")"
@@ -250,7 +518,7 @@ HEADER
   fi
   local today
   today="$(date +%Y-%m-%d)"
-  echo "| ${role} | codex | codex-exec | ${SESSION}:${win_name} | active | ${today} | test | |" >> "$sf"
+  echo "| ${role} | codex | codex-interactive | ${SESSION}:${win_name} | active | ${today} | test | |" >> "$sf"
 }
 
 # ──────────────────────────────────────────────
@@ -374,76 +642,62 @@ test_scenario_3() {
   setup_test_project
   build_fake_claude
 
-  local queue_dir="$PROJECT_DIR/memory/manager/message-queue"
+  local queue_dir
+  queue_dir="$(runtime_message_queue_dir "$PROJECT")"
 
   # tmux 세션 생성 (수신자 없음)
   tmux new-session -d -s "$SESSION" -n manager
 
   # 수신자(developer)가 없는 상태에서 메시지 전송 → 큐 저장
   bash "$TOOLS_DIR/message.sh" "$PROJECT" researcher developer \
-    task_complete normal "TASK-001 완료" "연구 결과 정리 완료" 2>/dev/null || true
+    status_update normal "TASK-001 진행" "연구 결과 정리 완료" 2>/dev/null || true
 
   # .msg 파일 생성 확인
   local msg_count
   msg_count=$(find "$queue_dir" -name "*.msg" 2>/dev/null | wc -l | tr -d ' ') || msg_count="0"
   assert_true "큐 파일 생성됨" test "$msg_count" -gt 0
 
-  # 큐 파일 내용 확인
+  # 원본 대상(developer) 큐 파일 내용 확인
   local msg_file
-  msg_file=$(find "$queue_dir" -name "*.msg" 2>/dev/null | head -1) || msg_file=""
+  msg_file="$(find "$queue_dir" -name "*.msg" -print 2>/dev/null | while read -r msg; do
+    if grep -q '^to=developer$' "$msg" 2>/dev/null; then
+      printf '%s\n' "$msg"
+      break
+    fi
+  done)"
   if [ -n "$msg_file" ]; then
     assert_file_contains "큐 파일에 from 기록" "$msg_file" "^from=researcher"
-    assert_file_contains "큐 파일에 to 기록" "$msg_file" "^to=developer"
-    assert_file_contains "큐 파일에 kind 기록" "$msg_file" "^kind=task_complete"
+    assert_file_contains "큐 파일에 to 기록" "$msg_file" "^to=developer$"
+    assert_file_contains "큐 파일에 kind 기록" "$msg_file" "^kind=status_update"
   fi
 
   # 수신자 윈도우 생성
   create_fake_agent "developer"
 
-  # drain 시뮬레이션
-  local drained=false
-  for msg_f in "$queue_dir"/*.msg; do
-    [ -f "$msg_f" ] || continue
-    local msg_to msg_from msg_kind msg_priority msg_subject msg_content
-    msg_to=$(grep '^to=' "$msg_f" | head -1 | sed 's/^to=//') || msg_to=""
-    [ -z "$msg_to" ] && continue
-
-    # 수신자 윈도우 존재 확인
-    if ! tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -q "^${msg_to}$"; then
-      continue
+  # developer 대상 큐만 수동 drain하여 결정적으로 검증한다.
+  local drained=false pane_dump="" msg_from msg_to msg_kind msg_priority msg_subject msg_content notification
+  if [ -f "$msg_file" ]; then
+    msg_from=$(grep '^from=' "$msg_file" | head -1 | sed 's/^from=//') || msg_from=""
+    msg_to=$(grep '^to=' "$msg_file" | head -1 | sed 's/^to=//') || msg_to=""
+    msg_kind=$(grep '^kind=' "$msg_file" | head -1 | sed 's/^kind=//') || msg_kind=""
+    msg_priority=$(grep '^priority=' "$msg_file" | head -1 | sed 's/^priority=//') || msg_priority=""
+    msg_subject=$(grep '^subject=' "$msg_file" | head -1 | sed 's/^subject=//') || msg_subject=""
+    msg_content=$(grep '^content=' "$msg_file" | head -1 | sed 's/^content=//') || msg_content=""
+    notification="[notify] ${msg_from} → ${msg_to} | ${msg_kind} | 제목: ${msg_subject} | 내용: ${msg_content}"
+    if tmux_submit_pasted_payload "${SESSION}:developer" "$notification" "scenario3-drain"; then
+      rm -f "$msg_file"
+      sleep 1
+      pane_dump="$(tmux capture-pane -pJ -t "${SESSION}:developer" -S -80 2>/dev/null || true)"
+      if echo "$pane_dump" | grep -q "연구 결과 정리 완료"; then
+        drained=true
+      fi
     fi
-
-    msg_from=$(grep '^from=' "$msg_f" | head -1 | sed 's/^from=//') || msg_from=""
-    msg_kind=$(grep '^kind=' "$msg_f" | head -1 | sed 's/^kind=//') || msg_kind=""
-    msg_priority=$(grep '^priority=' "$msg_f" | head -1 | sed 's/^priority=//') || msg_priority=""
-    msg_subject=$(grep '^subject=' "$msg_f" | head -1 | sed 's/^subject=//') || msg_subject=""
-    msg_content=$(grep '^content=' "$msg_f" | head -1 | sed 's/^content=//') || msg_content=""
-
-    local prefix="[notify] ${msg_from} → ${msg_to} | ${msg_kind}"
-    local notification="${prefix}
-제목: ${msg_subject}
-내용: ${msg_content}"
-
-    local tmpfile tmux_target="${SESSION}:${msg_to}"
-    tmpfile=$(mktemp)
-    printf '%s' "$notification" > "$tmpfile"
-    local buf_name="test-drain-$$-${RANDOM}"
-    if tmux load-buffer -b "$buf_name" "$tmpfile" 2>/dev/null && \
-       tmux paste-buffer -b "$buf_name" -t "$tmux_target" -d 2>/dev/null; then
-      rm -f "$msg_f"
-      drained=true
-    else
-      tmux delete-buffer -b "$buf_name" 2>/dev/null || true
-    fi
-    rm -f "$tmpfile"
-  done
+  fi
 
   assert_true "큐 drain 성공" test "$drained" = true
 
   # 큐 파일 삭제 확인
-  local remaining
-  remaining=$(find "$queue_dir" -name "*.msg" 2>/dev/null | wc -l | tr -d ' ') || remaining="0"
-  assert_eq "큐 파일 삭제됨" "0" "$remaining"
+  assert_file_not_exists "developer 대상 큐 파일 삭제됨" "$msg_file"
 
   echo "  시나리오 3 완료"
 }
@@ -458,8 +712,9 @@ test_scenario_4() {
   cleanup
   setup_test_project
 
-  local hb_file="$PROJECT_DIR/memory/manager/monitor.heartbeat"
-  mkdir -p "$(dirname "$hb_file")"
+  local manager_state_file
+  manager_state_file="$(runtime_manager_state_file "$PROJECT")"
+  mkdir -p "$(dirname "$manager_state_file")"
 
   # 세션 없는 상태에서 SESSION_ABSENT_COUNT 증가 로직 테스트
   local SESSION_ABSENT_COUNT=0
@@ -471,10 +726,10 @@ test_scenario_4() {
   assert_eq "3회 부재 카운트" "3" "$SESSION_ABSENT_COUNT"
 
   # 대기 모드에서 heartbeat 갱신 확인
-  date +%s > "$hb_file"
-  assert_file_exists "heartbeat 파일 존재" "$hb_file"
+  runtime_set_manager_state "$PROJECT" "monitor_heartbeat" "$(date +%s)"
+  assert_file_exists "manager state 파일 존재" "$manager_state_file"
   local hb_val
-  hb_val=$(cat "$hb_file")
+  hb_val="$(runtime_get_manager_state "$PROJECT" "monitor_heartbeat" "" 2>/dev/null || true)"
   TOTAL=$((TOTAL + 1))
   if [[ "$hb_val" =~ ^[0-9]+$ ]]; then
     echo "  PASS: heartbeat 값이 숫자"
@@ -507,31 +762,24 @@ test_scenario_5() {
   cleanup
   setup_test_project
 
-  local lock_dir="$PROJECT_DIR/memory/manager/reboot-locks"
-  mkdir -p "$lock_dir"
+  runtime_set_reboot_lock_ts "$PROJECT" "developer" "$(date +%s)"
 
-  # lock 파일 생성 (방금 시작된 리부팅)
-  local lock_file="$lock_dir/developer.lock"
-  date +%s > "$lock_file"
-
-  local lock_age should_skip=false
-  lock_age=$(($(date +%s) - $(cat "$lock_file")))
-  if [ -f "$lock_file" ] && [ "$lock_age" -lt 60 ]; then
+  local should_skip=false
+  if ! runtime_try_claim_reboot_lock "$PROJECT" "developer" 60; then
     should_skip=true
   fi
   assert_eq "리부팅 진행 중 → 건너뜀" "true" "$should_skip"
 
   # 60초 이상 된 stale lock → 강제 해제 허용
-  echo $(($(date +%s) - 120)) > "$lock_file"
-  lock_age=$(($(date +%s) - $(cat "$lock_file")))
+  runtime_set_reboot_lock_ts "$PROJECT" "developer" "$(($(date +%s) - 120))"
   local should_proceed=false
-  if [ "$lock_age" -ge 60 ]; then
+  if runtime_try_claim_reboot_lock "$PROJECT" "developer" 60; then
     should_proceed=true
   fi
   assert_eq "stale lock → 진행 허용" "true" "$should_proceed"
 
-  rm -f "$lock_file"
-  assert_file_not_exists "lock 파일 삭제됨" "$lock_file"
+  runtime_clear_reboot_lock_ts "$PROJECT" "developer"
+  assert_eq "lock 상태 삭제됨" "" "$(runtime_get_reboot_lock_ts "$PROJECT" "developer" "" 2>/dev/null || true)"
 
   echo "  시나리오 5 완료"
 }
@@ -547,26 +795,25 @@ test_scenario_6() {
   setup_test_project
 
   local MAX_REBOOT=3
-  local count_dir="$PROJECT_DIR/memory/manager/reboot-counts"
-  mkdir -p "$count_dir"
+  local reboot_state_file
+  reboot_state_file="$(runtime_reboot_state_file "$PROJECT")"
 
   # 카운터를 MAX_REBOOT까지 올리기
-  echo "$MAX_REBOOT" > "$count_dir/developer.count"
+  runtime_set_reboot_count "$PROJECT" "developer" "$MAX_REBOOT"
   local count
-  count=$(cat "$count_dir/developer.count")
+  count="$(runtime_get_reboot_count "$PROJECT" "developer" 2>/dev/null || echo "0")"
   assert_eq "카운터 MAX_REBOOT 도달" "$MAX_REBOOT" "$count"
 
   # 한도 초과 확인
   assert_true "한도 초과 확인" test "$count" -ge "$MAX_REBOOT"
 
   # lockout 파일 생성
-  local lockout_file="$count_dir/developer.lockout"
-  date +%s > "$lockout_file"
-  assert_file_exists "lockout 파일 생성됨" "$lockout_file"
+  runtime_set_reboot_lockout_ts "$PROJECT" "developer" "$(date +%s)"
+  assert_file_exists "reboot state 파일 생성됨" "$reboot_state_file"
 
   # 5분 미경과 → 유지
   local lockout_time now_ts should_reset=false
-  lockout_time=$(cat "$lockout_file")
+  lockout_time="$(runtime_get_reboot_lockout_ts "$PROJECT" "developer" 2>/dev/null || true)"
   now_ts=$(date +%s)
   if [ $((now_ts - lockout_time)) -gt 300 ]; then
     should_reset=true
@@ -574,8 +821,8 @@ test_scenario_6() {
   assert_eq "5분 미경과 → 유지" "false" "$should_reset"
 
   # lockout 타임스탬프를 6분 전으로 수정
-  echo $(($(date +%s) - 360)) > "$lockout_file"
-  lockout_time=$(cat "$lockout_file")
+  runtime_set_reboot_lockout_ts "$PROJECT" "developer" "$(($(date +%s) - 360))"
+  lockout_time="$(runtime_get_reboot_lockout_ts "$PROJECT" "developer" 2>/dev/null || true)"
   now_ts=$(date +%s)
   should_reset=false
   if [ $((now_ts - lockout_time)) -gt 300 ]; then
@@ -584,16 +831,13 @@ test_scenario_6() {
   assert_eq "6분 경과 → 리셋 허용" "true" "$should_reset"
 
   # 카운터 리셋 실행
-  rm -f "$count_dir/developer.count"
-  rm -f "$lockout_file"
-  assert_file_not_exists "카운터 파일 삭제됨" "$count_dir/developer.count"
-  assert_file_not_exists "lockout 파일 삭제됨" "$lockout_file"
+  runtime_reset_reboot_count "$PROJECT" "developer"
+  runtime_clear_reboot_lockout_ts "$PROJECT" "developer"
+  assert_eq "lockout 상태 삭제됨" "" "$(runtime_get_reboot_lockout_ts "$PROJECT" "developer" "" 2>/dev/null || true)"
 
   # 리셋 후 카운트 = 0
-  local new_count="0"
-  if [ -f "$count_dir/developer.count" ]; then
-    new_count=$(cat "$count_dir/developer.count")
-  fi
+  local new_count
+  new_count="$(runtime_get_reboot_count "$PROJECT" "developer" 2>/dev/null || echo "0")"
   assert_eq "리셋 후 카운트 0" "0" "$new_count"
 
   echo "  시나리오 6 완료"
@@ -622,8 +866,8 @@ test_scenario_7() {
 |------|--------|-----------|-------------|------|--------|------|------|
 HEADER
 
-  local hb_file="$PROJECT_DIR/memory/manager/monitor.heartbeat"
-  local pid_file="$PROJECT_DIR/memory/manager/monitor.pid"
+  local manager_state_file
+  manager_state_file="$(runtime_manager_state_file "$PROJECT")"
 
   # wrapper로 monitor.sh 시작 (짧은 재시작 간격)
   nohup bash -c "
@@ -633,21 +877,21 @@ HEADER
     done
   " >/dev/null 2>&1 &
   local wrapper_pid=$!
-  echo "$wrapper_pid" > "$pid_file"
+  runtime_set_manager_state "$PROJECT" "monitor_pid" "$wrapper_pid"
 
   # monitor.sh가 heartbeat를 갱신할 때까지 대기 (최대 40초)
   local waited=0
-  while [ ! -f "$hb_file" ] && [ "$waited" -lt 40 ]; do
+  while [ -z "$(runtime_get_manager_state "$PROJECT" "monitor_heartbeat" "" 2>/dev/null || true)" ] && [ "$waited" -lt 40 ]; do
     sleep 2
     waited=$((waited + 2))
   done
 
   assert_true "wrapper 프로세스 alive" kill -0 "$wrapper_pid"
-  assert_file_exists "heartbeat 파일 생성됨" "$hb_file"
+  assert_file_exists "manager state 파일 생성됨" "$manager_state_file"
 
   # 첫 heartbeat 타임스탬프 기록
   local hb_before
-  hb_before=$(cat "$hb_file" 2>/dev/null) || hb_before="0"
+  hb_before="$(runtime_get_manager_state "$PROJECT" "monitor_heartbeat" "0" 2>/dev/null || echo "0")"
 
   # monitor.sh 프로세스만 kill (wrapper는 살림)
   # wrapper의 모든 자식 중 monitor.sh 관련 프로세스를 kill
@@ -664,7 +908,7 @@ HEADER
 
   # heartbeat가 갱신되었는지 확인 (재시작 증명)
   local hb_after
-  hb_after=$(cat "$hb_file" 2>/dev/null) || hb_after="0"
+  hb_after="$(runtime_get_manager_state "$PROJECT" "monitor_heartbeat" "0" 2>/dev/null || echo "0")"
   TOTAL=$((TOTAL + 1))
   if [ "$hb_after" != "$hb_before" ] && [ "$hb_after" -gt "$hb_before" ] 2>/dev/null; then
     echo "  PASS: heartbeat 갱신됨 (monitor 재시작 확인)"
@@ -716,6 +960,48 @@ EOF
   assert_eq "dispatch active 기록 1건" "1" "$dispatch_active"
   assert_eq "dispatch 중복 기록 없음" "1" "$dispatch_total"
 
+  local developer_report
+  developer_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-003.md" "developer")"
+  assert_file_exists "dispatch 시 developer 보고서 stub 생성" "$developer_report"
+  assert_file_contains "dispatch 보고서 stub draft 상태" "$developer_report" "^- \\*\\*Status\\*\\*: draft$"
+
+  assert_false "draft 보고서로 task_complete 거부" \
+    bash "$TOOLS_DIR/message.sh" "$PROJECT" developer manager \
+    task_complete normal "TASK-003 완료" "dispatch task finished"
+
+  local developer_active_before_final
+  developer_active_before_final=$(grep -Ec "\\| developer \\| workspace/tasks/TASK-003.md \\| .*\\| active \\|" "$af" 2>/dev/null || true)
+  assert_eq "draft 보고서 거부 후 active 유지" "1" "$developer_active_before_final"
+
+  cat > "$developer_report" << 'EOF'
+# TASK-003 결과 보고
+
+- **Date**: 2026-03-09
+- **Author**: developer
+- **For**: manager
+- **Status**: final
+- **Tags**: `task-report`, `TASK-003`
+
+## 요약
+- **무엇**: TASK-003 결과 보고
+- **핵심 발견**: dispatch flow verified
+- **시사점**: completion gate can proceed
+
+## 내용
+- 작업 지시: workspace/tasks/TASK-003.md
+- 보고서 경로: reports/tasks/TASK-003-developer.md
+- 수행 내용: dispatch로 전달된 태스크의 완료 흐름을 점검했다.
+- 변경 파일: 없음
+- 검증 결과: message.sh task_complete 게이트 확인
+- 남은 리스크: 없음
+
+## 참고한 교훈
+- 없음
+
+## 다음 단계
+- 없음
+EOF
+
   bash "$TOOLS_DIR/message.sh" "$PROJECT" developer manager \
     task_complete normal "TASK-003 완료" "dispatch task finished" >/dev/null
 
@@ -733,11 +1019,48 @@ EOF
   direct_assign_active=$(grep -Ec "\\| developer \\| workspace/tasks/TASK-004.md \\| .*\\| active \\|" "$af" 2>/dev/null || true)
   assert_eq "message.sh task_assign 직접 기록" "1" "$direct_assign_active"
 
+  local direct_report
+  direct_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-004.md" "developer")"
+  assert_file_exists "message.sh task_assign direct 보고서 stub 생성" "$direct_report"
+
   bash "$TOOLS_DIR/cmd.sh" assign manager "Review consensus result" "$PROJECT" >/dev/null
 
   local manager_active
   manager_active=$(grep -Ec "\\| manager \\| Review consensus result \\| .*\\| active \\|" "$af" 2>/dev/null || true)
   assert_eq "cmd.sh assign 으로 manager 태스크 기록" "1" "$manager_active"
+
+  local manager_report
+  manager_report="$(runtime_task_report_path "$PROJECT" "Review consensus result" "manager")"
+  assert_file_exists "cmd.sh assign 으로 manager 보고서 stub 생성" "$manager_report"
+
+  cat > "$manager_report" << 'EOF'
+# Review-consensus-result 결과 보고
+
+- **Date**: 2026-03-09
+- **Author**: manager
+- **For**: manager
+- **Status**: final
+- **Tags**: `task-report`, `Review-consensus-result`
+
+## 요약
+- **무엇**: manager 메타 태스크 결과 보고
+- **핵심 발견**: assign/complete 흐름 verified
+- **시사점**: manager도 동일한 report gate를 따른다
+
+## 내용
+- 작업 지시: Review consensus result
+- 보고서 경로: reports/tasks/Review-consensus-result-manager.md
+- 수행 내용: manager assign/complete 보고서 게이트를 검증했다.
+- 변경 파일: 없음
+- 검증 결과: cmd.sh complete gate 확인
+- 남은 리스크: 없음
+
+## 참고한 교훈
+- 없음
+
+## 다음 단계
+- 없음
+EOF
 
   bash "$TOOLS_DIR/cmd.sh" complete manager "$PROJECT" >/dev/null
 
@@ -782,12 +1105,24 @@ EOF
   canonical_info="$(probe_dashboard_project)"
   assert_eq "canonical project.md 파싱" "canonical-test|dual|deep-learning" "$canonical_info"
 
-  local manager_dir="$PROJECT_DIR/memory/manager"
-  local queue_dir="$manager_dir/message-queue"
+  mkdir -p "$PROJECT_DIR/memory/manager"
+  cat > "$PROJECT_DIR/memory/manager/sessions.md" << 'EOF'
+| 역할 | 백엔드 | Session ID | tmux Target | 상태 | 시작일 | 모델 | 비고 |
+|------|--------|-----------|-------------|------|--------|------|------|
+| manager | claude | old-session | whiplash-_stability-test:manager | closed | 2026-03-08 | opus | |
+| manager | claude | new-session | whiplash-_stability-test:manager | active | 2026-03-09 | opus | |
+EOF
+
+  local session_info
+  session_info="$(probe_dashboard_sessions)"
+  assert_eq "dashboard sessions dedupe 최신 row 유지" "1|active" "$session_info"
+
+  local queue_dir
+  queue_dir="$(runtime_message_queue_dir "$PROJECT")"
   mkdir -p "$queue_dir"
   : > "$queue_dir/queued.msg"
-  echo "$$" > "$manager_dir/monitor.pid"
-  date +%s > "$manager_dir/monitor.heartbeat"
+  runtime_set_manager_state "$PROJECT" "monitor_pid" "$$"
+  runtime_set_manager_state "$PROJECT" "monitor_heartbeat" "$(date +%s)"
 
   local monitor_info
   monitor_info="$(probe_dashboard_monitor)"
@@ -906,25 +1241,27 @@ EOF
 }
 
 # ──────────────────────────────────────────────
-# 시나리오 12: queued codex-exec 메시지 drain → codex-inbox
+# 시나리오 12: queued codex interactive 메시지 drain
 # ──────────────────────────────────────────────
 
 test_scenario_12() {
   echo ""
-  echo "=== 시나리오 12: queued codex exec drain → inbox ==="
+  echo "=== 시나리오 12: queued codex interactive drain ==="
   cleanup
   setup_test_project
+  build_fake_codex
 
   tmux new-session -d -s "$SESSION" -n manager
-  create_fake_codex_exec_agent "developer-codex"
-  register_fake_codex_exec_agent "developer-codex" "developer"
+  create_fake_codex_agent "developer-codex"
+  register_fake_codex_agent "developer-codex" "developer"
 
   local pane_pid
   pane_pid=$(tmux list-panes -t "${SESSION}:developer-codex" -F '#{pane_pid}' 2>/dev/null | head -1) || pane_pid=""
-  assert_true "developer-codex exec alive 확인" bash -c \
-    "[ -n '$pane_pid' ] && pgrep -P '$pane_pid' bash >/dev/null 2>&1"
+  assert_true "developer-codex interactive alive 확인" bash -c \
+    "[ -n '$pane_pid' ] && pgrep -P '$pane_pid' codex >/dev/null 2>&1"
 
-  local queue_dir="$PROJECT_DIR/memory/manager/message-queue"
+  local queue_dir
+  queue_dir="$(runtime_message_queue_dir "$PROJECT")"
   mkdir -p "$queue_dir"
   local queue_file="$queue_dir/$(date +%s)-researcher-developer-codex.msg"
   cat > "$queue_file" << 'EOF'
@@ -932,31 +1269,334 @@ from=researcher
 to=developer-codex
 kind=status_update
 priority=normal
-subject=queued-codex-exec
-content=codex exec drain smoke
+subject=queued-codex-interactive
+content=codex interactive drain smoke
 EOF
 
   bash "$TOOLS_DIR/cmd.sh" monitor-check "$PROJECT" >/dev/null 2>&1
 
-  local inbox_dir="$PROJECT_DIR/memory/developer/codex-inbox"
-  local notify_file=""
+  local pane_dump=""
   local attempt
-  for attempt in 1 2 3 4 5 6 7 8 9 10; do
-    notify_file=$(find "$inbox_dir" -name '*.notify' 2>/dev/null | head -1) || notify_file=""
-    if [ -n "$notify_file" ] && [ ! -f "$queue_file" ]; then
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    pane_dump="$(tmux capture-pane -pJ -t "${SESSION}:developer-codex" -S -60 2>/dev/null || true)"
+    if [ ! -f "$queue_file" ] && echo "$pane_dump" | grep -q "codex interactive drain smoke"; then
       break
     fi
     sleep 1
   done
 
-  assert_file_not_exists "queued codex exec 메시지 제거됨" "$queue_file"
-  assert_file_exists "codex inbox notify 생성됨" "$notify_file"
-  if [ -n "$notify_file" ]; then
-    assert_file_contains "codex inbox notify 제목 보존" "$notify_file" "queued-codex-exec"
-    assert_file_contains "codex inbox notify 내용 보존" "$notify_file" "codex exec drain smoke"
+  assert_file_not_exists "queued codex interactive 메시지 제거됨" "$queue_file"
+  TOTAL=$((TOTAL + 1))
+  if echo "$pane_dump" | grep -q "codex interactive drain smoke"; then
+    echo "  PASS: codex interactive pane에 큐 메시지 표시"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: codex interactive pane에 큐 메시지 미표시"
+    FAIL=$((FAIL + 1))
   fi
 
   echo "  시나리오 12 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 13: peer status_update → manager 자동 미러
+# ──────────────────────────────────────────────
+
+test_scenario_13() {
+  echo ""
+  echo "=== 시나리오 13: peer status_update 자동 미러 ==="
+  cleanup
+  setup_test_project
+  build_fake_claude
+
+  tmux new-session -d -s "$SESSION" -n dashboard
+  create_fake_agent "manager"
+  create_fake_agent "developer"
+  register_fake_agent "manager" "manager"
+  register_fake_agent "developer" "developer"
+
+  bash "$TOOLS_DIR/message.sh" "$PROJECT" researcher developer \
+    status_update normal "peer-sync" "research ready" >/dev/null
+
+  local developer_pane manager_pane queue_dir mirror_seen attempt mirror_queue_file msg
+  queue_dir="$(runtime_message_queue_dir "$PROJECT")"
+  mirror_seen=false
+  for attempt in 1 2 3 4 5 6 7 8; do
+    developer_pane="$(tmux capture-pane -pJ -t "${SESSION}:developer" -S -80 2>/dev/null || true)"
+    manager_pane="$(tmux capture-pane -pJ -t "${SESSION}:manager" -S -80 2>/dev/null || true)"
+    mirror_queue_file=""
+    for msg in "$queue_dir"/*.msg; do
+      [ -f "$msg" ] || continue
+      if grep -q '^to=manager$' "$msg" 2>/dev/null \
+        && grep -q '^subject=peer-sync$' "$msg" 2>/dev/null \
+        && grep -q '원수신자: developer' "$msg" 2>/dev/null \
+        && grep -q 'research ready' "$msg" 2>/dev/null; then
+        mirror_queue_file="$msg"
+        break
+      fi
+    done
+    if echo "$developer_pane" | grep -q "research ready"; then
+      if echo "$manager_pane" | grep -q "research ready" && echo "$manager_pane" | grep -q "원수신자: developer"; then
+        mirror_seen=true
+        break
+      fi
+      if [ -n "$mirror_queue_file" ]; then
+        mirror_seen=true
+        break
+      fi
+    fi
+    sleep 1
+  done
+
+  TOTAL=$((TOTAL + 1))
+  if [ "$mirror_seen" = true ]; then
+    echo "  PASS: peer status_update가 manager에 자동 미러됨"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: peer status_update 미러 누락"
+    FAIL=$((FAIL + 1))
+  fi
+
+  assert_file_not_exists "status_update는 assignments를 만들지 않음" "$PROJECT_DIR/memory/manager/assignments.md"
+
+  echo "  시나리오 13 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 14: routing guard
+# ──────────────────────────────────────────────
+
+test_scenario_14() {
+  echo ""
+  echo "=== 시나리오 14: routing guard ==="
+  cleanup
+  setup_test_project
+
+  assert_false "non-manager task_assign 거부" \
+    bash "$TOOLS_DIR/message.sh" "$PROJECT" researcher developer \
+    task_assign normal "TASK-X" "invalid"
+
+  assert_false "peer task_complete 거부" \
+    bash "$TOOLS_DIR/message.sh" "$PROJECT" researcher developer \
+    task_complete normal "TASK-X 완료" "invalid"
+
+  echo "  시나리오 14 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 15: tmux submit 반복 Enter + Python REPL
+# ──────────────────────────────────────────────
+
+test_scenario_15() {
+  echo ""
+  echo "=== 시나리오 15: tmux submit 반복 Enter ==="
+  cleanup
+  setup_test_project
+
+  tmux new-session -d -s "$SESSION" -n pyrepl
+  tmux send-keys -t "${SESSION}:pyrepl" "python3 -q" Enter
+  sleep 2
+
+  assert_true "Python REPL 멀티라인 제출 성공" \
+    tmux_submit_pasted_payload "${SESSION}:pyrepl" $'for i in [1]:\n    print("submit-loop")' "py-loop"
+
+  local pane_dump
+  pane_dump="$(tmux capture-pane -p -t "${SESSION}:pyrepl" -S -80 2>/dev/null || true)"
+  TOTAL=$((TOTAL + 1))
+  if echo "$pane_dump" | grep -q "submit-loop"; then
+    echo "  PASS: 멀티라인 payload 실행됨"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: 멀티라인 payload 실행 실패"
+    FAIL=$((FAIL + 1))
+  fi
+
+  assert_true "Python REPL 한글 payload 제출 성공" \
+    tmux_submit_pasted_payload "${SESSION}:pyrepl" 'print("한글-submit")' "py-korean"
+
+  pane_dump="$(tmux capture-pane -p -t "${SESSION}:pyrepl" -S -80 2>/dev/null || true)"
+  TOTAL=$((TOTAL + 1))
+  if echo "$pane_dump" | grep -q "한글-submit"; then
+    echo "  PASS: 한글 payload 실행됨"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: 한글 payload 실행 실패"
+    FAIL=$((FAIL + 1))
+  fi
+
+  echo "  시나리오 15 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 16: 대상 lock 중 direct send → queue 후 drain
+# ──────────────────────────────────────────────
+
+test_scenario_16() {
+  echo ""
+  echo "=== 시나리오 16: 대상 lock queue + drain ==="
+  cleanup
+  setup_test_project
+  build_fake_claude
+
+  tmux new-session -d -s "$SESSION" -n manager
+  create_fake_agent "developer"
+  register_fake_agent "developer" "developer"
+
+  assert_true "developer lock 획득" runtime_claim_message_target_lock "$PROJECT" "developer"
+
+  bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer \
+    status_update normal "locked-send" "queued by lock" >/dev/null
+
+  local queue_dir queue_file
+  queue_dir="$(runtime_message_queue_dir "$PROJECT")"
+  queue_file="$(find "$queue_dir" -name '*.msg' -print 2>/dev/null | while read -r msg; do
+    if grep -q '^subject=locked-send$' "$msg" 2>/dev/null; then
+      printf '%s\n' "$msg"
+      break
+    fi
+  done)"
+  assert_file_exists "lock 중 direct send는 큐 저장" "$queue_file"
+
+  runtime_release_message_target_lock "$PROJECT" "developer"
+
+  bash "$TOOLS_DIR/cmd.sh" monitor-check "$PROJECT" >/dev/null 2>&1
+
+  local pane_dump attempt
+  pane_dump=""
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    pane_dump="$(tmux capture-pane -pJ -t "${SESSION}:developer" -S -80 2>/dev/null || true)"
+    if [ ! -f "$queue_file" ] && echo "$pane_dump" | grep -q "queued by lock"; then
+      break
+    fi
+    sleep 1
+  done
+
+  assert_file_not_exists "queue drain 후 메시지 제거" "$queue_file"
+  TOTAL=$((TOTAL + 1))
+  if echo "$pane_dump" | grep -q "queued by lock"; then
+    echo "  PASS: lock 해제 후 queued message 전달"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: lock 해제 후 queued message 전달 실패"
+    FAIL=$((FAIL + 1))
+  fi
+
+  echo "  시나리오 16 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 17: dual-dispatch 결과 보고서 stub 생성
+# ──────────────────────────────────────────────
+
+test_scenario_17() {
+  echo ""
+  echo "=== 시나리오 17: dual-dispatch 보고서 stub 생성 ==="
+  cleanup
+  setup_test_project
+  build_fake_claude
+  build_fake_codex
+
+  mkdir -p "$PROJECT_DIR/workspace/tasks"
+  cat > "$PROJECT_DIR/workspace/tasks/TASK-005.md" << 'EOF'
+# TASK-005: Dual dispatch report stub test
+EOF
+
+  tmux new-session -d -s "$SESSION" -n manager
+  create_fake_agent "developer-claude"
+  create_fake_codex_agent "developer-codex"
+  register_fake_agent "developer-claude" "developer"
+  register_fake_codex_agent "developer-codex" "developer"
+
+  bash "$TOOLS_DIR/cmd.sh" dual-dispatch developer \
+    "projects/${PROJECT}/workspace/tasks/TASK-005.md" "$PROJECT" >/dev/null
+
+  local claude_report codex_report manager_report
+  claude_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-005.md" "developer-claude")"
+  codex_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-005.md" "developer-codex")"
+  manager_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-005.md" "manager")"
+
+  assert_file_exists "dual-dispatch claude 보고서 stub 생성" "$claude_report"
+  assert_file_exists "dual-dispatch codex 보고서 stub 생성" "$codex_report"
+  assert_file_exists "dual-dispatch manager synthesis stub 생성" "$manager_report"
+  assert_file_contains "manager synthesis가 claude 보고서 경로 포함" "$manager_report" "reports/tasks/TASK-005-developer-claude.md"
+  assert_file_contains "manager synthesis가 codex 보고서 경로 포함" "$manager_report" "reports/tasks/TASK-005-developer-codex.md"
+
+  echo "  시나리오 17 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 18: dashboard agent live/report 상태 반영
+# ──────────────────────────────────────────────
+
+test_scenario_18() {
+  echo ""
+  echo "=== 시나리오 18: dashboard agent live/report 상태 반영 ==="
+  cleanup
+  setup_test_project
+  build_fake_claude
+
+  mkdir -p "$PROJECT_DIR/workspace/tasks"
+  cat > "$PROJECT_DIR/workspace/tasks/TASK-007.md" << 'EOF'
+# TASK-007: Dashboard report status test
+EOF
+
+  tmux new-session -d -s "$SESSION" -n dashboard
+  create_fake_agent "developer"
+  register_fake_agent "developer" "developer"
+
+  bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer \
+    task_assign normal "workspace/tasks/TASK-007.md" "dashboard status smoke" >/dev/null
+
+  local dashboard_state
+  dashboard_state="$(probe_dashboard_agent developer)"
+  assert_eq "dashboard가 live + draft report 표시" "ALIVE|draft|TASK-007" "$dashboard_state"
+
+  local developer_report
+  developer_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-007.md" "developer")"
+  cat > "$developer_report" << 'EOF'
+# TASK-007 결과 보고
+
+- **Date**: 2026-03-09
+- **Author**: developer
+- **For**: manager
+- **Status**: final
+- **Tags**: `task-report`, `TASK-007`
+
+## 요약
+- **무엇**: dashboard status smoke
+- **핵심 발견**: final report visible
+- **시사점**: dashboard report state should turn final
+
+## 내용
+- 작업 지시: workspace/tasks/TASK-007.md
+- 보고서 경로: reports/tasks/TASK-007-developer.md
+- 수행 내용: dashboard report status 검증
+- 변경 파일: 없음
+- 검증 결과: report final
+- 남은 리스크: 없음
+
+## 참고한 교훈
+- 없음
+
+## 다음 단계
+- 없음
+EOF
+
+  dashboard_state="$(probe_dashboard_agent developer)"
+  assert_eq "dashboard가 final report 표시" "ALIVE|final|TASK-007" "$dashboard_state"
+
+  local pane_pid child_pid
+  pane_pid="$(tmux list-panes -t "${SESSION}:developer" -F '#{pane_pid}' 2>/dev/null | head -1)"
+  child_pid="$(pgrep -P "$pane_pid" claude 2>/dev/null | head -1 || true)"
+  if [ -n "$child_pid" ]; then
+    kill "$child_pid" 2>/dev/null || true
+  fi
+  sleep 1
+
+  dashboard_state="$(probe_dashboard_agent developer)"
+  assert_eq "dashboard가 dead process를 CRASHED로 표시" "CRASHED|final|TASK-007" "$dashboard_state"
+
+  echo "  시나리오 18 완료"
 }
 
 # ──────────────────────────────────────────────
@@ -985,6 +1625,12 @@ test_scenario_9
 test_scenario_10
 test_scenario_11
 test_scenario_12
+test_scenario_13
+test_scenario_14
+test_scenario_15
+test_scenario_16
+test_scenario_17
+test_scenario_18
 
 echo ""
 echo "============================================"

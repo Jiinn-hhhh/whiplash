@@ -119,14 +119,18 @@ bash scripts/message.sh {project} {from} {to} {kind} {priority} "{subject}" "{co
 ```
 
 - kind: `task_complete` | `status_update` | `need_input` | `escalation` | `agent_ready` | `reboot_notice` | `consensus_request`
+- 추가 kind: `consensus_response`, `task_assign`, `alert_resolve`
 - priority: `normal` | `urgent`
-- 수신자의 tmux 윈도우에 `load-buffer` + `paste-buffer`로 직접 전달한다.
+- Interactive 세션에는 한 줄 알림을 직접 입력한다. rich TUI(Claude/Codex)는 `send-keys -l`, 그 외 셸/REPL은 기존 paste 기반 전달을 사용한다.
 
 ### 사용 규칙
 
 - **짧은 알림용**. 상세 내용은 별도 문서에 두고 참조만 포함한다.
 - 기존 소통(토론, 회의, 공지) 규칙을 **대체하지 않는다**. 보충한다.
-- 모든 에이전트 간 **양방향** 사용 가능. Manager를 거칠 필요 없다.
+- `task_assign`는 Manager만 보낼 수 있다.
+- `task_complete`, `agent_ready`, `reboot_notice`의 정식 수신자는 Manager만 된다.
+- peer direct는 `status_update`, `need_input`, `escalation`, `consensus_request`, `consensus_response`만 허용한다.
+- peer direct 메시지는 Manager에도 자동 미러링된다.
 - 메시지 로그(`logs/message.log`)가 이력을 기록한다.
 - 알림 프로토콜 상세는 `agents/manager/techniques/orchestration.md` §11 참조.
 

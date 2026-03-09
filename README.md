@@ -207,12 +207,17 @@ Onboarding은 `cmd.sh boot-manager`로 Manager를 부팅하고, Manager는 `cmd.
 
 | 채널 | 구현 | 용도 |
 |------|------|------|
-| 실시간 알림 | `message.sh` → tmux `load-buffer` + `paste-buffer` | 태스크 완료, 상태, 긴급 에스컬레이션 |
+| 실시간 알림 | `message.sh` → interactive 세션 직접 입력 | 태스크 완료, 상태, 긴급 에스컬레이션 |
 | 토론 | `workspace/shared/discussions/DISC-NNN.md` (append-only) | 기술 의사결정 |
 | 회의 | `workspace/shared/meetings/MEET-NNN.md` (3라운드) | 입장→응답→종합 |
 | 공지 | `workspace/shared/announcements/` | 태스크 지시서 (TASK-NNN.md) |
 
-알림 종류: `task_complete`, `status_update`, `need_input`, `escalation`, `agent_ready`, `reboot_notice`, `consensus_request`
+알림 종류: `task_complete`, `status_update`, `need_input`, `escalation`, `agent_ready`, `reboot_notice`, `consensus_request`, `consensus_response`, `task_assign`, `alert_resolve`
+
+- `task_assign`는 Manager만 발행한다.
+- `task_complete`, `agent_ready`, `reboot_notice`의 정식 수신자는 Manager다.
+- peer direct는 `status_update`, `need_input`, `escalation`, `consensus_request`, `consensus_response`만 허용한다.
+- peer direct는 Manager에도 자동 미러링된다.
 
 ### 태스크 분배
 
@@ -225,6 +230,10 @@ cmd.sh dual-dispatch {role} {task-file} {project}
 ```
 
 Manager가 `workspace/shared/announcements/TASK-NNN.md`에 지시서를 작성하고, `dispatch`/`dual-dispatch`로 전달. 에이전트는 완료 후 `message.sh`로 `task_complete` 보고.
+
+- 각 top-level task는 완료 전에 `reports/tasks/{task-id}-{agent}.md` 결과 보고서를 남긴다.
+- `dispatch`/`task_assign` 시 보고서 stub가 자동 생성된다.
+- `task_complete`는 보고서의 `Status`가 `final`이고 placeholder가 제거된 뒤에만 허용된다.
 
 ### 동적 스폰
 
@@ -306,10 +315,11 @@ cmd.sh refresh {role} {project}
 `dashboard.py`가 tmux 세션의 0번 윈도우에서 실시간 TUI를 제공한다. Rich 라이브러리 기반.
 
 표시 정보:
-- 에이전트별 상태 (active/crashed/idle 시간)
+- 에이전트별 상태 (실제 child process 기준 alive/crashed/absent)
+- 현재 태스크 경과 시간 + task report 상태 (`DRAFT`/`FINAL`/`MISS`)
 - 최근 시스템 이벤트 (부팅, 크래시, 리부팅)
 - 최근 메시지 전달 이력
-- Monitor heartbeat 상태
+- Monitor heartbeat + queued message 상태
 
 ```bash
 # 자동: cmd.sh boot 시 dashboard 윈도우가 자동 생성됨
@@ -436,7 +446,6 @@ whiplash/
 ├── domains/                     # 도메인 특화 정의 (git tracked)
 ├── scripts/                     # 인프라 스크립트
 │   ├── cmd.sh                   #   오케스트레이션 (boot, dispatch, reboot 등)
-│   ├── codex-agent.sh           #   Codex exec 래퍼 (지속 에이전트)
 │   ├── integration-test.sh      #   tmux 기반 통합 테스트
 │   ├── message.sh               #   에이전트 간 실시간 알림 (tmux 직접 전달)
 │   ├── monitor.sh               #   헬스체크 데몬 (크래시/행 감지)
@@ -456,10 +465,12 @@ whiplash/
         │   └── teams/           #     역할별 작업 디렉토리
         ├── memory/              #   축적된 상태
         │   ├── knowledge/       #     공유 지식 (index, 교훈, 아카이브)
-        │   ├── manager/         #     sessions.md, assignments.md, monitor 상태
+        │   ├── manager/         #     sessions.md, assignments.md
         │   └── {role}/          #     역할별 개인 메모리
+        ├── runtime/             #   런타임 상태 파일 (manager-state.tsv, reboot-state.tsv, queue/lock)
         ├── logs/                #   인프라 로그 (system.log, message.log)
         └── reports/             #   사용자 열람용 문서
+            └── tasks/           #     top-level task 결과 보고서
 ```
 
 <details>

@@ -35,6 +35,7 @@ whiplash/
         shared/              #     진행 중인 토론, 회의, 공지
         teams/{team-name}/   #     팀별 내부 작업 공간
       memory/                #   축적된 상태
+        manager/             #     sessions.md, assignments.md
         {role}/              #     에이전트 개인 메모
         knowledge/           #     공유 지식
           lessons/           #       활성 교훈 (최대 30개)
@@ -43,8 +44,10 @@ whiplash/
           meetings/          #       종료된 회의록 원본
           archives/          #       순환된 비활성 교훈
           index.md           #       지식 지도 (~100줄)
+      runtime/               #   manager-state.tsv, reboot-state.tsv, message queue/locks
       logs/                  #   system.log, message.log
       reports/               #   사용자 열람 전용 (에이전트는 쓰기만, 읽기 참조 금지)
+        tasks/               #     top-level task 결과 보고서
 ```
 
 - Git tracked = `agents/` + `domains/` + `scripts/` + `dashboard/` + `feedback/`. 런타임 = `projects/`.
@@ -84,6 +87,12 @@ Claude Code의 서브에이전트, 팀 생성(TeamCreate), 병렬 태스크 등 
 
 ### 프로젝트 폴더 접근 규칙
 프로젝트 폴더(코드)는 **Developer만 수정 가능**. 다른 에이전트는 읽기 전용. 상세: `agents/manager/techniques/orchestration.md` §7
+
+### 태스크 결과 보고서
+- 각 top-level task는 `reports/tasks/{task-id}-{agent}.md` 결과 보고서를 남긴다.
+- `task_assign`를 받으면 보고서 stub가 자동 생성된다.
+- `task_complete` 전에 보고서를 채우고 `- **Status**: final`로 바꿔야 한다.
+- Dual 모드에서는 `{task-id}-{role}-claude.md`, `{task-id}-{role}-codex.md`, `{task-id}-manager.md`가 함께 사용될 수 있다.
 
 ### 컨텍스트 최소화
 - `knowledge/index.md`는 ~100줄 이내의 지도로 유지한다.

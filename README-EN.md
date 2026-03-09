@@ -226,6 +226,10 @@ cmd.sh dual-dispatch {role} {task-file} {project}
 
 Manager writes directives in `workspace/shared/announcements/TASK-NNN.md` and delivers via `dispatch`/`dual-dispatch`. Agents report `task_complete` via `message.sh`.
 
+- Every top-level task must leave a result report in `reports/tasks/{task-id}-{agent}.md` before completion.
+- `dispatch`/`task_assign` auto-creates the report stub.
+- `task_complete` is allowed only after the report `Status` is `final` and placeholders are removed.
+
 ### Dynamic Spawn
 
 When an agent is busy with a long task, deploy an additional instance of the same role.
@@ -306,10 +310,11 @@ cmd.sh refresh {role} {project}
 `dashboard.py` provides a real-time TUI in tmux window 0. Built on the Rich library.
 
 Displays:
-- Per-agent status (active/crashed/idle time)
+- Per-agent status (alive/crashed/absent based on the real child process)
+- Current task elapsed time + task report status (`DRAFT`/`FINAL`/`MISS`)
 - Recent system events (boot, crash, reboot)
 - Recent message delivery history
-- Monitor heartbeat status
+- Monitor heartbeat + queued message state
 
 ```bash
 # Automatic: dashboard window is created by cmd.sh boot
@@ -436,9 +441,8 @@ whiplash/
 ├── domains/                     # Domain-specific definitions (git tracked)
 ├── scripts/                     # Infrastructure scripts
 │   ├── cmd.sh                   #   Orchestration (boot, dispatch, reboot, etc.)
-│   ├── codex-agent.sh           #   Codex exec wrapper (persistent agent)
 │   ├── integration-test.sh      #   tmux-based integration tests
-│   ├── message.sh               #   Inter-agent real-time notifications (tmux direct)
+│   ├── message.sh               #   Inter-agent real-time notifications (interactive direct delivery)
 │   ├── monitor.sh               #   Health check daemon (crash/hung detection)
 │   ├── log.py                   #   Structured logger (fcntl lock, rotation)
 │   └── preflight.sh             #   Pre-boot environment validation + auto-install
@@ -456,10 +460,12 @@ whiplash/
         │   └── teams/           #     Per-role work directories
         ├── memory/              #   Accumulated state
         │   ├── knowledge/       #     Shared knowledge (index, lessons, archives)
-        │   ├── manager/         #     sessions.md, assignments.md, monitor state
+        │   ├── manager/         #     sessions.md, assignments.md
         │   └── {role}/          #     Per-role personal memory
+        ├── runtime/             #   Runtime state files (manager-state.tsv, reboot-state.tsv, queue/locks)
         ├── logs/                #   Infrastructure logs (system.log, message.log)
         └── reports/             #   User-facing documents
+            └── tasks/           #     Top-level task result reports
 ```
 
 <details>

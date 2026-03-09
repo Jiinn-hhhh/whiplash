@@ -28,30 +28,29 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TOOLS_DIR="$SCRIPT_DIR"
 SESSION="whiplash-${PROJECT}"
+MONITOR_ONCE="${WHIPLASH_MONITOR_ONCE:-0}"
 # shellcheck source=/dev/null
 source "$TOOLS_DIR/tmux-submit.sh"
+# shellcheck source=/dev/null
+source "$TOOLS_DIR/runtime-paths.sh"
 HEALTH_CHECK_INTERVAL=30
 MAX_REBOOT=5
 HUNG_THRESHOLD=600  # 10분 (초)
 QUEUE_TTL=86400  # 24시간
-REBOOT_COUNT_DIR="$REPO_ROOT/projects/$PROJECT/memory/manager/reboot-counts"
-HEARTBEAT_FILE="$REPO_ROOT/projects/$PROJECT/memory/manager/monitor.heartbeat"
+ensure_manager_runtime_layout "$PROJECT"
 SESSION_ABSENT_COUNT=0
 
 # ──────────────────────────────────────────────
 # PID lock — 동일 프로젝트에 대한 중복 monitor 방지
 # ──────────────────────────────────────────────
-LOCK_FILE="$REPO_ROOT/projects/$PROJECT/memory/manager/monitor.lock"
-mkdir -p "$(dirname "$LOCK_FILE")"
-if [ -f "$LOCK_FILE" ]; then
-  OLD_PID=$(cat "$LOCK_FILE" 2>/dev/null)
-  if [[ "$OLD_PID" =~ ^[0-9]+$ ]] && kill -0 "$OLD_PID" 2>/dev/null; then
-    echo "Error: monitor.sh가 이미 실행 중 (PID: $OLD_PID). 중복 실행 방지." >&2
+if [ "$MONITOR_ONCE" != "1" ]; then
+  if ! runtime_claim_manager_lock "$PROJECT" "$$"; then
+    OLD_PID="$(runtime_get_manager_state "$PROJECT" "monitor_lock_pid" "" 2>/dev/null || true)"
+    echo "Error: monitor.sh가 이미 실행 중 (PID: ${OLD_PID:-unknown}). 중복 실행 방지." >&2
     exit 1
   fi
+  trap 'runtime_release_manager_lock "$PROJECT" "$$"' EXIT
 fi
-echo $$ > "$LOCK_FILE"
-trap 'rm -f "$LOCK_FILE"' EXIT
 
 # ──────────────────────────────────────────────
 # 크래시 알림 헬퍼
@@ -92,16 +91,10 @@ get_active_roles() {
 
 get_reboot_count() {
   local role="$1"
-  local count_file="$REBOOT_COUNT_DIR/${role}.count"
-  if [ -f "$count_file" ]; then
-    local val
-    val=$(cat "$count_file")
-    # 숫자가 아니면 0으로 리셋
-    if [[ "$val" =~ ^[0-9]+$ ]]; then
-      echo "$val"
-    else
-      echo "0"
-    fi
+  local val
+  val="$(runtime_get_reboot_count "$PROJECT" "$role" 2>/dev/null || echo "0")"
+  if [[ "$val" =~ ^[0-9]+$ ]]; then
+    echo "$val"
   else
     echo "0"
   fi
@@ -109,17 +102,12 @@ get_reboot_count() {
 
 increment_reboot_count() {
   local role="$1"
-  mkdir -p "$REBOOT_COUNT_DIR"
-  local count_file="$REBOOT_COUNT_DIR/${role}.count"
-  local current
-  current=$(get_reboot_count "$role")
-  echo $((current + 1)) > "$count_file"
+  runtime_increment_reboot_count "$PROJECT" "$role"
 }
 
 reset_reboot_count() {
   local role="$1"
-  local count_file="$REBOOT_COUNT_DIR/${role}.count"
-  rm -f "$count_file"
+  runtime_reset_reboot_count "$PROJECT" "$role"
 }
 
 get_window_backend() {
@@ -176,30 +164,6 @@ resolve_agent_role() {
   heuristic_agent_role "$win_name"
 }
 
-resolve_codex_mode() {
-  local win_name="$1"
-  local sessions_file="$REPO_ROOT/projects/$PROJECT/memory/manager/sessions.md"
-  if [ ! -f "$sessions_file" ]; then
-    echo "unknown"
-    return
-  fi
-
-  local session_id
-  session_id=$(
-    awk -F'|' -v target="${SESSION}:${win_name}" '
-      function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
-      trim($5) == target && trim($6) == "active" { sid = trim($4) }
-      END { print sid }
-    ' "$sessions_file"
-  )
-
-  case "$session_id" in
-    codex-interactive) echo "interactive" ;;
-    codex-exec)        echo "exec" ;;
-    *)                 echo "unknown" ;;
-  esac
-}
-
 build_notification() {
   local msg_from="$1"
   local msg_to="$2"
@@ -207,33 +171,58 @@ build_notification() {
   local msg_priority="$4"
   local msg_subject="$5"
   local msg_content="$6"
+  local flat_subject flat_content
   local prefix="[notify] ${msg_from} → ${msg_to} | ${msg_kind}"
   if [ "$msg_priority" = "urgent" ]; then
     prefix="[URGENT] ${msg_from} → ${msg_to} | ${msg_kind}"
   fi
-  printf '%s\n' "${prefix}
-제목: ${msg_subject}
-내용: ${msg_content}"
+  flat_subject="$(printf '%s' "$msg_subject" | tr '\r\n' '  ')"
+  flat_content="$(printf '%s' "$msg_content" | tr '\r\n' '  ')"
+  printf '%s' "${prefix} | 제목: ${flat_subject} | 내용: ${flat_content}"
 }
 
-deliver_codex_inbox_message() {
-  local msg_to="$1"
-  local msg_from="$2"
-  local notification="$3"
-  local agent_role
-  agent_role="$(resolve_agent_role "$msg_to")"
-  [ -n "$agent_role" ] || return 1
+maybe_refresh_target() {
+  local target="$1"
+  if [ "$target" = "manager" ] || [ "$target" = "user" ]; then
+    return 1
+  fi
 
-  local inbox_dir="$REPO_ROOT/projects/$PROJECT/memory/${agent_role}/codex-inbox"
-  mkdir -p "$inbox_dir"
+  local now last_refresh
+  now=$(date +%s)
+  last_refresh="$(runtime_get_message_refresh_ts "$PROJECT" "$target" "" 2>/dev/null || true)"
+  if [[ "${last_refresh:-}" =~ ^[0-9]+$ ]] && [ $((now - last_refresh)) -lt 60 ]; then
+    return 1
+  fi
 
-  local ts suffix tmp_file notify_file
-  ts=$(date +%s)
-  suffix="${msg_from}-${msg_to}-${RANDOM}"
-  tmp_file="${inbox_dir}/.${ts}-${suffix}.notify.tmp"
-  notify_file="${inbox_dir}/${ts}-${suffix}.notify"
-  printf '%s' "$notification" > "$tmp_file"
-  mv "$tmp_file" "$notify_file"
+  runtime_set_message_refresh_ts "$PROJECT" "$target" "$now" || true
+  WHIPLASH_REFRESH_HANDOFF_WAIT_SECONDS=0 \
+  WHIPLASH_REFRESH_SKIP_HANDOFF_REQUEST=1 \
+  bash "$TOOLS_DIR/cmd.sh" refresh "$target" "$PROJECT" >/dev/null 2>&1 || return 1
+  sleep 5
+}
+
+submit_notification() {
+  local target="$1"
+  local notification="$2"
+  local tmux_target="${SESSION}:${target}"
+  local attempt
+
+  for attempt in 1 2; do
+    if tmux_submit_pasted_payload "$tmux_target" "$notification" "drain"; then
+      runtime_clear_message_refresh_ts "$PROJECT" "$target" || true
+      return 0
+    fi
+    sleep 1
+  done
+
+  if maybe_refresh_target "$target" && is_agent_alive "$target"; then
+    if tmux_submit_pasted_payload "$tmux_target" "$notification" "drain-refresh"; then
+      runtime_clear_message_refresh_ts "$PROJECT" "$target" || true
+      return 0
+    fi
+  fi
+
+  return 1
 }
 
 # ──────────────────────────────────────────────
@@ -251,14 +240,8 @@ is_agent_alive() {
   pane_pid=$(tmux list-panes -t "$tmux_target" -F '#{pane_pid}' 2>/dev/null | head -1)
   local backend
   backend="$(get_window_backend "$win_name")"
-  # 백엔드에 따라 프로세스 이름 분기
-  # codex interactive 모드: codex 프로세스가 상시 실행
-  # codex exec 모드: codex-agent.sh (bash)가 상시 실행, codex 프로세스는 태스크별 실행/종료
   if [ "$backend" = "codex" ]; then
-    [ -n "$pane_pid" ] && {
-      pgrep -P "$pane_pid" "codex" >/dev/null 2>&1 || \
-      pgrep -P "$pane_pid" "bash" >/dev/null 2>&1
-    }
+    [ -n "$pane_pid" ] && pgrep -P "$pane_pid" "codex" >/dev/null 2>&1
   else
     [ -n "$pane_pid" ] && pgrep -P "$pane_pid" "claude" >/dev/null 2>&1
   fi
@@ -276,7 +259,7 @@ check_agent_windows() {
       # 대기 모드: 60초 간격으로 세션 복귀 대기 (exit 대신)
       while ! tmux has-session -t "$SESSION" 2>/dev/null; do
         sleep 60
-        date +%s > "$HEARTBEAT_FILE"  # 좀비 오판 방지
+        runtime_set_manager_state "$PROJECT" "monitor_heartbeat" "$(date +%s)" || true  # 좀비 오판 방지
       done
       # 세션 복귀 감지
       python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor session_recovered "$SESSION" || true
@@ -303,9 +286,10 @@ check_agent_windows() {
 
       if [ "$count" -lt "$MAX_REBOOT" ]; then
         # reboot lock 확인 (경합 방지)
-        local lock_file="$REPO_ROOT/projects/$PROJECT/memory/manager/reboot-locks/${window_name}.lock"
-        if [ -f "$lock_file" ]; then
-          local lock_age=$(($(date +%s) - $(cat "$lock_file")))
+        local lock_ts
+        lock_ts="$(runtime_get_reboot_lock_ts "$PROJECT" "$window_name" 2>/dev/null || true)"
+        if [[ "${lock_ts:-}" =~ ^[0-9]+$ ]]; then
+          local lock_age=$(( $(date +%s) - lock_ts ))
           if [ "$lock_age" -lt 60 ]; then
             continue  # 리부팅 진행 중, 건너뜀
           fi
@@ -325,22 +309,21 @@ check_agent_windows() {
         fi
       else
         # 리부팅 한도 초과 — 쿨다운 (5분 후 카운터 리셋)
-        local lockout_file="$REBOOT_COUNT_DIR/${window_name}.lockout"
-        if [ ! -f "$lockout_file" ]; then
+        local lockout_time
+        lockout_time="$(runtime_get_reboot_lockout_ts "$PROJECT" "$window_name" 2>/dev/null || true)"
+        if ! [[ "${lockout_time:-}" =~ ^[0-9]+$ ]]; then
           # 첫 lockout: 알림 + 타임스탬프 기록
           python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor reboot_limit "$window_name" --detail count="${count}/${MAX_REBOOT}" || true
           send_crash_alert "$window_name" \
             "${window_name} 에이전트 reboot ${MAX_REBOOT}회 시도 후 실패. 5분 후 카운터 리셋하여 재시도한다."
-          date +%s > "$lockout_file"
+          runtime_set_reboot_lockout_ts "$PROJECT" "$window_name" "$(date +%s)"
         else
           # 5분 경과 확인
-          local lockout_time
-          lockout_time=$(cat "$lockout_file")
           local now_ts
           now_ts=$(date +%s)
           if [[ "$lockout_time" =~ ^[0-9]+$ ]] && [ $((now_ts - lockout_time)) -gt 300 ]; then
             reset_reboot_count "$window_name"
-            rm -f "$lockout_file"
+            runtime_clear_reboot_lockout_ts "$PROJECT" "$window_name"
             python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor reboot_count_reset "$window_name" || true
           fi
         fi
@@ -362,14 +345,14 @@ check_agent_health() {
 
   local now
   now=$(date +%s)
-  local idle_check_dir="$REPO_ROOT/projects/$PROJECT/memory/manager/idle-checks"
 
   while IFS='|' read -r win_name win_activity; do
     if [ "$win_name" = "manager" ] || [ "$win_name" = "dashboard" ]; then
       continue
     fi
 
-    local check_file="$idle_check_dir/${win_name}.check"
+    local idle_check_ts
+    idle_check_ts="$(runtime_get_idle_check_ts "$PROJECT" "$win_name" 2>/dev/null || true)"
 
     if [ -n "$win_activity" ] && [ "$win_activity" != "0" ] && [[ "$win_activity" =~ ^[0-9]+$ ]]; then
       local idle_sec=$((now - win_activity))
@@ -378,9 +361,8 @@ check_agent_health() {
         # 10분간 output 없음 — 프로세스 확인
         if is_agent_alive "$win_name"; then
           # 살아있음 → 작업중. 체크 파일만 기록 (dashboard용)
-          if [ ! -f "$check_file" ]; then
-            mkdir -p "$idle_check_dir"
-            echo "$now" > "$check_file"
+          if ! [[ "${idle_check_ts:-}" =~ ^[0-9]+$ ]]; then
+            runtime_set_idle_check_ts "$PROJECT" "$win_name" "$now"
             local idle_min=$((idle_sec / 60))
             python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor idle_detected "$win_name" --detail idle_min="$idle_min" status="alive" || true
           fi
@@ -393,12 +375,12 @@ check_agent_health() {
             escalation urgent "${win_name} 프로세스 종료 감지" \
             "${win_name} 에이전트가 ${idle_min}분간 비활성 + 프로세스 종료 상태다. 리부팅이 필요하다." || \
             echo "[monitor] Warning: 종료 알림 전달 실패 (${win_name})" >&2
-          [ -f "$check_file" ] && rm -f "$check_file"
+          runtime_clear_idle_check_ts "$PROJECT" "$win_name"
         fi
       else
         # 활동 재개 — 체크 파일 제거
-        if [ -f "$check_file" ]; then
-          rm -f "$check_file"
+        if [[ "${idle_check_ts:-}" =~ ^[0-9]+$ ]]; then
+          runtime_clear_idle_check_ts "$PROJECT" "$win_name"
           python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor idle_cleared "$win_name" || true
         fi
       fi
@@ -411,7 +393,8 @@ check_agent_health() {
 # ──────────────────────────────────────────────
 
 drain_message_queue() {
-  local queue_dir="$REPO_ROOT/projects/$PROJECT/memory/manager/message-queue"
+  local queue_dir
+  queue_dir="$(runtime_message_queue_dir "$PROJECT")"
   [ -d "$queue_dir" ] || return 0
 
   local now
@@ -446,35 +429,22 @@ drain_message_queue() {
       continue
     fi
 
-    local msg_backend msg_codex_mode notification tmux_target
-    msg_backend="$(get_window_backend "$msg_to")"
-    msg_codex_mode="unknown"
-    if [ "$msg_backend" = "codex" ]; then
-      msg_codex_mode="$(resolve_codex_mode "$msg_to")"
-    fi
-
-    notification="$(build_notification "$msg_from" "$msg_to" "$msg_kind" "$msg_priority" "$msg_subject" "$msg_content")"
-    tmux_target="${SESSION}:${msg_to}"
-
-    if [ "$msg_backend" = "codex" ] && [ "$msg_codex_mode" = "exec" ]; then
-      if ! is_agent_alive "$msg_to"; then
-        continue
-      fi
-      if deliver_codex_inbox_message "$msg_to" "$msg_from" "$notification"; then
-        rm -f "$msg_file"
-        python3 "$TOOLS_DIR/log.py" message "$PROJECT" "$msg_from" "$msg_to" "$msg_kind" "$msg_priority" "$msg_subject" delivered --reason "codex-inbox-drain" || true
-      fi
+    if ! runtime_claim_message_target_lock "$PROJECT" "$msg_to"; then
       continue
     fi
 
+    notification="$(build_notification "$msg_from" "$msg_to" "$msg_kind" "$msg_priority" "$msg_subject" "$msg_content")"
+
     if ! is_agent_alive "$msg_to"; then
+      runtime_release_message_target_lock "$PROJECT" "$msg_to" || true
       continue  # 아직 죽어 있으면 다음 주기에 재시도
     fi
 
-    if tmux_submit_pasted_payload "$tmux_target" "$notification" "drain"; then
+    if submit_notification "$msg_to" "$notification"; then
       rm -f "$msg_file"
       python3 "$TOOLS_DIR/log.py" message "$PROJECT" "$msg_from" "$msg_to" "$msg_kind" "$msg_priority" "$msg_subject" delivered --reason "queued-drain" || true
     fi
+    runtime_release_message_target_lock "$PROJECT" "$msg_to" || true
   done
 }
 
@@ -482,14 +452,20 @@ drain_message_queue() {
 # 메인: 헬스 체크 루프
 # ──────────────────────────────────────────────
 
-python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor monitor_started "$SESSION" --detail interval="${HEALTH_CHECK_INTERVAL}s" || true
+if [ "$MONITOR_ONCE" = "1" ]; then
+  drain_message_queue
+  cleanup_manager_runtime_transients "$PROJECT"
+  runtime_set_manager_state "$PROJECT" "monitor_heartbeat" "$(date +%s)" || true
+  exit 0
+fi
 
-mkdir -p "$(dirname "$HEARTBEAT_FILE")"
+python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor monitor_started "$SESSION" --detail interval="${HEALTH_CHECK_INTERVAL}s" || true
 
 while true; do
   check_agent_windows
   check_agent_health
   drain_message_queue
-  date +%s > "$HEARTBEAT_FILE"
+  cleanup_manager_runtime_transients "$PROJECT"
+  runtime_set_manager_state "$PROJECT" "monitor_heartbeat" "$(date +%s)" || true
   sleep "$HEALTH_CHECK_INTERVAL"
 done

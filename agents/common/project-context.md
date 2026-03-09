@@ -1,6 +1,6 @@
 # 프로젝트 컨텍스트 컨벤션
 
-이 프레임워크는 여러 프로젝트를 동시에 운영한다. 각 프로젝트는 `projects/{name}/` 안에 workspace, memory, reports를 갖는다.
+이 프레임워크는 여러 프로젝트를 동시에 운영한다. 각 프로젝트는 `projects/{name}/` 안에 workspace, memory, runtime, reports를 갖는다.
 
 ---
 
@@ -14,6 +14,11 @@
 | `workspace/teams/` | `projects/{name}/workspace/teams/` |
 | `memory/knowledge/` | `projects/{name}/memory/knowledge/` |
 | `memory/{role}/` | `projects/{name}/memory/{role}/` |
+| `runtime/manager-state.tsv` | `projects/{name}/runtime/manager-state.tsv` |
+| `runtime/reboot-state.tsv` | `projects/{name}/runtime/reboot-state.tsv` |
+| `runtime/idle-state.tsv` | `projects/{name}/runtime/idle-state.tsv` |
+| `runtime/message-queue/` | `projects/{name}/runtime/message-queue/` |
+| `runtime/message-locks/` | `projects/{name}/runtime/message-locks/` |
 | `reports/` | `projects/{name}/reports/` |
 
 에이전트 정의 파일(`agents/`)과 도메인 파일(`domains/`)의 경로는 레포 루트 기준이다.
@@ -39,12 +44,7 @@ projects/{name}/
       developer/
   memory/                  # 축적된 상태
     manager/
-      sessions.md          #   활성 세션 추적 (cmd.sh 자동 관리)
-      monitor.pid          #   monitor.sh PID
-      monitor.heartbeat    #   monitor.sh heartbeat
-      reboot-counts/       #   에이전트별 리부팅 카운터
-      reboot-locks/        #   동시 reboot 경합 방지 lock
-      message-queue/       #   전달 실패 메시지 보관
+      sessions.md          #   활성 세션 추적
     researcher/
     developer/
     monitoring/
@@ -55,6 +55,13 @@ projects/{name}/
       meetings/
       archives/
       index.md
+  runtime/                 # 시스템 운용용 런타임 상태
+    manager-state.tsv      #   monitor pid/heartbeat/lock/nudge key-value 상태
+    reboot-state.tsv       #   role -> reboot count / reboot lock / lockout 시각
+    idle-state.tsv         #   role -> idle 감지 시각
+    message-queue/         #   전달 실패 메시지 보관
+    message-locks/         #   target별 직렬화 lock
+    manager/               #   runtime 보조 파일
   logs/                    # system.log, message.log
   reports/                 # 사용자 열람 전용 (에이전트는 쓰기만, 읽기 참조 금지)
 ```

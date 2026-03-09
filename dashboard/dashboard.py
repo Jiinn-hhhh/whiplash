@@ -116,8 +116,70 @@ def _read_tail(path: str, lines: int) -> list[str]:
         return []
 
 
+def _read_tsv_map(path: str) -> dict[str, str]:
+    """2열 TSV를 key -> value로 읽기."""
+    rows: dict[str, str] = {}
+    try:
+        with open(path) as f:
+            for raw in f:
+                line = raw.rstrip("\n")
+                if not line:
+                    continue
+                parts = line.split("\t", 1)
+                if len(parts) != 2 or not parts[0]:
+                    continue
+                rows[parts[0]] = parts[1]
+    except OSError:
+        return {}
+    return rows
+
+
+def _read_tsv_rows(path: str) -> list[list[str]]:
+    """TSV 전체 행 읽기."""
+    rows: list[list[str]] = []
+    try:
+        with open(path) as f:
+            for raw in f:
+                line = raw.rstrip("\n")
+                if not line:
+                    continue
+                rows.append(line.split("\t"))
+    except OSError:
+        return []
+    return rows
+
+
 def _abbr(name: str) -> str:
     return _ROLE_ABBR.get(name, name[:3])
+
+
+def _sanitize_report_component(value: str, default: str) -> str:
+    value = value.replace(" ", "-")
+    value = re.sub(r"[^A-Za-z0-9._-]", "", value)
+    value = value.strip("-.")
+    return value or default
+
+
+def _task_report_key(task_ref: str) -> str:
+    base = os.path.basename(task_ref)
+    stem, _ = os.path.splitext(base)
+    return _sanitize_report_component(stem or base or task_ref, "task")
+
+
+def _task_report_path(project_dir: str, task_ref: str, author: str) -> str:
+    key = _task_report_key(task_ref)
+    author_key = _sanitize_report_component(author, "agent")
+    return os.path.join(project_dir, "reports", "tasks", f"{key}-{author_key}.md")
+
+
+def _read_report_status(report_path: str) -> str:
+    content = _read_file(report_path)
+    if not content:
+        return "missing"
+    match = re.search(r"^- \*\*Status\*\*: ([A-Za-z0-9_-]+)\s*$", content, re.MULTILINE)
+    if not match:
+        return "unknown"
+    return match.group(1).lower()
 
 
 def _clean_project_value(value: str) -> str:
@@ -204,7 +266,7 @@ def parse_sessions_md(project_dir: str) -> list[dict[str, str]]:
     )
     if not content:
         return []
-    agents = []
+    raw_agents = []
     for line in content.splitlines():
         line = line.strip()
         if not line.startswith("|"):
@@ -217,7 +279,7 @@ def parse_sessions_md(project_dir: str) -> list[dict[str, str]]:
         # 헤더/구분선 건너뛰기
         if cols[0] in ("역할", "------", "---") or cols[0].startswith("-"):
             continue
-        agents.append({
+        raw_agents.append({
             "role": cols[0],
             "backend": cols[1],
             "session_id": cols[2],
@@ -226,7 +288,16 @@ def parse_sessions_md(project_dir: str) -> list[dict[str, str]]:
             "start_date": cols[5],
             "model": cols[6],
         })
-    return agents
+    deduped: list[dict[str, str]] = []
+    seen_targets: set[str] = set()
+    for agent in reversed(raw_agents):
+        key = agent.get("tmux_target", "")
+        if key in seen_targets:
+            continue
+        seen_targets.add(key)
+        deduped.append(agent)
+    deduped.reverse()
+    return deduped
 
 
 def get_tmux_activity(session_name: str) -> dict[str, int]:
@@ -247,16 +318,49 @@ def get_tmux_activity(session_name: str) -> dict[str, int]:
     return result
 
 
+def get_tmux_panes(session_name: str) -> dict[str, int]:
+    """tmux 윈도우별 첫 pane pid 반환."""
+    try:
+        out = subprocess.check_output(
+            ["tmux", "list-panes", "-t", session_name, "-F", "#{window_name}|#{pane_pid}"],
+            text=True, stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return {}
+
+    panes: dict[str, int] = {}
+    for line in out.strip().splitlines():
+        parts = line.split("|", 1)
+        if len(parts) != 2 or not parts[1].isdigit():
+            continue
+        panes.setdefault(parts[0], int(parts[1]))
+    return panes
+
+
+def _agent_process_alive(pane_pid: int, backend: str) -> bool:
+    expected = "codex" if backend == "codex" else "claude"
+    try:
+        return subprocess.run(
+            ["pgrep", "-P", str(pane_pid), expected],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        ).returncode == 0
+    except FileNotFoundError:
+        return False
+
+
 def check_monitor(project_dir: str) -> dict[str, Any]:
     """모니터 상태 확인."""
     info: dict[str, Any] = {
         "pid": None, "alive": False, "heartbeat_age": None, "queued": 0,
     }
-    pid_str = _read_file(
-        os.path.join(project_dir, "memory", "manager", "monitor.pid")
+    runtime_root_dir = os.path.join(project_dir, "runtime")
+    manager_state = _read_tsv_map(
+        os.path.join(runtime_root_dir, "manager-state.tsv")
     )
+    pid_str = manager_state.get("monitor_pid")
     if pid_str:
-        pid_str = pid_str.strip()
         if pid_str.isdigit():
             info["pid"] = int(pid_str)
             try:
@@ -265,15 +369,12 @@ def check_monitor(project_dir: str) -> dict[str, Any]:
             except OSError:
                 pass
 
-    hb_str = _read_file(
-        os.path.join(project_dir, "memory", "manager", "monitor.heartbeat")
-    )
+    hb_str = manager_state.get("monitor_heartbeat")
     if hb_str:
-        hb_str = hb_str.strip()
         if hb_str.isdigit():
             info["heartbeat_age"] = int(time.time()) - int(hb_str)
 
-    queue_dir = os.path.join(project_dir, "memory", "manager", "message-queue")
+    queue_dir = os.path.join(runtime_root_dir, "message-queue")
     if os.path.isdir(queue_dir):
         info["queued"] = len(glob(os.path.join(queue_dir, "*.msg")))
 
@@ -364,21 +465,15 @@ def parse_message_log(project_dir: str, count: int = 10) -> list[dict]:
 
 
 def get_reboot_counts(project_dir: str) -> dict[str, int]:
-    """reboot-counts 디렉토리에서 각 역할의 리부팅 횟수 반환."""
-    counts_dir = os.path.join(
-        project_dir, "memory", "manager", "reboot-counts"
-    )
-    if not os.path.isdir(counts_dir):
-        return {}
-    result = {}
-    for f in os.listdir(counts_dir):
-        if f.endswith(".count"):
-            role = f[:-6]
-            content = _read_file(os.path.join(counts_dir, f))
-            if content and content.strip().isdigit():
-                c = int(content.strip())
-                if c > 0:
-                    result[role] = c
+    """reboot-state.tsv에서 각 역할의 리부팅 횟수 반환."""
+    rows = _read_tsv_rows(os.path.join(project_dir, "runtime", "reboot-state.tsv"))
+    result: dict[str, int] = {}
+    for cols in rows:
+        if len(cols) < 2:
+            continue
+        role, count = cols[0], cols[1]
+        if count.isdigit() and int(count) > 0:
+            result[role] = int(count)
     return result
 
 
@@ -447,8 +542,29 @@ def parse_assignments_md(project_dir: str) -> dict[str, dict]:
             task_id = "WORK"
             title = task_file[:30] + ("..." if len(task_file) > 30 else "")
 
-        result[role] = {"id": task_id, "title": title, "started": started, "stale": is_stale}
+        result[role] = {
+            "id": task_id,
+            "title": title,
+            "started": started,
+            "stale": is_stale,
+            "task_ref": task_file,
+        }
     return result
+
+
+def resolve_task_report(project_dir: str, task_ref: str, authors: list[str]) -> dict[str, str]:
+    for author in authors:
+        report_path = _task_report_path(project_dir, task_ref, author)
+        if os.path.isfile(report_path):
+            return {
+                "path": os.path.relpath(report_path, project_dir),
+                "status": _read_report_status(report_path),
+            }
+    primary_path = _task_report_path(project_dir, task_ref, authors[0])
+    return {
+        "path": os.path.relpath(primary_path, project_dir),
+        "status": "missing",
+    }
 
 
 # ──────────────────────────────────────────────
@@ -463,6 +579,7 @@ def collect(project_dir: str, session_name: str,
 
     agents = parse_sessions_md(project_dir)
     tmux_activity = get_tmux_activity(session_name)
+    tmux_panes = get_tmux_panes(session_name)
     reboot_counts = get_reboot_counts(project_dir)
     assignments = parse_assignments_md(project_dir)
     monitor = check_monitor(project_dir)
@@ -486,10 +603,13 @@ def collect(project_dir: str, session_name: str,
         if agent["status"] != "active":
             agent["display_status"] = "CLOSED"
             continue
-        elif win_name in tmux_activity:
+        pane_pid = tmux_panes.get(win_name)
+        if pane_pid is None:
+            agent["display_status"] = "ABSENT"
+        elif _agent_process_alive(pane_pid, agent.get("backend", "")):
             agent["display_status"] = "ALIVE"
         else:
-            agent["display_status"] = "ABSENT"
+            agent["display_status"] = "CRASHED"
 
         task_info = assignments.get(win_name) or assignments.get(role)
         if task_info:
@@ -497,11 +617,20 @@ def collect(project_dir: str, session_name: str,
             agent["task_title"] = task_info["title"]
             agent["task_started"] = task_info.get("started")
             agent["task_stale"] = task_info.get("stale", False)
+            report_info = resolve_task_report(
+                project_dir,
+                task_info["task_ref"],
+                [win_name, role] if win_name != role else [role],
+            )
+            agent["report_path"] = report_info["path"]
+            agent["report_status"] = report_info["status"]
         else:
             agent["task_id"] = ""
             agent["task_title"] = ""
             agent["task_started"] = None
             agent["task_stale"] = False
+            agent["report_path"] = ""
+            agent["report_status"] = ""
             if agent["display_status"] == "ALIVE":
                 agent["display_status"] = "READY"
         agent["reboots"] = reboot_counts.get(role, 0)
@@ -528,6 +657,13 @@ _STATUS_STYLE = {
     "CRASHED": ("✗ CRASHED", "red"),
     "ABSENT": ("○ ABSENT", "red"),
     "CLOSED": ("— CLOSED", "dim"),
+}
+
+_REPORT_STYLE = {
+    "final": ("FINAL", "green"),
+    "draft": ("DRAFT", "yellow"),
+    "missing": ("MISS", "red"),
+    "unknown": ("UNK", "yellow"),
 }
 
 
@@ -565,6 +701,7 @@ def _render_agents(state: dict) -> Table:
     table.add_column("Model", min_width=5)
     table.add_column("Task Time", min_width=7, justify="right")
     table.add_column("Current Task", min_width=20, max_width=40)
+    table.add_column("Report", min_width=6)
     table.add_column("Reboot", min_width=6, justify="right")
 
     # CLOSED 제외
@@ -572,7 +709,7 @@ def _render_agents(state: dict) -> Table:
 
     if not active_agents:
         msg = "⏳ Booting..." if state.get("session_exists") else "(No session)"
-        table.add_row(msg, "", "", "", "", "")
+        table.add_row(msg, "", "", "", "", "", "")
         return table
 
     # 역할 우선순위 정렬: manager → researcher → developer → monitoring
@@ -591,7 +728,7 @@ def _render_agents(state: dict) -> Table:
     for agent in active_agents:
         # 역할 그룹 간 빈 줄 구분
         if prev_role is not None and agent["role"] != prev_role:
-            table.add_row("", "", "", "", "", "")
+            table.add_row("", "", "", "", "", "", "")
         prev_role = agent["role"]
         ds = agent.get("display_status", "CLOSED")
         label, style = _STATUS_STYLE.get(ds, ("?", ""))
@@ -625,12 +762,15 @@ def _render_agents(state: dict) -> Table:
             task_str = "--"
 
         task_stale = agent.get("task_stale", False)
+        report_status = agent.get("report_status", "")
+        report_label, report_style = _REPORT_STYLE.get(report_status, ("--", "dim"))
         table.add_row(
             Text(role_label),
             Text(label, style=style),
             Text(agent.get("model", "?")),
             Text(time_str),
             Text(task_str, style="dim" if task_stale else ""),
+            Text(report_label, style=report_style),
             Text(reboot_str, style="yellow" if agent["reboots"] > 0 else ""),
         )
     return table
