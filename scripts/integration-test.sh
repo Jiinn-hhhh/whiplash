@@ -1573,12 +1573,15 @@ EOF
   create_fake_agent "developer"
   register_fake_agent "developer" "developer"
 
+  local dashboard_state
+  dashboard_state="$(probe_dashboard_agent developer)"
+  assert_eq "dashboard가 최근 활동 agent를 ALIVE로 표시" "ALIVE||" "$dashboard_state"
+
   bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer \
     task_assign normal "workspace/tasks/TASK-007.md" "dashboard status smoke" >/dev/null
 
   tmux select-window -t "${SESSION}:dashboard"
 
-  local dashboard_state
   dashboard_state="$(probe_dashboard_agent developer)"
   assert_eq "dashboard가 live + draft report 표시" "ALIVE|draft|TASK-007" "$dashboard_state"
 

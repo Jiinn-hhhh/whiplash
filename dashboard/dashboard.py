@@ -58,6 +58,8 @@ _ERROR_EVENTS = frozenset({
     "monitor_exit", "monitor_zombie", "manager_crash_alert",
 })
 
+_RECENT_ACTIVITY_WINDOW_SEC = 180
+
 # ──────────────────────────────────────────────
 # 유틸리티
 # ──────────────────────────────────────────────
@@ -651,7 +653,9 @@ def collect(project_dir: str, session_name: str,
             agent["report_path"] = ""
             agent["report_status"] = ""
             if agent["display_status"] == "ALIVE":
-                agent["display_status"] = "READY"
+                activity_ts = tmux_activity.get(win_name)
+                if activity_ts is None or (now_epoch - activity_ts) > _RECENT_ACTIVITY_WINDOW_SEC:
+                    agent["display_status"] = "READY"
         agent["reboots"] = reboot_counts.get(role, 0)
         agent["win_name"] = win_name
 
