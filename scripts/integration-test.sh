@@ -1243,6 +1243,15 @@ test_scenario_10() {
     FAIL=$((FAIL + 1))
   fi
 
+  TOTAL=$((TOTAL + 1))
+  if echo "$manager_msg" | grep -q 'plan mode 판단 필요'; then
+    echo "  PASS: manager boot message에 plan mode 판단 지침 포함"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: manager boot message에 plan mode 판단 지침 누락"
+    FAIL=$((FAIL + 1))
+  fi
+
   cat > "$PROJECT_DIR/project.md" << 'EOF'
 # Project: domain-test
 
@@ -1772,6 +1781,74 @@ EOF
 }
 
 # ──────────────────────────────────────────────
+# 시나리오 24: Claude plan mode 감지
+# ──────────────────────────────────────────────
+
+test_scenario_24() {
+  echo ""
+  echo "=== 시나리오 24: Claude plan mode 감지 ==="
+  cleanup
+  setup_test_project
+  build_fake_claude
+
+  tmux new-session -d -s "$SESSION" -n dashboard
+  create_fake_agent "manager"
+  create_fake_agent "developer"
+  register_fake_agent "manager" "manager"
+  register_fake_agent "developer" "developer"
+
+  tmux send-keys -t "${SESSION}:developer" "plan mode on" Enter
+  sleep 1
+  WHIPLASH_MONITOR_ONCE=1 bash "$TOOLS_DIR/monitor.sh" "$PROJECT" >/dev/null 2>&1
+
+  local manager_pane detect_count
+  manager_pane="$(tmux capture-pane -pJ -t "${SESSION}:manager" -S -80 2>/dev/null || true)"
+  TOTAL=$((TOTAL + 1))
+  if echo "$manager_pane" | grep -q "developer plan mode 판단 필요"; then
+    echo "  PASS: manager pane에 plan mode 감지 알림 표시"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: manager pane에 plan mode 감지 알림 누락"
+    FAIL=$((FAIL + 1))
+  fi
+
+  TOTAL=$((TOTAL + 1))
+  if grep -q 'monitor → manager need_input normal "developer plan mode 판단 필요"' "$PROJECT_DIR/logs/message.log" 2>/dev/null; then
+    echo "  PASS: manager가 need_input으로 plan mode 판단 요청 수신"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: manager가 need_input으로 plan mode 판단 요청을 못 받음"
+    FAIL=$((FAIL + 1))
+  fi
+
+  detect_count="$(grep -c 'plan mode 감지' "$PROJECT_DIR/logs/system.log" 2>/dev/null)"
+  assert_eq "system.log에 첫 감지 1회 기록" "1" "$detect_count"
+
+  WHIPLASH_MONITOR_ONCE=1 bash "$TOOLS_DIR/monitor.sh" "$PROJECT" >/dev/null 2>&1
+  detect_count="$(grep -c 'plan mode 감지' "$PROJECT_DIR/logs/system.log" 2>/dev/null)"
+  assert_eq "같은 상태 재검사 시 중복 감지 없음" "1" "$detect_count"
+
+  tmux send-keys -t "${SESSION}:developer" "working-1" Enter
+  tmux send-keys -t "${SESSION}:developer" "working-2" Enter
+  tmux send-keys -t "${SESSION}:developer" "working-3" Enter
+  tmux send-keys -t "${SESSION}:developer" "working-4" Enter
+  sleep 1
+  WHIPLASH_MONITOR_ONCE=1 bash "$TOOLS_DIR/monitor.sh" "$PROJECT" >/dev/null 2>&1
+
+  local clear_count
+  clear_count="$(grep -c 'plan mode 해제' "$PROJECT_DIR/logs/system.log" 2>/dev/null)"
+  assert_eq "plan mode 해제 기록" "1" "$clear_count"
+
+  tmux send-keys -t "${SESSION}:developer" "plan mode on" Enter
+  sleep 1
+  WHIPLASH_MONITOR_ONCE=1 bash "$TOOLS_DIR/monitor.sh" "$PROJECT" >/dev/null 2>&1
+  detect_count="$(grep -c 'plan mode 감지' "$PROJECT_DIR/logs/system.log" 2>/dev/null)"
+  assert_eq "해제 후 재진입 시 재감지" "2" "$detect_count"
+
+  echo "  시나리오 24 완료"
+}
+
+# ──────────────────────────────────────────────
 # 메인
 # ──────────────────────────────────────────────
 
@@ -1804,6 +1881,7 @@ test_scenario_16
 test_scenario_17
 test_scenario_18
 test_scenario_23
+test_scenario_24
 
 echo ""
 echo "============================================"

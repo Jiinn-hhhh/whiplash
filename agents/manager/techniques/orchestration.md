@@ -501,6 +501,7 @@ bash scripts/message.sh {project} researcher developer \
 - **헬스 체크**: 30초 주기 포그라운드 루프
   - 에이전트 윈도우 소멸 시 자동 reboot (최대 3회)
   - 10분 비활성 에이전트 감지 시 Manager에게 message.sh로 알림
+  - Claude pane의 `plan mode on` 상태 감지 시 Manager에게 `need_input` 알림
 - 자가 heartbeat 기록 (좀비 감지용)
 
 ### Manager가 알림 받았을 때
@@ -510,7 +511,7 @@ bash scripts/message.sh {project} researcher developer \
 | agent_ready | 에이전트 준비 확인, 대기 중인 태스크가 있으면 디스패치 |
 | task_complete | 결과물 확인, 다음 단계 진행. dual 모드에서는 양쪽 완료 후 합의 절차(§6.4) 시작 |
 | status_update | 참고. 필요 시 추가 지시 |
-| need_input | 결정이 Manager 범위면 응답, 아니면 유저 에스컬레이션 |
+| need_input | 결정이 Manager 범위면 응답, 아니면 유저 에스컬레이션. monitor의 `plan mode 판단 필요` 알림이면 해당 agent pane 최근 출력과 현재 task/report를 읽고 승인 대기인지 단순 설계 단계인지 판단 |
 | escalation | 유저에게 보고 |
 | reboot_notice | 에이전트 복구 상태 확인, 필요 시 수동 개입 |
 | consensus_request | (dual 모드) 에이전트에게 합의 문서 검토 요청. 응답 대기 후 판정(§6.4) |

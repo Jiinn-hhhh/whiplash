@@ -319,6 +319,7 @@ cmd.sh refresh {role} {project}
 - 진행 중인 태스크의 간단 요약 (`ACTIVE TASKS`)
 - 현재 태스크 경과 시간 + task report 상태 (`DRAFT`/`FINAL`/`MISS`)
 - 가장 최근에 완료됐고 다음 태스크를 기다리는 작업 알림 (`NEXT TASK WAITING`)
+- Claude 에이전트의 `plan mode` 진입 감지 이벤트
 - 최근 시스템 이벤트 (부팅, 크래시, 리부팅)
 - 최근 메시지 전달 이력
 - Monitor heartbeat + queued message 상태

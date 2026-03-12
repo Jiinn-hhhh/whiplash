@@ -85,6 +85,32 @@ get_active_roles() {
     || true
 }
 
+get_active_session_entries() {
+  local sessions_file="$REPO_ROOT/projects/$PROJECT/memory/manager/sessions.md"
+  if [ ! -f "$sessions_file" ]; then
+    return 0
+  fi
+
+  awk -F'|' '
+    function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+    /\| active \|/ {
+      role = trim($2)
+      backend = trim($3)
+      session_id = trim($4)
+      tmux_target = trim($5)
+      status = trim($6)
+      if (status != "active") {
+        next
+      }
+      count = split(tmux_target, parts, ":")
+      win_name = parts[count]
+      if (win_name != "") {
+        print win_name "|" backend "|" session_id "|" role
+      }
+    }
+  ' "$sessions_file"
+}
+
 # ──────────────────────────────────────────────
 # reboot 카운터 관리
 # ──────────────────────────────────────────────
@@ -236,15 +262,83 @@ is_agent_alive() {
   if ! tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -q "^${win_name}$"; then
     return 1
   fi
-  local pane_pid
-  pane_pid=$(tmux list-panes -t "$tmux_target" -F '#{pane_pid}' 2>/dev/null | head -1)
+  local pane_info pane_pid pane_cmd
+  pane_info=$(tmux list-panes -t "$tmux_target" -F '#{pane_pid}|#{pane_current_command}' 2>/dev/null | head -1)
+  pane_pid="${pane_info%%|*}"
+  pane_cmd="${pane_info#*|}"
   local backend
   backend="$(get_window_backend "$win_name")"
   if [ "$backend" = "codex" ]; then
+    if [ "$pane_cmd" = "codex" ]; then
+      return 0
+    fi
     [ -n "$pane_pid" ] && pgrep -P "$pane_pid" "codex" >/dev/null 2>&1
   else
+    if [ "$pane_cmd" = "claude" ]; then
+      return 0
+    fi
     [ -n "$pane_pid" ] && pgrep -P "$pane_pid" "claude" >/dev/null 2>&1
   fi
+}
+
+plan_mode_state_key() {
+  printf 'plan_mode_%s\n' "$1"
+}
+
+has_plan_mode_state() {
+  local win_name="$1"
+  [ -n "$(runtime_get_manager_state "$PROJECT" "$(plan_mode_state_key "$win_name")" "" 2>/dev/null || true)" ]
+}
+
+pane_is_in_plan_mode() {
+  local win_name="$1"
+  local tmux_target="${SESSION}:${win_name}"
+  local pane_dump
+  pane_dump="$(tmux capture-pane -pJ -t "$tmux_target" -S -40 2>/dev/null \
+    | sed '/^[[:space:]]*$/d' \
+    | tail -n 8 || true)"
+  [ -n "$pane_dump" ] || return 1
+  printf '%s\n' "$pane_dump" | grep -Eiq 'plan mode on|entered plan mode|plan mode 진입'
+}
+
+check_claude_plan_mode() {
+  if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+    return
+  fi
+
+  while IFS='|' read -r win_name backend session_id role; do
+    [ -n "$win_name" ] || continue
+    if [ "$win_name" = "manager" ] || [ "$win_name" = "dashboard" ]; then
+      continue
+    fi
+
+    local state_key
+    state_key="$(plan_mode_state_key "$win_name")"
+
+    if [ "$backend" != "claude" ] || ! is_agent_alive "$win_name"; then
+      if has_plan_mode_state "$win_name"; then
+        runtime_clear_manager_state "$PROJECT" "$state_key" || true
+      fi
+      continue
+    fi
+
+    if pane_is_in_plan_mode "$win_name"; then
+      if ! has_plan_mode_state "$win_name"; then
+        runtime_set_manager_state "$PROJECT" "$state_key" "$(date +%s)" || true
+        python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor plan_mode_detected "$win_name" \
+          --detail backend="$backend" role="$role" session="$session_id" || true
+        bash "$TOOLS_DIR/message.sh" "$PROJECT" monitor manager \
+          need_input normal "${win_name} plan mode 판단 필요" \
+          "${SESSION}:${win_name} pane 최근 출력과 현재 태스크 맥락을 확인해 승인 대기인지 단순 설계 단계인지 판단하고, 필요 시 해당 에이전트에 다음 행동을 지시해라." || true
+      fi
+    else
+      if has_plan_mode_state "$win_name"; then
+        runtime_clear_manager_state "$PROJECT" "$state_key" || true
+        python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor plan_mode_cleared "$win_name" \
+          --detail backend="$backend" role="$role" session="$session_id" || true
+      fi
+    fi
+  done < <(get_active_session_entries)
 }
 
 # ──────────────────────────────────────────────
@@ -453,6 +547,7 @@ drain_message_queue() {
 # ──────────────────────────────────────────────
 
 if [ "$MONITOR_ONCE" = "1" ]; then
+  check_claude_plan_mode
   drain_message_queue
   cleanup_manager_runtime_transients "$PROJECT"
   runtime_set_manager_state "$PROJECT" "monitor_heartbeat" "$(date +%s)" || true
@@ -464,6 +559,7 @@ python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor monitor_started "$SESSION"
 while true; do
   check_agent_windows
   check_agent_health
+  check_claude_plan_mode
   drain_message_queue
   cleanup_manager_runtime_transients "$PROJECT"
   runtime_set_manager_state "$PROJECT" "monitor_heartbeat" "$(date +%s)" || true

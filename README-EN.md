@@ -314,6 +314,7 @@ Displays:
 - A compact summary of in-progress tasks (`ACTIVE TASKS`)
 - Current task elapsed time + task report status (`DRAFT`/`FINAL`/`MISS`)
 - The latest completed task that is still waiting for the next assignment (`NEXT TASK WAITING`)
+- Claude agent `plan mode` detection events
 - Recent system events (boot, crash, reboot)
 - Recent message delivery history
 - Monitor heartbeat + queued message state

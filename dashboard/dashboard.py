@@ -51,6 +51,7 @@ _WARN_EVENTS = frozenset({
     "idle_detected", "idle_recheck", "crash_detected", "session_absent",
     "session_absent_confirmed", "monitor_restart",
     "notify_delivery_fail", "agent_kill", "reboot_count_reset",
+    "plan_mode_detected",
 })
 
 _ERROR_EVENTS = frozenset({
@@ -1126,6 +1127,7 @@ def _classify_system_event(message: str) -> tuple[str, str]:
         ("크래시 감지", "crash", "red"),
         ("좀비", "zombie", "red"),
         ("세션 부재", "absent", "yellow"),
+        ("plan mode 감지", "plan mode", "yellow"),
         ("듀얼 태스크 전달", "task dispatch", ""),
         ("태스크 전달", "task dispatch", ""),
         ("부팅 완료", "boot", ""),

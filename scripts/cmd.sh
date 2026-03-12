@@ -438,6 +438,7 @@ build_boot_message() {
   local message_cmd="bash \"$TOOLS_DIR/message.sh\""
   local layer2_domain_line
   local layer3_domain_line
+  local need_input_action
 
   if [ "$role" = "manager" ]; then
     ready_target="user"
@@ -449,6 +450,11 @@ build_boot_message() {
   else
     layer2_domain_line="6. (파일이 있으면) domains/${domain}/context.md 읽기"
     layer3_domain_line="8. (파일이 있으면) domains/${domain}/${role}.md"
+  fi
+
+  need_input_action="- need_input: 응답 필요"
+  if [ "$role" = "manager" ]; then
+    need_input_action="- need_input: 응답 필요. 특히 monitor의 \"plan mode 판단 필요\" 알림을 받으면 해당 agent pane 최근 출력과 task/report 맥락을 읽고, 승인 대기인지 단순 설계 단계인지 판단해 지시 또는 승인 여부를 결정"
   fi
 
   cat << BOOTMSG
@@ -504,7 +510,7 @@ ${layer3_domain_line}
     종류별 행동:
     - task_complete: 태스크 결과 확인 후 다음 단계
     - status_update: 참고
-    - need_input: 응답 필요
+    ${need_input_action}
     - escalation: 긴급 처리
     - agent_ready: 에이전트 준비 확인
     - reboot_notice: 에이전트 복구 상태 확인
