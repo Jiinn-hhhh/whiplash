@@ -100,6 +100,17 @@ def _format_idle(seconds: int) -> str:
     return f"{s}s"
 
 
+def _format_elapsed_compact(seconds: int) -> str:
+    """경과 시간을 짧게 표시."""
+    if seconds < 0:
+        return "--"
+    h, rem = divmod(seconds, 3600)
+    m = rem // 60
+    if h > 0:
+        return f"{h}h {m}m"
+    return f"{m}m"
+
+
 def _read_file(path: str) -> str | None:
     """파일 읽기, 없으면 None."""
     try:
@@ -498,6 +509,29 @@ def get_reboot_counts(project_dir: str) -> dict[str, int]:
     return result
 
 
+def parse_waiting_state(project_dir: str) -> dict[str, dict[str, Any]]:
+    """waiting-state.tsv에서 완료 후 대기 상태를 읽는다."""
+    rows = _read_tsv_rows(os.path.join(project_dir, "runtime", "waiting-state.tsv"))
+    result: dict[str, dict[str, Any]] = {}
+    for cols in rows:
+        if len(cols) < 4:
+            continue
+        agent, ts_raw, subject, task_ref = cols[:4]
+        if not agent:
+            continue
+        report_path = cols[4] if len(cols) > 4 else ""
+        ts = None
+        if ts_raw.isdigit():
+            ts = datetime.fromtimestamp(int(ts_raw), _KST)
+        result[agent] = {
+            "ts": ts,
+            "subject": subject,
+            "task_ref": task_ref,
+            "report_path": report_path,
+        }
+    return result
+
+
 def _read_task_title(project_dir: str, task_path: str) -> str:
     """태스크 파일 첫 줄에서 제목 추출. '# TASK-013: 설명' → '설명'."""
     # 절대경로면 그대로, repo-root 상대경로는 repo_root 기준,
@@ -603,6 +637,7 @@ def collect(project_dir: str, session_name: str,
     tmux_panes = get_tmux_panes(session_name)
     reboot_counts = get_reboot_counts(project_dir)
     assignments = parse_assignments_md(project_dir)
+    waiting_state = parse_waiting_state(project_dir)
     monitor = check_monitor(project_dir)
     boot_times = parse_boot_times(project_dir)
     system_log = parse_system_log(project_dir, 20)
@@ -659,10 +694,68 @@ def collect(project_dir: str, session_name: str,
         agent["reboots"] = reboot_counts.get(role, 0)
         agent["win_name"] = win_name
 
+    waiting_reports: list[dict[str, Any]] = []
+    for agent in agents:
+        win_name = agent.get("win_name", agent["role"])
+        waiting_info = waiting_state.get(win_name) or waiting_state.get(agent["role"])
+        if not waiting_info:
+            continue
+        if agent.get("task_id"):
+            continue
+        if agent.get("display_status") not in ("ALIVE", "READY"):
+            continue
+        waiting_reports.append({
+            "agent": win_name,
+            "role": agent["role"],
+            "status": agent.get("display_status", ""),
+            "subject": waiting_info.get("subject", ""),
+            "task_ref": waiting_info.get("task_ref", ""),
+            "report_path": waiting_info.get("report_path", ""),
+            "ts": waiting_info.get("ts"),
+        })
+
+    waiting_reports.sort(
+        key=lambda item: item["ts"] or datetime.fromtimestamp(0, _KST),
+        reverse=True,
+    )
+
+    active_task_summaries: list[dict[str, Any]] = []
+    summary_map: dict[tuple[str, str], dict[str, Any]] = {}
+    for agent in agents:
+        if agent.get("display_status") == "CLOSED":
+            continue
+        task_id = agent.get("task_id", "")
+        if not task_id:
+            continue
+        task_title = agent.get("task_title", "")
+        key = (task_id, task_title)
+        summary = summary_map.get(key)
+        if summary is None:
+            summary = {
+                "task_id": task_id,
+                "task_title": task_title,
+                "assignees": [],
+                "started": agent.get("task_started"),
+            }
+            summary_map[key] = summary
+            active_task_summaries.append(summary)
+
+        summary["assignees"].append(agent.get("win_name", agent["role"]))
+        started = agent.get("task_started")
+        existing_started = summary.get("started")
+        if started and (existing_started is None or started < existing_started):
+            summary["started"] = started
+
+    active_task_summaries.sort(
+        key=lambda item: item.get("started") or datetime.fromtimestamp(0, _KST),
+    )
+
     return {
         "now": now,
         "project": project_info,
         "agents": agents,
+        "active_task_summaries": active_task_summaries,
+        "waiting_reports": waiting_reports,
         "monitor": monitor,
         "system_log": system_log,
         "message_log": message_log,
@@ -799,6 +892,42 @@ def _render_agents(state: dict) -> Table:
     return table
 
 
+def _render_active_tasks(state: dict) -> Panel | None:
+    summaries = state.get("active_task_summaries", [])
+    if not summaries:
+        return None
+
+    table = Table(
+        show_header=True,
+        header_style="bold",
+        border_style="dim",
+        pad_edge=True,
+    )
+    table.add_column("Task", min_width=20, max_width=38)
+    table.add_column("Assignee", min_width=14, max_width=26)
+    table.add_column("Elapsed", min_width=7, justify="right")
+
+    now = state["now"]
+    for entry in summaries[:6]:
+        task_title = entry.get("task_title", "")
+        task_label = entry.get("task_id", "")
+        if task_title:
+            task_label = f"{task_label} {task_title}"
+        assignees = ", ".join(entry.get("assignees", []))
+        started = entry.get("started")
+        if started:
+            elapsed = int((now - started).total_seconds())
+        else:
+            elapsed = -1
+        table.add_row(
+            Text(task_label or "--"),
+            Text(assignees or "--"),
+            Text(_format_elapsed_compact(elapsed), style="dim"),
+        )
+
+    return Panel(table, title="ACTIVE TASKS", title_align="left", border_style="cyan", expand=False)
+
+
 _ALERT_KINDS = frozenset({"escalation", "need_input"})
 
 
@@ -845,6 +974,40 @@ def _render_user_alerts(state: dict) -> Panel | None:
             Text(entry["subject"]),
         )
     return Panel(table, title="USER ALERTS", title_align="left", border_style="red", expand=False)
+
+
+def _render_waiting_reports(state: dict) -> Panel | None:
+    waiting = state.get("waiting_reports", [])
+    if not waiting:
+        return None
+
+    entry = waiting[0]
+    status = entry.get("status", "")
+    status_label, status_style = _STATUS_STYLE.get(status, ("?", ""))
+    subject = entry.get("subject") or entry.get("task_ref") or "--"
+    task_ref = entry.get("task_ref") or "--"
+    agent = entry.get("agent", "")
+    ts = entry.get("ts")
+
+    body = Text()
+    body.append(_timeline_time(ts) if ts else "--", style="dim")
+    body.append("  |  ", style="dim")
+    body.append(subject, style="bold")
+    body.append("\n")
+    body.append(agent, style="")
+    body.append("  |  ", style="dim")
+    body.append(status_label, style=status_style)
+    if task_ref and task_ref != "--":
+        body.append("  |  ", style="dim")
+        body.append(task_ref, style="dim")
+
+    return Panel(
+        body,
+        title="NEXT TASK WAITING",
+        title_align="left",
+        border_style="cyan",
+        expand=False,
+    )
 
 
 def _render_health_check(state: dict) -> Panel:
@@ -1065,13 +1228,23 @@ def render(state: dict, interval: int) -> Group:
         _render_header(state),
         Text(),
         _render_agents(state),
+    ]
+    active_tasks_panel = _render_active_tasks(state)
+    if active_tasks_panel is not None:
+        parts.append(Text())
+        parts.append(active_tasks_panel)
+    parts.extend([
         Text(),
         _render_health_check(state),
-    ]
+    ])
     alerts_panel = _render_user_alerts(state)
     if alerts_panel is not None:
         parts.append(Text())
         parts.append(alerts_panel)
+    waiting_panel = _render_waiting_reports(state)
+    if waiting_panel is not None:
+        parts.append(Text())
+        parts.append(waiting_panel)
     parts.extend([
         Text(),
         _render_timeline(state),

@@ -179,6 +179,10 @@ runtime_idle_state_file() {
   printf '%s/idle-state.tsv\n' "$(runtime_root_dir "$1")"
 }
 
+runtime_waiting_state_file() {
+  printf '%s/waiting-state.tsv\n' "$(runtime_root_dir "$1")"
+}
+
 runtime_message_queue_dir() {
   printf '%s/message-queue\n' "$(runtime_root_dir "$1")"
 }
@@ -611,6 +615,37 @@ runtime_clear_idle_check_ts() {
   runtime_row_clear "$(runtime_idle_state_file "$1")" "$2"
 }
 
+runtime_get_waiting_report_ts() {
+  runtime_row_get "$(runtime_waiting_state_file "$1")" "$2" 2 ""
+}
+
+runtime_get_waiting_report_subject() {
+  runtime_row_get "$(runtime_waiting_state_file "$1")" "$2" 3 ""
+}
+
+runtime_get_waiting_report_task_ref() {
+  runtime_row_get "$(runtime_waiting_state_file "$1")" "$2" 4 ""
+}
+
+runtime_get_waiting_report_path() {
+  runtime_row_get "$(runtime_waiting_state_file "$1")" "$2" 5 ""
+}
+
+runtime_set_waiting_report() {
+  local project="$1"
+  local row_key="$2"
+  local report_ts="$3"
+  local subject="$4"
+  local task_ref="$5"
+  local report_path="${6:-}"
+  runtime_row_set "$(runtime_waiting_state_file "$project")" \
+    "$row_key" "$report_ts" "$subject" "$task_ref" "$report_path"
+}
+
+runtime_clear_waiting_report() {
+  runtime_row_clear "$(runtime_waiting_state_file "$1")" "$2"
+}
+
 runtime_claim_message_target_lock() {
   local project="$1"
   local target="$2"
@@ -757,13 +792,14 @@ ensure_manager_runtime_layout() {
 
 cleanup_manager_runtime_transients() {
   local project="$1"
-  local runtime_root queue_dir lock_dir manager_state reboot_state idle_state
+  local runtime_root queue_dir lock_dir manager_state reboot_state idle_state waiting_state
   runtime_root="$(runtime_root_dir "$project")"
   queue_dir="$(runtime_message_queue_dir "$project")"
   lock_dir="$(runtime_message_lock_dir "$project")"
   manager_state="$(runtime_manager_state_file "$project")"
   reboot_state="$(runtime_reboot_state_file "$project")"
   idle_state="$(runtime_idle_state_file "$project")"
+  waiting_state="$(runtime_waiting_state_file "$project")"
 
   rm -rf "$(legacy_manager_memory_dir "$project")/hung-flags"
   rm -rf "$(runtime_manager_dir "$project")/hung-flags"
@@ -777,7 +813,7 @@ cleanup_manager_runtime_transients() {
     rmdir "$lock_dir" 2>/dev/null || true
   fi
 
-  for state_file in "$reboot_state" "$idle_state"; do
+  for state_file in "$reboot_state" "$idle_state" "$waiting_state"; do
     if [ -f "$state_file" ] && ! grep -q '[^[:space:]]' "$state_file" 2>/dev/null; then
       rm -f "$state_file"
     fi

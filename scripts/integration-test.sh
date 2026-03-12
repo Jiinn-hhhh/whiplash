@@ -471,6 +471,67 @@ else:
 PY
 }
 
+probe_dashboard_waiting_report() {
+  local window_name="$1"
+  python3 - "$REPO_ROOT" "$PROJECT_DIR" "$SESSION" "$window_name" <<'PY'
+import importlib.util
+import pathlib
+import sys
+
+repo_root = pathlib.Path(sys.argv[1])
+project_dir = sys.argv[2]
+session_name = sys.argv[3]
+window_name = sys.argv[4]
+module_path = repo_root / "dashboard" / "dashboard.py"
+spec = importlib.util.spec_from_file_location("whiplash_dashboard", module_path)
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+project_info = module.parse_project_md(project_dir)
+state = module.collect(project_dir, session_name, project_info)
+waiting = state.get("waiting_reports", [])
+for entry in waiting:
+    if entry.get("agent") == window_name:
+        print(
+            f'{len(waiting)}|'
+            f'{entry.get("status","")}|'
+            f'{entry.get("subject","")}'
+        )
+        break
+else:
+    print(f'{len(waiting)}||')
+PY
+}
+
+probe_dashboard_active_task_summary() {
+  python3 - "$REPO_ROOT" "$PROJECT_DIR" "$SESSION" <<'PY'
+import importlib.util
+import pathlib
+import sys
+
+repo_root = pathlib.Path(sys.argv[1])
+project_dir = sys.argv[2]
+session_name = sys.argv[3]
+module_path = repo_root / "dashboard" / "dashboard.py"
+spec = importlib.util.spec_from_file_location("whiplash_dashboard", module_path)
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+project_info = module.parse_project_md(project_dir)
+state = module.collect(project_dir, session_name, project_info)
+summaries = state.get("active_task_summaries", [])
+if summaries:
+    first = summaries[0]
+    print(
+        f'{len(summaries)}|'
+        f'{first.get("task_id","")}|'
+        f'{",".join(first.get("assignees", []))}'
+    )
+else:
+    print("0||")
+PY
+}
+
 # 가짜 에이전트 윈도우 생성
 create_fake_agent() {
   local win_name="$1"
@@ -1585,6 +1646,10 @@ EOF
   dashboard_state="$(probe_dashboard_agent developer)"
   assert_eq "dashboard가 live + draft report 표시" "ALIVE|draft|TASK-007" "$dashboard_state"
 
+  local active_summary
+  active_summary="$(probe_dashboard_active_task_summary)"
+  assert_eq "dashboard가 진행중 task summary 표시" "1|TASK-007|developer" "$active_summary"
+
   local developer_report
   developer_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-007.md" "developer")"
   cat > "$developer_report" << 'EOF'
@@ -1634,6 +1699,79 @@ EOF
 }
 
 # ──────────────────────────────────────────────
+# 시나리오 23: dashboard waiting report lifecycle
+# ──────────────────────────────────────────────
+
+test_scenario_23() {
+  echo ""
+  echo "=== 시나리오 23: dashboard waiting report lifecycle ==="
+  cleanup
+  setup_test_project
+  build_fake_claude
+
+  mkdir -p "$PROJECT_DIR/workspace/tasks"
+  cat > "$PROJECT_DIR/workspace/tasks/TASK-008.md" << 'EOF'
+# TASK-008: Waiting report smoke test
+EOF
+  cat > "$PROJECT_DIR/workspace/tasks/TASK-009.md" << 'EOF'
+# TASK-009: Waiting report clear test
+EOF
+
+  tmux new-session -d -s "$SESSION" -n dashboard
+  create_fake_agent "developer"
+  register_fake_agent "developer" "developer"
+
+  bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer \
+    task_assign normal "workspace/tasks/TASK-008.md" "waiting report setup" >/dev/null
+
+  local developer_report
+  developer_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-008.md" "developer")"
+  cat > "$developer_report" << 'EOF'
+# TASK-008 결과 보고
+
+- **Date**: 2026-03-12
+- **Author**: developer
+- **For**: manager
+- **Status**: final
+- **Tags**: `task-report`, `TASK-008`
+
+## 요약
+- **무엇**: waiting report smoke
+- **핵심 발견**: waiting state visible
+- **시사점**: dashboard should show completion waiting report
+
+## 내용
+- 작업 지시: workspace/tasks/TASK-008.md
+- 보고서 경로: reports/tasks/TASK-008-developer.md
+- 수행 내용: waiting report state 기록
+- 변경 파일: 없음
+- 검증 결과: task_complete gate pass
+- 남은 리스크: 없음
+
+## 참고한 교훈
+- 없음
+
+## 다음 단계
+- 다음 task assign 시 waiting state clear 확인
+EOF
+
+  bash "$TOOLS_DIR/message.sh" "$PROJECT" developer manager \
+    task_complete normal "TASK-008 완료" "waiting report smoke" >/dev/null
+
+  local waiting_state
+  waiting_state="$(probe_dashboard_waiting_report developer)"
+  assert_eq "dashboard가 완료 후 대기 보고 표시" "1|ALIVE|TASK-008 완료" "$waiting_state"
+
+  bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer \
+    task_assign normal "workspace/tasks/TASK-009.md" "next task clears waiting report" >/dev/null
+
+  waiting_state="$(probe_dashboard_waiting_report developer)"
+  assert_eq "다음 task_assign 시 waiting report 제거" "0||" "$waiting_state"
+
+  echo "  시나리오 23 완료"
+}
+
+# ──────────────────────────────────────────────
 # 메인
 # ──────────────────────────────────────────────
 
@@ -1665,6 +1803,7 @@ test_scenario_15
 test_scenario_16
 test_scenario_17
 test_scenario_18
+test_scenario_23
 
 echo ""
 echo "============================================"

@@ -58,6 +58,7 @@ lock_held=0
 lock_target=""
 task_assign_report_rel=""
 task_complete_report_rel=""
+task_complete_task_ref=""
 
 release_target_lock() {
   if [ "$lock_held" -eq 1 ] && [ -n "$lock_target" ]; then
@@ -160,6 +161,7 @@ validate_task_complete_report() {
     echo "Error: task_complete 전에 active assignment를 찾을 수 없다: ${from}" >&2
     exit 1
   fi
+  task_complete_task_ref="$active_task"
 
   report_path="$(runtime_task_report_path "$project" "$active_task" "$from")"
   task_complete_report_rel="$(runtime_project_relative_path "$project" "$report_path")"
@@ -188,6 +190,23 @@ augment_content_with_report_context() {
   if [ "$kind" = "task_complete" ] && [ -n "$task_complete_report_rel" ] && [[ "$content" != *"$task_complete_report_rel"* ]]; then
     content="${content} | 보고서: ${task_complete_report_rel}"
   fi
+}
+
+record_waiting_report() {
+  local agent="$1"
+  [ -n "$task_complete_task_ref" ] || return 0
+  runtime_set_waiting_report \
+    "$project" \
+    "$agent" \
+    "$(date +%s)" \
+    "$subject" \
+    "$(normalize_task_ref "$task_complete_task_ref")" \
+    "$task_complete_report_rel" || true
+}
+
+clear_waiting_report() {
+  local agent="$1"
+  runtime_clear_waiting_report "$project" "$agent" || true
 }
 
 resolve_backend() {
@@ -424,11 +443,13 @@ apply_bookkeeping() {
 
   case "$kind" in
     task_assign)
+      clear_waiting_report "$to"
       record_assignment "$to" "$subject"
       ;;
     task_complete)
       if [ "$to" = "manager" ]; then
         complete_assignment "$from"
+        record_waiting_report "$from"
       fi
       ;;
   esac

@@ -311,7 +311,9 @@ cmd.sh refresh {role} {project}
 
 Displays:
 - Per-agent status (alive/crashed/absent based on the real child process)
+- A compact summary of in-progress tasks (`ACTIVE TASKS`)
 - Current task elapsed time + task report status (`DRAFT`/`FINAL`/`MISS`)
+- The latest completed task that is still waiting for the next assignment (`NEXT TASK WAITING`)
 - Recent system events (boot, crash, reboot)
 - Recent message delivery history
 - Monitor heartbeat + queued message state
