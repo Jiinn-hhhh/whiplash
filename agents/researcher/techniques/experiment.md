@@ -58,7 +58,7 @@
 ## 3. 실행
 
 - 프로토타이핑/검증 수준의 코드를 작성한다 (jupyter, 스크립트).
-- 서브에이전트를 활용하여 실행한다.
+- Claude Code와 Codex CLI의 네이티브 subagent / agent team 기능을 우선 활용하여 실행한다.
 - 실행 로그를 기록한다 (`workspace/teams/research/experiments/`).
 
 ### Developer와의 경계

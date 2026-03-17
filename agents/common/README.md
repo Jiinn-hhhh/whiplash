@@ -1,7 +1,7 @@
 # agents/common — 에이전트 공통 규칙
 
 에이전트 팀 프레임워크에서 **모든 에이전트가 따르는 공통 규칙**을 정의한다.
-개별 에이전트(manager, researcher, developer 등)는 이 common을 기반으로 자기만의 특화 규칙을 추가한다.
+개별 에이전트(manager, researcher, developer, systems-engineer 등)는 이 common을 기반으로 자기만의 특화 규칙을 추가한다.
 
 ---
 
@@ -77,7 +77,8 @@ whiplash/
 - 프레임워크 인프라 스크립트(`cmd.sh`, `monitor.sh`, `message.sh`, `log.py`)는 `scripts/`에 위치한다.
 
 ### 백엔드 네이티브 기능 적극 활용
-Claude Code의 서브에이전트, 팀 생성(TeamCreate), 병렬 태스크 등 백엔드가 제공하는 기능을 적극적으로 활용한다. Codex CLI도 마찬가지. 프레임워크가 모든 것을 재발명하지 않는다 — 백엔드가 잘하는 것은 백엔드에 맡긴다.
+Claude Code의 subagent / TeamCreate / 병렬 태스크와 Codex CLI의 subagent / agent team / delegation / 병렬 태스크처럼 각 백엔드가 제공하는 네이티브 기능을 적극적으로 활용한다. 특정 백엔드에 팀 기능이 있으면 수동 분해보다 우선 검토한다. 프레임워크가 모든 것을 재발명하지 않는다 — 백엔드가 잘하는 것은 백엔드에 맡긴다.
+이 문서들과 역할 문서에서 `서브에이전트`라고 쓰면, 특별한 예외가 없는 한 Claude Code와 Codex CLI의 네이티브 subagent / agent team을 모두 포함하는 표현으로 이해한다.
 
 ### 안티패턴 명시
 에이전트 정의 시 "하면 안 되는 것"을 구체적으로 기술한다.
@@ -86,7 +87,12 @@ Claude Code의 서브에이전트, 팀 생성(TeamCreate), 병렬 태스크 등 
 각 에이전트의 허용 도구가 `profile.md`의 `<!-- agent-meta -->` 블록에 정의된다. cmd.sh가 부팅 시 `--allowedTools`로 자동 적용한다. 허용되지 않은 도구는 사용 불가.
 
 ### 프로젝트 폴더 접근 규칙
-프로젝트 폴더(코드)는 **Developer만 수정 가능**. 다른 에이전트는 읽기 전용. 상세: `agents/manager/techniques/orchestration.md` §7
+프로젝트 폴더(코드/자동화)는 **Developer와 Systems Engineer만 수정 가능**. 다른 에이전트는 읽기 전용. 상세: `agents/manager/techniques/orchestration.md` §7
+
+### 시스템 변경 정책
+- 로컬 파일 수정, 테스트, 빌드, 로컬 git commit은 허용한다.
+- 원격 시스템 변경은 역할 문서와 프로젝트 문서 기준으로 판단한다.
+- `systems-engineer`는 `team/systems-engineer.md` + `memory/knowledge/docs/change-authority.md`를 기준으로 원격 시스템 변경 여부를 결정한다.
 
 ### 태스크 결과 보고서
 - 각 top-level task는 `reports/tasks/{task-id}-{agent}.md` 결과 보고서를 남긴다.

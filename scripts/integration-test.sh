@@ -158,11 +158,23 @@ static int handle_submit(char **draft, size_t *draft_len) {
   return 0;
 }
 
-int main(void) {
+int main(int argc, char **argv) {
   char *draft = NULL;
   size_t draft_len = 0;
   size_t draft_cap = 0;
   int in_paste = 0;
+
+  if (argc > 1 && strcmp(argv[1], "--help") == 0) {
+    const char *help = "fake cli supports --dangerously-bypass-approvals-and-sandbox\n";
+    write_all(help, strlen(help));
+    return 0;
+  }
+
+  if (argc > 1 && strcmp(argv[1], "-p") == 0) {
+    const char *json = "{\"session_id\":\"fake-session\"}\n";
+    write_all(json, strlen(json));
+    return 0;
+  }
 
   if (enable_raw_mode() != 0) {
     return 1;
@@ -358,6 +370,18 @@ assert_file_contains() {
     PASS=$((PASS + 1))
   else
     echo "  FAIL: $desc (pattern '$pattern' not found in $path)"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+assert_file_not_contains() {
+  local desc="$1" path="$2" pattern="$3"
+  TOTAL=$((TOTAL + 1))
+  if [ -f "$path" ] && ! grep -q "$pattern" "$path" 2>/dev/null; then
+    echo "  PASS: $desc"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: $desc (pattern '$pattern' should not be in $path)"
     FAIL=$((FAIL + 1))
   fi
 }
@@ -1708,6 +1732,310 @@ EOF
 }
 
 # ──────────────────────────────────────────────
+# 시나리오 19: systems-engineer role wiring
+# ──────────────────────────────────────────────
+
+test_scenario_19() {
+  echo ""
+  echo "=== 시나리오 19: systems-engineer wiring ==="
+  cleanup
+  setup_test_project
+
+  cat > "$PROJECT_DIR/project.md" << 'EOF'
+# Project: systems-role-test
+
+## 기본 정보
+- **Domain** (또는 **도메인**): general
+
+## 운영 방식
+- **실행 모드**: dual
+
+## 팀 구성
+- **활성 에이전트**: developer, researcher, systems-engineer, monitoring
+EOF
+
+  local systems_msg
+  systems_msg="$(probe_cmd_boot_message systems-engineer "$PROJECT")"
+
+  TOTAL=$((TOTAL + 1))
+  if echo "$systems_msg" | grep -q 'change-authority.md'; then
+    echo "  PASS: systems-engineer 부팅 메시지에 change-authority 안내 포함"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: systems-engineer 부팅 메시지에 change-authority 안내 누락"
+    FAIL=$((FAIL + 1))
+  fi
+
+  TOTAL=$((TOTAL + 1))
+  if echo "$systems_msg" | grep -q 'systems-engineer manager agent_ready normal "온보딩 완료"'; then
+    echo "  PASS: systems-engineer agent_ready 대상은 manager"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: systems-engineer agent_ready 대상이 manager가 아님"
+    FAIL=$((FAIL + 1))
+  fi
+
+  local normalized_role
+  normalized_role="$(invoke_cmd_function normalize_spawn_role systems-engineer-codex)"
+  assert_eq "systems-engineer spawn role 정규화" "systems-engineer" "$normalized_role"
+
+  local dual_flag
+  dual_flag="$(
+    WHIPLASH_SOURCE_ONLY=1 bash -lc '
+      source "'"$TOOLS_DIR"'/cmd.sh"
+      if role_supports_dual systems-engineer; then
+        echo yes
+      else
+        echo no
+      fi
+    '
+  )"
+  assert_eq "systems-engineer는 dual 기본 대상 아님" "no" "$dual_flag"
+
+  local dashboard_role_map
+  dashboard_role_map="$(python3 - "$REPO_ROOT" <<'PY'
+import importlib.util
+import pathlib
+import sys
+
+repo_root = pathlib.Path(sys.argv[1])
+module_path = repo_root / "dashboard" / "dashboard.py"
+spec = importlib.util.spec_from_file_location("whiplash_dashboard", module_path)
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+print(f'{module._ROLE_ABBR["systems-engineer"]}|{module._ROLE_FULL["sys"]}')
+PY
+)"
+  assert_eq "dashboard systems-engineer 약어/역매핑" "sys|systems-engineer" "$dashboard_role_map"
+
+  echo "  시나리오 19 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 20: mutation guard 제거
+# ──────────────────────────────────────────────
+
+test_scenario_20() {
+  echo ""
+  echo "=== 시나리오 20: mutation guard 제거 ==="
+  cleanup
+  setup_test_project
+
+  local code_repo="$PROJECT_DIR/guard-repo"
+  local remote_repo="$PROJECT_DIR/guard-remote.git"
+  mkdir -p "$code_repo"
+  git init --bare "$remote_repo" >/dev/null 2>&1
+  git -C "$code_repo" init -b main >/dev/null 2>&1
+  git -C "$code_repo" config user.name "Whiplash Test"
+  git -C "$code_repo" config user.email "test@example.com"
+  printf 'seed\n' > "$code_repo/README.md"
+  git -C "$code_repo" add README.md
+  git -C "$code_repo" commit -m "init" >/dev/null 2>&1
+  git -C "$code_repo" remote add origin "$remote_repo"
+
+  assert_true "git push가 별도 승인 없이 통과" git -C "$code_repo" push origin main
+  assert_true "remote main ref 생성" git -C "$remote_repo" rev-parse --verify refs/heads/main
+
+  local env_script
+  env_script="$(invoke_cmd_function write_agent_env_script "$PROJECT" developer developer)"
+  assert_file_not_contains "agent env script에 guard env 없음" "$env_script" "WHIPLASH_GUARD_"
+
+  local usage_output
+  usage_output="$(bash "$TOOLS_DIR/cmd.sh" 2>&1 || true)"
+  TOTAL=$((TOTAL + 1))
+  if ! echo "$usage_output" | grep -q 'approve-mutation' && ! echo "$usage_output" | grep -q 'revoke-mutation'; then
+    echo "  PASS: cmd.sh usage에서 mutation approval 명령 제거"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: cmd.sh usage에 mutation approval 명령이 남아 있음"
+    FAIL=$((FAIL + 1))
+  fi
+
+  echo "  시나리오 20 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 21: onboarding 분석 단계 제약
+# ──────────────────────────────────────────────
+
+test_scenario_21() {
+  echo ""
+  echo "=== 시나리오 21: onboarding analysis mode ==="
+  cleanup
+  setup_test_project
+  build_fake_claude
+
+  tmux new-session -d -s "$SESSION" -n onboarding
+  tmux send-keys -t "${SESSION}:onboarding" "'${FAKE_CLAUDE_BIN}'" Enter
+  sleep 2
+  register_fake_agent "onboarding" "onboarding"
+  invoke_cmd_function set_project_stage "$PROJECT" onboarding >/dev/null
+
+  local onboarding_msg
+  onboarding_msg="$(probe_cmd_boot_message onboarding "$PROJECT")"
+  TOTAL=$((TOTAL + 1))
+  if echo "$onboarding_msg" | grep -q 'onboarding user agent_ready normal "온보딩 완료"'; then
+    echo "  PASS: onboarding agent_ready 대상은 user"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: onboarding agent_ready 대상이 user가 아님"
+    FAIL=$((FAIL + 1))
+  fi
+
+  local helper_msg
+  helper_msg="$(invoke_cmd_function build_boot_message researcher "$PROJECT" "" onboarding-research "" onboarding)"
+  TOTAL=$((TOTAL + 1))
+  if echo "$helper_msg" | grep -q 'onboarding-research onboarding agent_ready normal "온보딩 완료"'; then
+    echo "  PASS: onboarding helper agent_ready 대상은 onboarding"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: onboarding helper agent_ready 대상이 onboarding이 아님"
+    FAIL=$((FAIL + 1))
+  fi
+
+  local spawn_allowed spawn_blocked spawn_prefix_blocked
+  spawn_allowed="$(
+    WHIPLASH_SOURCE_ONLY=1 bash -lc '
+      source "'"$TOOLS_DIR"'/cmd.sh"
+      if validate_spawn_for_project_stage "$1" "$2" "$3"; then echo yes; else echo no; fi
+    ' -- "$PROJECT" researcher onboarding-research
+  )"
+  assert_eq "onboarding 단계 researcher spawn 허용" "yes" "$spawn_allowed"
+
+  spawn_blocked="$(
+    WHIPLASH_SOURCE_ONLY=1 bash -lc '
+      source "'"$TOOLS_DIR"'/cmd.sh"
+      if validate_spawn_for_project_stage "$1" "$2" "$3"; then echo yes; else echo no; fi
+    ' -- "$PROJECT" developer onboarding-developer
+  )"
+  assert_eq "onboarding 단계 developer spawn 차단" "no" "$spawn_blocked"
+
+  spawn_prefix_blocked="$(
+    WHIPLASH_SOURCE_ONLY=1 bash -lc '
+      source "'"$TOOLS_DIR"'/cmd.sh"
+      if validate_spawn_for_project_stage "$1" "$2" "$3"; then echo yes; else echo no; fi
+    ' -- "$PROJECT" researcher researcher-2
+  )"
+  assert_eq "onboarding helper는 onboarding- 접두어 필요" "no" "$spawn_prefix_blocked"
+
+  assert_true "agent_ready -> onboarding 허용" bash -c \
+    "bash '$TOOLS_DIR/message.sh' '$PROJECT' onboarding-research onboarding agent_ready normal '준비 완료' 'analysis helper ready' >/dev/null"
+
+  local onboarding_pane
+  onboarding_pane="$(tmux capture-pane -pJ -t "${SESSION}:onboarding" -S -80 2>/dev/null || true)"
+  TOTAL=$((TOTAL + 1))
+  if echo "$onboarding_pane" | grep -q 'analysis helper ready'; then
+    echo "  PASS: onboarding pane에 helper ready 알림 표시"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: onboarding pane에 helper ready 알림 누락"
+    FAIL=$((FAIL + 1))
+  fi
+
+  local queue_dir manager_queue=""
+  queue_dir="$(runtime_message_queue_dir "$PROJECT")"
+  if [ -d "$queue_dir" ]; then
+    manager_queue="$(grep -l '^to=manager$' "$queue_dir"/*.msg 2>/dev/null | head -1 || true)"
+  fi
+  assert_eq "onboarding 단계 manager mirror 큐 없음" "" "$manager_queue"
+
+  echo "  시나리오 21 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 22: 새 프로젝트 onboarding bootstrap
+# ──────────────────────────────────────────────
+
+test_scenario_22() {
+  echo ""
+  echo "=== 시나리오 22: onboarding bootstrap for new project ==="
+  cleanup
+  build_fake_claude
+
+  local project_md="$PROJECT_DIR/project.md"
+  local index_md="$PROJECT_DIR/memory/knowledge/index.md"
+  local team_systems_md="$PROJECT_DIR/team/systems-engineer.md"
+  local change_authority_md="$PROJECT_DIR/memory/knowledge/docs/change-authority.md"
+  local boot_log="$PROJECT_DIR/boot-onboarding.log"
+  assert_file_not_exists "bootstrap 전 project.md 없음" "$project_md"
+
+  PATH="$PROJECT_DIR:$PATH" bash "$TOOLS_DIR/cmd.sh" boot-onboarding "$PROJECT" >"$boot_log" 2>&1 &
+  local boot_pid=$!
+
+  local waited=0 onboarding_ready=0
+  while [ "$waited" -lt 20 ]; do
+    if tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -q '^onboarding$'; then
+      onboarding_ready=1
+      break
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  assert_eq "bootstrap onboarding window 생성" "1" "$onboarding_ready"
+
+  local boot_status=0
+  wait "$boot_pid" || boot_status=$?
+  TOTAL=$((TOTAL + 1))
+  if [ "$boot_status" -ne 127 ]; then
+    echo "  PASS: bootstrap boot-onboarding가 preflight/project bootstrap 단계를 통과"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: bootstrap boot-onboarding가 시작조차 못함"
+    FAIL=$((FAIL + 1))
+  fi
+
+  TOTAL=$((TOTAL + 1))
+  if grep -q "Onboarding 실행 확인" "$boot_log" 2>/dev/null; then
+    echo "  PASS: bootstrap boot-onboarding가 agent_ready 없이도 실행 확인 후 종료"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: bootstrap boot-onboarding 실행 확인 로그 누락"
+    FAIL=$((FAIL + 1))
+  fi
+
+  assert_file_exists "bootstrap project.md 생성" "$project_md"
+  assert_file_exists "bootstrap knowledge index 생성" "$index_md"
+  assert_file_exists "bootstrap systems-engineer team 문서 생성" "$team_systems_md"
+  assert_file_exists "bootstrap change-authority 문서 생성" "$change_authority_md"
+  assert_file_contains "bootstrap project.md pending 실행 모드" "$project_md" "실행 모드.*pending"
+  assert_file_contains "bootstrap project.md 활성 에이전트 미정" "$project_md" "활성 에이전트.*미정"
+  assert_file_contains "bootstrap project.md 시스템 변경 권한 안내" "$project_md" "시스템 변경 권한"
+  assert_file_not_contains "bootstrap change-authority 문서에 machine policy 없음" "$change_authority_md" "Machine Policy"
+  assert_true "bootstrap runtime 루트 생성" test -d "$PROJECT_DIR/runtime"
+  assert_true "bootstrap sessions.md 생성" test -f "$PROJECT_DIR/memory/manager/sessions.md"
+  TOTAL=$((TOTAL + 1))
+  if grep -q "프로젝트 구조 검사는 건너뜀" "$boot_log" 2>/dev/null \
+    && ! grep -q "project.md가 없다" "$boot_log" 2>/dev/null \
+    && ! grep -q "활성 에이전트를 찾을 수 없다" "$boot_log" 2>/dev/null; then
+    echo "  PASS: bootstrap 부팅 로그가 원래 blocker 없이 진행됨"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: bootstrap 부팅 로그에 기존 blocker가 남아 있음"
+    FAIL=$((FAIL + 1))
+  fi
+
+  local strict_status=0 skip_status=0
+  PATH="$PROJECT_DIR:$PATH" bash "$TOOLS_DIR/preflight.sh" "$PROJECT" --mode solo >/dev/null 2>&1 || strict_status=$?
+  PATH="$PROJECT_DIR:$PATH" bash "$TOOLS_DIR/preflight.sh" "$PROJECT" --mode solo --skip-project-check >/dev/null 2>&1 || skip_status=$?
+  TOTAL=$((TOTAL + 1))
+  if [ "$strict_status" -ne 0 ]; then
+    echo "  PASS: bootstrap 초안은 full preflight에서 아직 거부됨"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: bootstrap 초안이 full preflight를 통과하면 안 됨"
+    FAIL=$((FAIL + 1))
+  fi
+  assert_eq "bootstrap preflight skip 허용" "0" "$skip_status"
+
+  local dashboard_project
+  dashboard_project="$(probe_dashboard_project)"
+  assert_eq "dashboard pending mode 파싱" "${PROJECT}|pending|general" "$dashboard_project"
+
+  echo "  시나리오 22 완료"
+}
+
+# ──────────────────────────────────────────────
 # 시나리오 23: dashboard waiting report lifecycle
 # ──────────────────────────────────────────────
 
@@ -1849,6 +2177,66 @@ test_scenario_24() {
 }
 
 # ──────────────────────────────────────────────
+# 시나리오 25: systems-engineer document guard
+# ──────────────────────────────────────────────
+
+test_scenario_25() {
+  echo ""
+  echo "=== 시나리오 25: systems-engineer 문서 기반 운영 ==="
+  cleanup
+  setup_test_project
+
+  mkdir -p "$PROJECT_DIR/team" "$PROJECT_DIR/memory/knowledge/docs"
+  cat > "$PROJECT_DIR/team/systems-engineer.md" <<'EOF'
+# systems-role-test — Systems Engineer 프로젝트 지침
+
+## 시스템 변경 권한
+- 기본값: 명시되지 않은 원격 시스템 write는 금지
+EOF
+
+  cat > "$PROJECT_DIR/memory/knowledge/docs/change-authority.md" <<'EOF'
+# 시스템 변경 권한 근거
+
+## 표면 목록
+| 환경 | 표면 | 허용 행동 | 금지 행동 | 근거 | 마지막 확인 |
+|------|------|-----------|-----------|------|-------------|
+| prod | bastion | 없음 | 모든 write | 온보딩 전 | 미정 |
+EOF
+
+  local systems_msg
+  systems_msg="$(probe_cmd_boot_message systems-engineer "$PROJECT")"
+  TOTAL=$((TOTAL + 1))
+  if ! echo "$systems_msg" | grep -qi 'guard' && ! echo "$systems_msg" | grep -qi 'hard stop'; then
+    echo "  PASS: systems-engineer 부팅 메시지에 guard/hard stop 언급 없음"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: systems-engineer 부팅 메시지에 guard/hard stop 언급이 남아 있음"
+    FAIL=$((FAIL + 1))
+  fi
+
+  local env_script
+  env_script="$(invoke_cmd_function write_agent_env_script "$PROJECT" systems-engineer systems-engineer)"
+  assert_file_not_contains "systems-engineer env script에 guard env 없음" "$env_script" "WHIPLASH_GUARD_"
+
+  local code_repo="$PROJECT_DIR/systems-guard-repo"
+  local remote_repo="$PROJECT_DIR/systems-guard-remote.git"
+  mkdir -p "$code_repo"
+  git init --bare "$remote_repo" >/dev/null 2>&1
+  git -C "$code_repo" init -b main >/dev/null 2>&1
+  git -C "$code_repo" config user.name "Whiplash Test"
+  git -C "$code_repo" config user.email "test@example.com"
+  printf 'seed\n' > "$code_repo/README.md"
+  git -C "$code_repo" add README.md
+  git -C "$code_repo" commit -m "init" >/dev/null 2>&1
+  git -C "$code_repo" remote add origin "$remote_repo"
+
+  assert_true "systems-engineer git push는 별도 래퍼 없이 통과" git -C "$code_repo" push origin main
+  assert_true "systems-engineer git push 후 remote main ref 생성" git -C "$remote_repo" rev-parse --verify refs/heads/main
+
+  echo "  시나리오 25 완료"
+}
+
+# ──────────────────────────────────────────────
 # 메인
 # ──────────────────────────────────────────────
 
@@ -1880,8 +2268,13 @@ test_scenario_15
 test_scenario_16
 test_scenario_17
 test_scenario_18
+test_scenario_19
+test_scenario_20
+test_scenario_21
+test_scenario_22
 test_scenario_23
 test_scenario_24
+test_scenario_25
 
 echo ""
 echo "============================================"

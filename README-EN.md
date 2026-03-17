@@ -558,12 +558,15 @@ Details: `domains/README.md`
 | 3-Folder Separation | Immutable (agents/ + domains/) and mutable (projects/) separated at folder level |
 | Context Minimization | Give a map, not an encyclopedia. Index ~100 lines, lessons capped at 30 |
 | Progressive Disclosure | Documents split into 3 layers (required/on-task/on-demand) to save context window |
+| Backend-native Teams | Actively use Claude Code and Codex CLI native subagent / agent team / parallel features, and prefer them over manual decomposition when available |
 | Role-based File Access | Project code modifiable only by Developer. Enforced via --allowedTools |
 | Backpressure Gate | Self-verification required before task_complete. No unverified completion reports |
 | Semantic Compaction | Inactive lessons move to archive/ with 1-line summary reference. Originals preserved |
 | Role-based Tool Restriction | Allowed tools defined in profile.md metadata, enforced by cmd.sh via --allowedTools |
 | Harness = Competitive Edge | Changing structure yields more than changing models |
 | Fail-safe | When agents fail, improve the environment instead of having humans take over |
+
+Unless explicitly stated otherwise, `subagent` in the docs includes both Claude Code and Codex CLI native subagent / agent team capabilities.
 
 ---
 

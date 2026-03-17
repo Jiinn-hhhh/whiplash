@@ -2,6 +2,8 @@
 # cmd.sh -- tmux 기반 멀티 에이전트 오케스트레이션
 #
 # 서브커맨드:
+#   boot-onboarding {project}                  -- Onboarding 세션 부팅 (완료 시 Manager 자동 인계)
+#   handoff        {project}                   -- Legacy: 기존 Onboarding 세션을 Manager/팀 세션으로 인계
 #   boot-manager   {project}                   -- Manager 부팅 + tmux 세션 생성
 #   boot           {project}                   -- tmux 세션 생성 + 에이전트 부팅 + monitor 시작
 #   dispatch       {role} {task} {project}      -- 에이전트에게 태스크 전달 (파일 경로 OR 인라인 텍스트)
@@ -64,6 +66,201 @@ project_dir() {
   echo "$REPO_ROOT/projects/$1"
 }
 
+project_team_dir() {
+  echo "$(project_dir "$1")/team"
+}
+
+project_team_role_doc_path() {
+  local project="$1" role="$2"
+  echo "$(project_team_dir "$project")/${role}.md"
+}
+
+project_knowledge_docs_dir() {
+  echo "$(project_dir "$1")/memory/knowledge/docs"
+}
+
+project_change_authority_doc_path() {
+  echo "$(project_knowledge_docs_dir "$1")/change-authority.md"
+}
+
+ensure_onboarding_project_layout() {
+  local project="$1"
+  local base
+  base="$(project_dir "$project")"
+
+  mkdir -p \
+    "$base/team" \
+    "$base/workspace/shared/discussions" \
+    "$base/workspace/shared/meetings" \
+    "$base/workspace/shared/announcements" \
+    "$base/workspace/teams/research" \
+    "$base/workspace/teams/developer" \
+    "$base/workspace/teams/systems-engineer" \
+    "$base/memory/manager" \
+    "$base/memory/researcher" \
+    "$base/memory/developer" \
+    "$base/memory/systems-engineer" \
+    "$base/memory/monitoring" \
+    "$base/memory/onboarding" \
+    "$base/memory/knowledge/lessons" \
+    "$base/memory/knowledge/docs" \
+    "$base/memory/knowledge/discussions" \
+    "$base/memory/knowledge/meetings" \
+    "$base/memory/knowledge/archives" \
+    "$base/runtime/message-queue" \
+    "$base/runtime/message-locks" \
+    "$base/runtime/manager" \
+    "$base/logs" \
+    "$base/reports/tasks"
+}
+
+write_onboarding_systems_engineer_team_md() {
+  local project="$1"
+  local team_md
+  team_md="$(project_team_role_doc_path "$project" "systems-engineer")"
+
+  cat > "$team_md" <<EOF
+# ${project} — Systems Engineer 프로젝트 지침
+
+이 파일은 \`agents/systems-engineer/profile.md\`를 보충한다.
+
+## 이 프로젝트에서의 초점
+- 시스템 변경 전마다 \`memory/knowledge/docs/change-authority.md\`를 확인하고, 실제 표면과 근거를 최신 상태로 유지한다.
+
+## 이 프로젝트에서의 제한
+- 문서에 없는 원격 시스템 write는 금지다.
+- 정책이 애매하거나 새로운 변경이 필요하면 Manager를 통해 사용자 합의를 받고, 이 문서와 \`change-authority.md\`를 먼저 갱신한다.
+
+## 시스템 변경 권한
+- 기본값: 명시되지 않은 원격 시스템 \`write/apply/restart/deploy/data change\`는 금지
+- 판단 순서:
+  1. 이 표의 환경별 정책 확인
+  2. \`memory/knowledge/docs/change-authority.md\`의 실제 표면/근거 확인
+  3. 두 문서가 모두 허용할 때만 실행
+- \`read\` 성격의 조사/진단 명령은 허용. 단, secret 값은 저장하지 않는다.
+
+| 환경 | read | config-change | deploy | service-restart | data-change |
+|------|------|---------------|--------|-----------------|-------------|
+| prod | 허용 | 금지 | 금지 | 금지 | 금지 |
+| staging | 허용 | 금지 | 금지 | 금지 | 금지 |
+| dev | 허용 | 금지 | 금지 | 금지 | 금지 |
+EOF
+}
+
+write_onboarding_change_authority_md() {
+  local project="$1"
+  local authority_md
+  authority_md="$(project_change_authority_doc_path "$project")"
+
+  cat > "$authority_md" <<'EOF'
+# 시스템 변경 권한 근거
+
+- **마지막 검증 시각**: 미정
+- **검증 환경**: 미정
+- **검증 근거 종류**: 미정
+
+## 목적
+- Systems Engineer가 실제로 수정 가능한 시스템 표면과 근거를 기록한다.
+- 이 문서에 없는 원격 시스템 write는 금지다.
+- 애매하거나 새 변경이 필요하면 Manager가 사용자 합의를 받아 이 문서를 갱신한다.
+
+## 표면 목록
+| 환경 | 표면 | 허용 행동 | 금지 행동 | 근거 | 마지막 확인 |
+|------|------|-----------|-----------|------|-------------|
+| prod | 미정 | 없음 | 모든 write | 온보딩 전 | 미정 |
+| staging | 미정 | 없음 | 모든 write | 온보딩 전 | 미정 |
+| dev | 미정 | 없음 | 모든 write | 온보딩 전 | 미정 |
+EOF
+}
+
+write_onboarding_bootstrap_project_md() {
+  local project="$1"
+  local project_md
+  project_md="$(project_dir "$project")/project.md"
+
+  cat > "$project_md" <<EOF
+# Project: ${project}
+
+## 기본 정보
+- **Domain**: general
+- **Started**: $(date +%Y-%m-%d)
+
+## 목표
+온보딩 전. 유저와 대화하며 구체화할 예정.
+
+## 배경
+새 프로젝트 bootstrap 초안 상태. onboarding이 기존 작업물 확인과 대화를 통해 내용을 채운다.
+
+## 프로젝트 폴더
+- **경로**: 미정
+
+## 기존 자원
+- **코드**: 미정
+- **데이터**: 미정
+- **참고 자료**: 미정
+- **진행 상태**: 온보딩 전
+
+## 제약사항
+- **컴퓨팅**: 미정
+- **시간**: 미정
+- **데이터**: 미정
+- **기술**: 미정
+- **기타**: 미정
+
+## 성공 기준
+온보딩 전. 유저와 합의 후 작성.
+
+## 운영 방식
+- **실행 모드**: pending
+- **보고 빈도**: 미정
+- **보고 채널**: 미정
+- **자율 범위**: 미정
+- **긴급 알림**: 미정
+- **프레임워크 디버깅**: off
+- **기술적 전제조건**: 미정
+- **시스템 변경 권한**: 기본 금지. 상세는 team/systems-engineer.md 와 memory/knowledge/docs/change-authority.md 참고
+
+## 팀 구성
+- **활성 에이전트**: 미정
+- **커스터마이징**: 기본
+
+## 현재 상태
+Onboarding 시작 전 bootstrap 초안. boot-onboarding이 생성했으며, onboarding 과정에서 갱신된다.
+EOF
+}
+
+ensure_onboarding_project_bootstrap() {
+  local project="$1"
+  local base project_md knowledge_index team_systems_md change_authority_md
+  base="$(project_dir "$project")"
+  project_md="${base}/project.md"
+  knowledge_index="${base}/memory/knowledge/index.md"
+  team_systems_md="$(project_team_role_doc_path "$project" "systems-engineer")"
+  change_authority_md="$(project_change_authority_doc_path "$project")"
+
+  ensure_onboarding_project_layout "$project"
+
+  if [ ! -f "$project_md" ]; then
+    write_onboarding_bootstrap_project_md "$project"
+  fi
+
+  if [ ! -f "$knowledge_index" ]; then
+    cat > "$knowledge_index" <<'EOF'
+# 지식 지도
+
+- 초기 bootstrap 상태. onboarding과 이후 에이전트가 핵심 문서 링크를 정리한다.
+EOF
+  fi
+
+  if [ ! -f "$team_systems_md" ]; then
+    write_onboarding_systems_engineer_team_md "$project"
+  fi
+
+  if [ ! -f "$change_authority_md" ]; then
+    write_onboarding_change_authority_md "$project"
+  fi
+}
+
 sessions_file() {
   echo "$(project_dir "$1")/memory/manager/sessions.md"
 }
@@ -119,6 +316,48 @@ get_model() {
 get_allowed_tools() {
   local role="$1"
   parse_agent_meta "$role" "allowed-tools"
+}
+
+role_supports_dual() {
+  local role="$1"
+  case "$role" in
+    developer|researcher) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+role_uses_dual_worktree() {
+  local role="$1"
+  case "$role" in
+    developer|researcher|systems-engineer) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+agent_env_script_path() {
+  local project="$1" agent_id="$2"
+  printf '%s/runtime/agent-env/%s.sh\n' "$(project_dir "$project")" "$agent_id"
+}
+
+write_agent_env_script() {
+  local project="$1" role="$2" agent_id="$3"
+  local script_path base_path
+  script_path="$(agent_env_script_path "$project" "$agent_id")"
+  base_path="$PATH"
+
+  mkdir -p "$(dirname "$script_path")"
+  {
+    printf 'export PATH=%q\n' "$base_path"
+  } > "$script_path"
+  chmod 600 "$script_path"
+
+  printf '%s\n' "$script_path"
+}
+
+run_with_agent_env() {
+  local project="$1" role="$2" agent_id="$3"
+  shift 3
+  "$@"
 }
 
 get_manager_backend() {
@@ -229,6 +468,62 @@ get_exec_mode() {
     | tr -d '*|' \
     | tr '[:upper:]' '[:lower:]')
   if [ "$mode" = "dual" ]; then echo "dual"; else echo "solo"; fi
+}
+
+get_project_stage() {
+  local project="$1"
+  ensure_manager_runtime_layout "$project"
+  runtime_get_manager_state "$project" "project_stage" "active" 2>/dev/null || printf 'active\n'
+}
+
+set_project_stage() {
+  local project="$1"
+  local stage="$2"
+  ensure_manager_runtime_layout "$project"
+  runtime_set_manager_state "$project" "project_stage" "$stage"
+}
+
+clear_project_stage() {
+  local project="$1"
+  ensure_manager_runtime_layout "$project"
+  runtime_clear_manager_state "$project" "project_stage" || true
+}
+
+onboarding_helper_role_allowed() {
+  local role="$1"
+  case "$role" in
+    researcher|systems-engineer) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_onboarding_helper_window_name() {
+  local window_name="$1"
+  if [[ "$window_name" != onboarding-* ]]; then
+    echo "Error: onboarding 분석 단계 보조 에이전트 윈도우 이름은 'onboarding-' 접두어가 필요하다: '$window_name'" >&2
+    return 1
+  fi
+  return 0
+}
+
+validate_spawn_for_project_stage() {
+  local project="$1"
+  local role="$2"
+  local window_name="$3"
+  local stage
+  stage="$(get_project_stage "$project")"
+
+  if [ "$stage" != "onboarding" ]; then
+    return 0
+  fi
+
+  if ! onboarding_helper_role_allowed "$role"; then
+    echo "Error: onboarding 분석 단계에서는 researcher 또는 systems-engineer만 spawn할 수 있다. 입력 role: '$role'" >&2
+    return 1
+  fi
+
+  validate_onboarding_helper_window_name "$window_name" || return 1
+  return 0
 }
 
 # project.md에서 프로젝트 폴더 (코드 레포) 경로 추출
@@ -431,7 +726,7 @@ build_boot_message() {
   local extra="${3:-}"
   local agent_id="${4:-$role}"
   local pending_task="${5:-}"
-  local ready_target="manager"
+  local ready_target="${6:-}"
   local domain
   domain="$(get_domain "$project")"
   domain="${domain:-general}"
@@ -439,9 +734,12 @@ build_boot_message() {
   local layer2_domain_line
   local layer3_domain_line
   local need_input_action
+  local mutation_safety_note
 
-  if [ "$role" = "manager" ]; then
+  if [ -z "$ready_target" ] && { [ "$role" = "manager" ] || [ "$role" = "onboarding" ]; }; then
     ready_target="user"
+  elif [ -z "$ready_target" ]; then
+    ready_target="manager"
   fi
 
   if [ "$domain" = "general" ]; then
@@ -455,6 +753,24 @@ build_boot_message() {
   need_input_action="- need_input: 응답 필요"
   if [ "$role" = "manager" ]; then
     need_input_action="- need_input: 응답 필요. 특히 monitor의 \"plan mode 판단 필요\" 알림을 받으면 해당 agent pane 최근 출력과 task/report 맥락을 읽고, 승인 대기인지 단순 설계 단계인지 판단해 지시 또는 승인 여부를 결정"
+  fi
+
+  if [ "$role" = "systems-engineer" ]; then
+    mutation_safety_note="$(cat <<BOOTRULES
+14. 외부 반영 안전 규칙:
+    - 로컬 파일 수정, 테스트, 빌드, 로컬 git commit은 가능하다.
+    - 원격 시스템 변경 전에는 projects/${project}/team/systems-engineer.md 와 projects/${project}/memory/knowledge/docs/change-authority.md 를 다시 읽어라.
+    - 문서에 없는 변경이거나 애매하면 manager에게 escalation하고, Manager가 사용자 합의 후 문서를 갱신하게 해라.
+BOOTRULES
+)"
+  else
+    mutation_safety_note="$(cat <<BOOTRULES
+14. 외부 반영 안전 규칙:
+    - 로컬 파일 수정, 테스트, 빌드, 로컬 git commit은 가능하다.
+    - 외부 반영이 실제로 필요한 변경은 프로젝트 문서와 현재 지시를 먼저 확인해라.
+    - 범위가 애매하면 manager 또는 user에게 확인을 요청해라.
+BOOTRULES
+)"
   fi
 
   cat << BOOTMSG
@@ -516,8 +832,10 @@ ${layer3_domain_line}
     - reboot_notice: 에이전트 복구 상태 확인
     - consensus_request: 비교 문서를 읽고 consensus_response로 답변
 
-13. Claude/Codex가 제공하는 네이티브 subagent / team / parallel 기능을 적극 활용하라.
+13. Claude Code/Codex CLI가 제공하는 네이티브 subagent / agent team / parallel 기능을 적극 활용하라.
     단, 외부에 공유하는 공식 결과는 반드시 네가 직접 검토·정리한 뒤 보고해라.
+
+${mutation_safety_note}
 ${extra}
 $(
   # 듀얼 모드 워크트리 경로 안내
@@ -739,6 +1057,19 @@ mark_session_status() {
   fi
 }
 
+mark_window_status() {
+  local project="$1" window_name="$2" old_status="$3" new_status="$4"
+  local sf sess target
+  sf="$(sessions_file "$project")"
+  sess="$(session_name "$project")"
+  target="${sess}:${window_name}"
+  if [ -f "$sf" ]; then
+    awk -v target=" ${target} " -v old=" ${old_status} " -v new=" ${new_status} " \
+      'BEGIN{FS=OFS="|"} $5==target && $6==old {$6=new} 1' \
+      "$sf" > "${sf}.tmp" && mv "${sf}.tmp" "$sf"
+  fi
+}
+
 # sessions.md 전체를 closed로 갱신
 close_all_sessions() {
   local project="$1"
@@ -749,6 +1080,109 @@ close_all_sessions() {
   fi
 }
 
+configure_tmux_session_visuals() {
+  local sess="$1"
+  tmux set-option -t "$sess" activity-action none
+  tmux set-option -t "$sess" visual-activity off
+  tmux set-option -t "$sess" window-status-separator "  "
+  tmux set-option -t "$sess" window-status-format " #I:#W "
+  tmux set-option -t "$sess" window-status-current-format " [#I:#W] "
+  tmux set-option -t "$sess" status-style "bg=black,fg=white"
+  tmux set-option -t "$sess" window-status-current-style "bg=blue,fg=white,bold"
+}
+
+ensure_dashboard_window() {
+  local project="$1"
+  local sess
+  sess="$(session_name "$project")"
+
+  if ! tmux list-windows -t "$sess" -F '#{window_name}' 2>/dev/null | grep -q '^dashboard$'; then
+    tmux new-window -d -t "$sess" -n "dashboard"
+  fi
+
+  tmux send-keys -t "${sess}:dashboard" C-c 2>/dev/null || true
+  tmux send-keys -t "${sess}:dashboard" \
+    "env -u NO_COLOR FORCE_COLOR=1 CLICOLOR_FORCE=1 python3 \"$REPO_ROOT/dashboard/dashboard.py\" \"$project\" --interval 3" Enter
+}
+
+ensure_tmux_session_with_dashboard() {
+  local project="$1"
+  local sess
+  sess="$(session_name "$project")"
+
+  init_sessions_file "$project"
+
+  if ! tmux has-session -t "$sess" 2>/dev/null; then
+    tmux new-session -d -s "$sess" -n "dashboard"
+  fi
+
+  configure_tmux_session_visuals "$sess"
+  ensure_dashboard_window "$project"
+}
+
+build_onboarding_analysis_note() {
+  local project="$1"
+  cat <<EOF
+
+[Onboarding]
+- 지금은 프로젝트 설계 단계다. 기존 코드/레포 분석, project.md 작성/보강, 팀 구성 확정까지 진행해라.
+- 필요하면 아래 명령으로 researcher 또는 systems-engineer 보조 에이전트를 띄울 수 있다:
+  bash "$TOOLS_DIR/cmd.sh" spawn researcher onboarding-research ${project} "기존 레포/문서 분석 보조"
+  bash "$TOOLS_DIR/cmd.sh" spawn systems-engineer onboarding-systems ${project} "서버/클라우드/runtime 분석 보조"
+- onboarding 단계 보조 에이전트는 분석 전용이다. developer, monitoring, manager spawn은 금지다.
+- 보조 에이전트와의 소통은 status_update, need_input, escalation, agent_ready만 사용해라. task_assign/task_complete는 쓰지 마라.
+- 구현, 배포, 실제 서비스 변경은 금지다. 근거 수집, 구조 해석, 준비 문서 작성까지만 해라.
+- 최종 리뷰가 끝나고 프로젝트 정의가 확정되면 아래 명령으로 Manager를 내부적으로 부팅해라:
+  bash "$TOOLS_DIR/cmd.sh" boot-manager ${project}
+- 별도 user handoff 명령을 기다리지 마라. Manager가 올라간 뒤에는 온보딩 맥락을 넘기고 종료해라.
+EOF
+}
+
+build_onboarding_helper_spawn_note() {
+  local project="$1"
+  local agent_id="$2"
+  cat <<EOF
+
+[온보딩 분석 보조 모드]
+- 지금은 온보딩 분석 단계다. 공식 보고 대상은 manager가 아니라 onboarding이다.
+- 준비 완료와 진행 업데이트는 onboarding에게 보고해라:
+  bash "$TOOLS_DIR/message.sh" ${project} ${agent_id} onboarding agent_ready normal "준비 완료" "분석 준비 완료"
+  bash "$TOOLS_DIR/message.sh" ${project} ${agent_id} onboarding status_update normal "분석 업데이트" "핵심 발견"
+- need_input, escalation도 onboarding에게 보낼 수 있다.
+- task_assign/task_complete는 이 단계에서 사용하지 마라.
+- 구현, 배포, 서비스 변경, 추가 에이전트 스폰은 금지다. 분석/문서화/준비까지만 수행해라.
+EOF
+}
+
+close_window_if_present() {
+  local sess="$1"
+  local window_name="$2"
+  if tmux list-windows -t "$sess" -F '#{window_name}' 2>/dev/null | grep -q "^${window_name}$"; then
+    tmux send-keys -t "${sess}:${window_name}" "/exit" Enter 2>/dev/null || true
+    sleep 1
+    tmux kill-window -t "${sess}:${window_name}" 2>/dev/null || true
+  fi
+}
+
+close_onboarding_analysis_windows() {
+  local project="$1"
+  local sess window_name
+  sess="$(session_name "$project")"
+  if ! tmux has-session -t "$sess" 2>/dev/null; then
+    return 0
+  fi
+
+  while IFS= read -r window_name; do
+    [ -n "$window_name" ] || continue
+    case "$window_name" in
+      onboarding|onboarding-*)
+        close_window_if_present "$sess" "$window_name"
+        mark_window_status "$project" "$window_name" "active" "closed"
+        ;;
+    esac
+  done < <(tmux list-windows -t "$sess" -F '#{window_name}' 2>/dev/null || true)
+}
+
 # 단일 에이전트 부팅 (reboot/refresh에서 재사용)
 boot_single_agent() {
   local role="$1"
@@ -756,6 +1190,7 @@ boot_single_agent() {
   local extra_boot_msg="${3:-}"
   local window_name="${4:-$role}"
   local pending_task="${5:-}"
+  local ready_target_override="${6:-}"
   local sess
   sess="$(session_name "$project")"
 
@@ -778,8 +1213,10 @@ boot_single_agent() {
   tools="$(get_allowed_tools "$role")"
   local agent_id="$window_name"
   local boot_msg
-  boot_msg="$(build_boot_message "$role" "$project" "$extra_boot_msg" "$agent_id" "$pending_task")"
+  boot_msg="$(build_boot_message "$role" "$project" "$extra_boot_msg" "$agent_id" "$pending_task" "$ready_target_override")"
   local tmux_target="${sess}:${window_name}"
+  local agent_env_script
+  agent_env_script="$(write_agent_env_script "$project" "$role" "$agent_id")"
 
   echo "--- ${window_name} (${model}) 부팅 중 ---"
 
@@ -788,7 +1225,7 @@ boot_single_agent() {
   local tools_flag=""
   [ -n "$tools" ] && tools_flag="--allowedTools $tools"
   local result
-  result=$(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude -p "$boot_msg" \
+  result=$(run_with_agent_env "$project" "$role" "$agent_id" env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude -p "$boot_msg" \
     --model "$model" \
     --output-format json \
     --dangerously-skip-permissions $tools_flag) || {
@@ -811,7 +1248,7 @@ boot_single_agent() {
   tmux new-window -d -t "$sess" -n "$window_name"
   local resume_tools_flag=""
   [ -n "$tools" ] && resume_tools_flag=" --allowedTools $tools"
-  tmux send-keys -t "$tmux_target" "env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude --resume $session_id --dangerously-skip-permissions${resume_tools_flag}" Enter
+  tmux send-keys -t "$tmux_target" ". $(printf '%q' "$agent_env_script") && env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude --resume $session_id --dangerously-skip-permissions${resume_tools_flag}" Enter
 
   # 부팅 확인: claude 프로세스 시작 대기 (최대 10초)
   local boot_pane_pid
@@ -843,6 +1280,7 @@ boot_codex_agent() {
   local project="$2"
   local window_name="$3"
   local extra_boot_msg="${4:-}"
+  local ready_target_override="${5:-}"
   local sess
   sess="$(session_name "$project")"
   local agent_id="$window_name"
@@ -851,6 +1289,10 @@ boot_codex_agent() {
   codex_model="$(get_codex_model)"
   local codex_env
   codex_env="$(build_codex_env_prefix)"
+  local codex_env_args
+  codex_env_args="${codex_env#env }"
+  local agent_env_script
+  agent_env_script="$(write_agent_env_script "$project" "$role" "$agent_id")"
   # codex CLI 설치 확인
   if ! command -v codex &>/dev/null; then
     echo "Warning: codex CLI가 설치되어 있지 않다. ${window_name} 부팅 건너뜀." >&2
@@ -860,13 +1302,13 @@ boot_codex_agent() {
   echo "--- ${window_name} (codex interactive mode) 부팅 중 ---"
 
   local boot_msg bootstrap_path bootstrap_prompt
-  boot_msg="$(build_boot_message "$role" "$project" "$extra_boot_msg" "$agent_id")"
+  boot_msg="$(build_boot_message "$role" "$project" "$extra_boot_msg" "$agent_id" "" "$ready_target_override")"
   bootstrap_path="$(prepare_codex_bootstrap_file "$project" "$agent_id" "$boot_msg")"
   bootstrap_prompt="$(build_codex_bootstrap_prompt "$bootstrap_path")"
 
   tmux new-window -d -t "$sess" -n "$window_name"
   tmux send-keys -t "$tmux_target" \
-    "cd $(printf '%q' "$REPO_ROOT") && ${codex_env} codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox" Enter
+    "cd $(printf '%q' "$REPO_ROOT") && . $(printf '%q' "$agent_env_script") &&${codex_env_args:+ ${codex_env_args}} codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox" Enter
   sleep 4
   local prompt_ok=0
   local attempt
@@ -888,6 +1330,143 @@ boot_codex_agent() {
   return 0
 }
 
+boot_agent_with_backend() {
+  local role="$1"
+  local project="$2"
+  local window_name="$3"
+  local backend="$4"
+  local extra_boot_msg="${5:-}"
+  local pending_task="${6:-}"
+  local ready_target_override="${7:-}"
+
+  if [ "$backend" = "codex" ]; then
+    boot_codex_agent "$role" "$project" "$window_name" "$extra_boot_msg" "$ready_target_override"
+  else
+    boot_single_agent "$role" "$project" "$extra_boot_msg" "$window_name" "$pending_task" "$ready_target_override"
+  fi
+}
+
+log_message_line_count() {
+  local project="$1"
+  local msg_log
+  msg_log="$(project_dir "$project")/logs/message.log"
+  if [ -f "$msg_log" ]; then
+    wc -l < "$msg_log"
+  else
+    echo "0"
+  fi
+}
+
+wait_for_delivered_message() {
+  local project="$1"
+  local start_lines="$2"
+  local pattern="$3"
+  local timeout_seconds="${4:-0}"
+  local msg_log waited=0
+  msg_log="$(project_dir "$project")/logs/message.log"
+
+  while true; do
+    if tail -n +"$((start_lines + 1))" "$msg_log" 2>/dev/null | grep -q "$pattern"; then
+      return 0
+    fi
+    if [ "$timeout_seconds" -gt 0 ] 2>/dev/null && [ "$waited" -ge "$timeout_seconds" ]; then
+      return 1
+    fi
+    sleep 2
+    waited=$((waited + 2))
+  done
+}
+
+boot_manager_window() {
+  local project="$1"
+  local extra_boot_msg="${2:-}"
+  local manager_backend
+  manager_backend="$(get_manager_backend)"
+
+  if [ "$manager_backend" = "codex" ]; then
+    boot_agent_with_backend "manager" "$project" "manager" "codex" "$extra_boot_msg" "" "user" || {
+      echo "Error: Manager codex 부팅 실패." >&2
+      return 1
+    }
+  else
+    local model
+    model="$(get_model "manager")"
+    local mgr_tools
+    mgr_tools="$(get_allowed_tools "manager")"
+    local manager_env_script
+    manager_env_script="$(write_agent_env_script "$project" "manager" "manager")"
+    local bootstrap_msg
+    bootstrap_msg=$'너는 Whiplash manager 세션의 bootstrap 단계다.\n지금은 session_id만 만들기 위한 초기 호출이다.\n도구를 사용하지 말고, 파일도 읽지 말고, 명령도 실행하지 말고, 한 줄로 READY만 답해라.'
+    local boot_msg
+    boot_msg="$(build_boot_message "manager" "$project" "$extra_boot_msg" "manager" "" "user")"
+    local model_flag result session_id tmux_target mgr_resume_flag boot_pane_pid prompt_ok attempt
+
+    model_flag=""
+    [ -n "$mgr_tools" ] && model_flag="--allowedTools $mgr_tools"
+    result=$(run_with_agent_env "$project" "manager" "manager" env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude -p "$bootstrap_msg" \
+      --model "$model" \
+      --output-format json \
+      --dangerously-skip-permissions $model_flag) || {
+      echo "Error: Manager claude -p 실행 실패." >&2
+      return 1
+    }
+
+    session_id=$(echo "$result" | jq -r '.session_id' 2>/dev/null) || session_id=""
+    if [ -z "$session_id" ] || [ "$session_id" = "null" ]; then
+      echo "Error: Manager session_id 획득 실패." >&2
+      return 1
+    fi
+
+    tmux new-window -d -t "$(session_name "$project")" -n manager
+    tmux_target="$(session_name "$project"):manager"
+    mgr_resume_flag=""
+    [ -n "$mgr_tools" ] && mgr_resume_flag=" --allowedTools $mgr_tools"
+    tmux send-keys -t "$tmux_target" ". $(printf '%q' "$manager_env_script") && env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude --resume $session_id --dangerously-skip-permissions${mgr_resume_flag}" Enter
+
+    boot_pane_pid=$(tmux list-panes -t "$tmux_target" -F '#{pane_pid}' 2>/dev/null | head -1)
+    if [ -n "$boot_pane_pid" ]; then
+      for attempt in $(seq 1 10); do
+        pgrep -P "$boot_pane_pid" claude >/dev/null 2>&1 && break
+        sleep 1
+      done
+    fi
+    if [ -z "$boot_pane_pid" ] || ! pgrep -P "$boot_pane_pid" claude >/dev/null 2>&1; then
+      echo "Error: Manager claude --resume 프로세스 시작 실패." >&2
+      return 1
+    fi
+
+    add_session_row "$project" "manager" "$session_id" "$tmux_target" "$model"
+    python3 "$TOOLS_DIR/log.py" system "$project" orchestrator manager_boot manager --detail session="$session_id" || true
+
+    prompt_ok=0
+    for attempt in 1 2 3 4 5; do
+      if tmux_submit_pasted_payload "$tmux_target" "$boot_msg" "manager-boot"; then
+        prompt_ok=1
+        break
+      fi
+      sleep 2
+    done
+    if [ "$prompt_ok" -ne 1 ]; then
+      echo "Error: Manager 온보딩 프롬프트 전달 실패." >&2
+      return 1
+    fi
+  fi
+
+  return 0
+}
+
+boot_onboarding_window() {
+  local project="$1"
+  local extra_boot_msg="${2:-}"
+  local backend
+  backend="$(get_manager_backend)"
+  boot_agent_with_backend "onboarding" "$project" "onboarding" "$backend" "$extra_boot_msg" "" "user" || {
+    echo "Error: Onboarding 부팅 실패." >&2
+    return 1
+  }
+  return 0
+}
+
 # ──────────────────────────────────────────────
 # spawn 서브커맨드 — 동적 에이전트 추가 스폰
 # ──────────────────────────────────────────────
@@ -897,6 +1476,7 @@ normalize_spawn_role() {
   case "$role" in
     researcher|researcher-claude|researcher-codex) echo "researcher" ;;
     developer|developer-claude|developer-codex) echo "developer" ;;
+    systems-engineer|systems-engineer-claude|systems-engineer-codex) echo "systems-engineer" ;;
     monitoring|monitoring-claude|monitoring-codex) echo "monitoring" ;;
     manager|manager-claude|manager-codex) echo "manager" ;;
     *)
@@ -934,6 +1514,9 @@ cmd_spawn() {
   backend="$(resolve_spawn_backend "$requested_role" "$window_name")"
   validate_project_name "$project"
   validate_window_name "$window_name"
+  local stage
+  stage="$(get_project_stage "$project")"
+  validate_spawn_for_project_stage "$project" "$role" "$window_name" || exit 1
   local sess
   sess="$(session_name "$project")"
 
@@ -951,7 +1534,7 @@ cmd_spawn() {
 
   local exec_mode
   exec_mode="$(get_exec_mode "$project")"
-  if [ "$exec_mode" = "dual" ] && { [ "$role" = "researcher" ] || [ "$role" = "developer" ]; }; then
+  if [ "$stage" != "onboarding" ] && [ "$exec_mode" = "dual" ] && role_uses_dual_worktree "$role"; then
     create_agent_worktree "$project" "$window_name" || true
   fi
 
@@ -960,13 +1543,19 @@ cmd_spawn() {
 참고: 너는 동적으로 스폰된 추가 에이전트다 (${window_name}).
 같은 프로젝트의 메모리와 workspace를 공유한다. 같은 파일 동시 수정은 금지.
 ${extra_msg}"
+  local ready_target_override=""
+  if [ "$stage" = "onboarding" ]; then
+    spawn_note="${spawn_note}
+$(build_onboarding_helper_spawn_note "$project" "$window_name")"
+    ready_target_override="onboarding"
+  fi
   if [ "$backend" = "codex" ]; then
-    boot_codex_agent "$role" "$project" "$window_name" "$spawn_note" || {
+    boot_codex_agent "$role" "$project" "$window_name" "$spawn_note" "$ready_target_override" || {
       echo "Error: ${window_name} 스폰 실패." >&2
       exit 1
     }
   else
-    boot_single_agent "$role" "$project" "$spawn_note" "$window_name" || {
+    boot_single_agent "$role" "$project" "$spawn_note" "$window_name" "" "$ready_target_override" || {
       echo "Error: ${window_name} 스폰 실패." >&2
       exit 1
     }
@@ -1017,45 +1606,145 @@ cmd_kill_agent() {
 }
 
 # ──────────────────────────────────────────────
-# boot-manager 서브커맨드
+# boot-onboarding / handoff / boot-manager 서브커맨드
 # ──────────────────────────────────────────────
+
+cmd_boot_onboarding() {
+  local project="$1"
+  validate_project_name "$project"
+  ensure_onboarding_project_bootstrap "$project"
+  local exec_mode
+  exec_mode="$(get_exec_mode "$project")"
+
+  bash "$TOOLS_DIR/preflight.sh" "$project" --mode "$exec_mode" --skip-project-check || exit 1
+
+  local sess
+  sess="$(session_name "$project")"
+
+  echo "=== Onboarding 부팅 ==="
+  if tmux has-session -t "$sess" 2>/dev/null; then
+    echo "Error: tmux 세션 '$sess'가 이미 존재한다. 먼저 shutdown하라." >&2
+    exit 1
+  fi
+
+  ensure_tmux_session_with_dashboard "$project"
+  set_project_stage "$project" "onboarding"
+
+  echo ""
+  echo "╔══════════════════════════════════════════════╗"
+  echo "║  Onboarding 세션 준비 완료                  ║"
+  echo "║  tmux attach -t $sess 로 분석 과정을 볼 수 있음 ║"
+  echo "╚══════════════════════════════════════════════╝"
+  echo ""
+
+  boot_onboarding_window "$project" "$(build_onboarding_analysis_note "$project")" || exit 1
+
+  echo "Onboarding 실행 확인"
+  echo "=== Onboarding 부팅 완료 ==="
+  echo "유저와 설계를 진행하고, 확정되면 onboarding이 내부적으로 Manager를 부팅한다."
+}
+
+cmd_handoff() {
+  local project="$1"
+  validate_project_name "$project"
+  local exec_mode
+  exec_mode="$(get_exec_mode "$project")"
+  local stage
+  stage="$(get_project_stage "$project")"
+  local sess
+  sess="$(session_name "$project")"
+
+  if [ "$stage" != "onboarding" ]; then
+    echo "Error: ${project}는 onboarding 단계가 아니다 (current stage: ${stage})." >&2
+    exit 1
+  fi
+
+  if ! tmux has-session -t "$sess" 2>/dev/null; then
+    echo "Error: tmux 세션 '$sess'가 없다. boot-onboarding 또는 boot-manager를 먼저 실행하라." >&2
+    exit 1
+  fi
+
+  bash "$TOOLS_DIR/preflight.sh" "$project" --mode "$exec_mode" || exit 1
+
+  echo "=== Onboarding -> Manager handoff ==="
+
+  local onboarding_handoff_file
+  onboarding_handoff_file="$(project_dir "$project")/memory/onboarding/handoff.md"
+  local handoff_wait="${WHIPLASH_ONBOARDING_HANDOFF_WAIT_SECONDS:-30}"
+  if tmux list-windows -t "$sess" -F '#{window_name}' 2>/dev/null | grep -q '^onboarding$'; then
+    tmux send-keys -t "${sess}:onboarding" \
+      "지금까지의 분석 맥락을 memory/onboarding/handoff.md에 정리해라. 현재 이해한 구조, 열린 질문, 추천 팀 구성, 다음 handoff 준비 상태를 포함해라." Enter
+    if [ "$handoff_wait" -gt 0 ] 2>/dev/null; then
+      local waited=0
+      echo "onboarding handoff.md 대기 중 (최대 ${handoff_wait}초)..."
+      while [ "$waited" -lt "$handoff_wait" ]; do
+        if [ -f "$onboarding_handoff_file" ]; then
+          echo "onboarding handoff.md 생성 확인 (${waited}초 경과)"
+          break
+        fi
+        sleep 5
+        waited=$((waited + 5))
+      done
+    fi
+  fi
+
+  set_project_stage "$project" "handoff"
+
+  local manager_extra_msg=""
+  if [ -f "$onboarding_handoff_file" ]; then
+    manager_extra_msg="10. memory/onboarding/handoff.md를 읽어라. 온보딩 분석 인수인계 문서다."
+  fi
+
+  local start_lines
+  start_lines="$(log_message_line_count "$project")"
+  boot_manager_window "$project" "$manager_extra_msg" || exit 1
+
+  echo "Manager 온보딩 대기 중..."
+  wait_for_delivered_message "$project" "$start_lines" '\[delivered\] manager → user agent_ready normal "온보딩 완료"' || {
+    echo "Error: Manager 준비 완료 알림을 확인하지 못했다." >&2
+    exit 1
+  }
+  echo "Manager 온보딩 완료 확인"
+
+  close_onboarding_analysis_windows "$project"
+
+  bash "$TOOLS_DIR/cmd.sh" boot "$project"
+  set_project_stage "$project" "active"
+
+  bash "$TOOLS_DIR/message.sh" "$project" orchestrator manager status_update normal \
+    "팀 부팅 완료" \
+    "onboarding handoff가 완료되었다. 활성 에이전트 부팅이 끝났으니 project.md와 handoff 문서를 바탕으로 첫 태스크를 분배해라." \
+    2>/dev/null || true
+
+  echo "=== handoff 완료 ==="
+  echo "tmux attach -t $sess 로 접속하라."
+}
 
 cmd_boot_manager() {
   local project="$1"
   validate_project_name "$project"
   local exec_mode
   exec_mode="$(get_exec_mode "$project")"
-
-  # Preflight 검증
-  bash "$TOOLS_DIR/preflight.sh" "$project" --mode "$exec_mode" || exit 1
-
   local sess
   sess="$(session_name "$project")"
+  local stage
+  stage="$(get_project_stage "$project")"
 
-  echo "=== Manager 부팅 ==="
-
-  # 이미 세션이 있으면 중단
   if tmux has-session -t "$sess" 2>/dev/null; then
+    if [ "$stage" = "onboarding" ]; then
+      echo "Info: onboarding 세션이 이미 존재한다. Manager 부팅으로 이어간다."
+      cmd_handoff "$project"
+      return 0
+    fi
     echo "Error: tmux 세션 '$sess'가 이미 존재한다. 먼저 shutdown하라." >&2
     exit 1
   fi
 
-  # 1. sessions.md 초기화
-  init_sessions_file "$project"
+  bash "$TOOLS_DIR/preflight.sh" "$project" --mode "$exec_mode" || exit 1
 
-  # 2. tmux 세션 + dashboard 먼저 생성 (부팅 과정을 실시간으로 볼 수 있도록)
-  tmux new-session -d -s "$sess" -n "dashboard"
-  # activity로 인한 자동 윈도우 전환 방지
-  tmux set-option -t "$sess" activity-action none
-  tmux set-option -t "$sess" visual-activity off
-  # 상태바 시각적 구분: 윈도우 간 구분자 + 현재 윈도우 강조
-  tmux set-option -t "$sess" window-status-separator "  "
-  tmux set-option -t "$sess" window-status-format " #I:#W "
-  tmux set-option -t "$sess" window-status-current-format " [#I:#W] "
-  tmux set-option -t "$sess" status-style "bg=black,fg=white"
-  tmux set-option -t "$sess" window-status-current-style "bg=blue,fg=white,bold"
-  tmux send-keys -t "${sess}:dashboard" \
-    "env -u NO_COLOR FORCE_COLOR=1 CLICOLOR_FORCE=1 python3 \"$REPO_ROOT/dashboard/dashboard.py\" \"$project\" --interval 3" Enter
+  echo "=== Manager 부팅 ==="
+  ensure_tmux_session_with_dashboard "$project"
+  set_project_stage "$project" "handoff"
 
   echo ""
   echo "╔══════════════════════════════════════════════╗"
@@ -1065,101 +1754,20 @@ cmd_boot_manager() {
   echo ""
   echo "Manager 세션 생성 중..."
 
-  local msg_log="$(project_dir "$project")/logs/message.log"
-  local start_lines=0
-  if [ -f "$msg_log" ]; then
-    start_lines=$(wc -l < "$msg_log")
-  fi
+  local start_lines
+  start_lines="$(log_message_line_count "$project")"
+  boot_manager_window "$project" || exit 1
 
-  # 3. Manager 부팅
-  local manager_backend
-  manager_backend="$(get_manager_backend)"
-  if [ "$manager_backend" = "codex" ]; then
-    boot_codex_agent "manager" "$project" "manager" || {
-      echo "Error: Manager codex 부팅 실패." >&2
-      exit 1
-    }
-  else
-    local model
-    model="$(get_model "manager")"
-    local mgr_tools
-    mgr_tools="$(get_allowed_tools "manager")"
-    local bootstrap_msg
-    bootstrap_msg=$'너는 Whiplash manager 세션의 bootstrap 단계다.\n지금은 session_id만 만들기 위한 초기 호출이다.\n도구를 사용하지 말고, 파일도 읽지 말고, 명령도 실행하지 말고, 한 줄로 READY만 답해라.'
-    local boot_msg
-    boot_msg="$(build_boot_message "manager" "$project")"
-
-    # env -u CLAUDECODE: Claude Code 안에서 호출할 때 중첩 세션 에러 방지
-    local mgr_tools_flag=""
-    [ -n "$mgr_tools" ] && mgr_tools_flag="--allowedTools $mgr_tools"
-    local result
-    result=$(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude -p "$bootstrap_msg" \
-      --model "$model" \
-      --output-format json \
-      --dangerously-skip-permissions $mgr_tools_flag) || {
-      echo "Error: Manager claude -p 실행 실패." >&2
-      exit 1
-    }
-
-    local session_id
-    session_id=$(echo "$result" | jq -r '.session_id' 2>/dev/null) || session_id=""
-
-    if [ -z "$session_id" ] || [ "$session_id" = "null" ]; then
-      echo "Error: Manager session_id 획득 실패." >&2
-      exit 1
-    fi
-
-    # 4. Manager tmux 윈도우 생성 + 투입
-    tmux new-window -d -t "$sess" -n manager
-    local tmux_target="${sess}:manager"
-    local mgr_resume_flag=""
-    [ -n "$mgr_tools" ] && mgr_resume_flag=" --allowedTools $mgr_tools"
-    tmux send-keys -t "$tmux_target" "env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude --resume $session_id --dangerously-skip-permissions${mgr_resume_flag}" Enter
-
-    local boot_pane_pid
-    boot_pane_pid=$(tmux list-panes -t "$tmux_target" -F '#{pane_pid}' 2>/dev/null | head -1)
-    if [ -n "$boot_pane_pid" ]; then
-      local i
-      for i in $(seq 1 10); do
-        pgrep -P "$boot_pane_pid" claude >/dev/null 2>&1 && break
-        sleep 1
-      done
-    fi
-    if [ -z "$boot_pane_pid" ] || ! pgrep -P "$boot_pane_pid" claude >/dev/null 2>&1; then
-      echo "Error: Manager claude --resume 프로세스 시작 실패." >&2
-      exit 1
-    fi
-
-    # 5. sessions.md에 기록 (dashboard가 바로 반영)
-    add_session_row "$project" "manager" "$session_id" "$tmux_target" "$model"
-    python3 "$TOOLS_DIR/log.py" system "$project" orchestrator manager_boot manager --detail session="$session_id" || true
-
-    local prompt_ok=0
-    local attempt
-    for attempt in 1 2 3 4 5; do
-      if tmux_submit_pasted_payload "$tmux_target" "$boot_msg" "manager-boot"; then
-        prompt_ok=1
-        break
-      fi
-      sleep 2
-    done
-    if [ "$prompt_ok" -ne 1 ]; then
-      echo "Error: Manager 온보딩 프롬프트 전달 실패." >&2
-      exit 1
-    fi
-  fi
-
-  # 6. 매니저 온보딩 완료 대기 후 에이전트 부팅
   echo "Manager 온보딩 대기 중..."
-  while ! tail -n +"$((start_lines + 1))" "$msg_log" 2>/dev/null | grep -q '\[delivered\] manager → user agent_ready normal "온보딩 완료"'; do
-    sleep 2
-  done
+  wait_for_delivered_message "$project" "$start_lines" '\[delivered\] manager → user agent_ready normal "온보딩 완료"' || {
+    echo "Error: Manager 준비 완료 알림을 확인하지 못했다." >&2
+    exit 1
+  }
   echo "Manager 온보딩 완료 확인"
 
-  # 7. 나머지 에이전트 부팅 (매니저 대신 orchestrator가 순서 보장)
   bash "$TOOLS_DIR/cmd.sh" boot "$project"
+  set_project_stage "$project" "active"
 
-  # 8. 매니저에게 팀 준비 완료 알림 → 태스크 분배 시작 트리거
   bash "$TOOLS_DIR/message.sh" "$project" orchestrator manager status_update normal \
     "팀 부팅 완료" \
     "모든 에이전트 부팅이 완료되었다. agent_ready 메시지를 확인하고, project.md의 목표를 분석하여 첫 태스크를 분배해라. techniques/task-distribution.md 절차를 따른다." \
@@ -1178,6 +1786,13 @@ cmd_boot() {
   validate_project_name "$project"
   local exec_mode
   exec_mode="$(get_exec_mode "$project")"
+  local stage
+  stage="$(get_project_stage "$project")"
+
+  if [ "$stage" = "onboarding" ]; then
+    echo "Error: ${project}는 onboarding 단계다. 팀 부팅 전에 boot-manager를 먼저 실행해라." >&2
+    exit 1
+  fi
 
   # Preflight 검증
   bash "$TOOLS_DIR/preflight.sh" "$project" --mode "$exec_mode" || exit 1
@@ -1196,6 +1811,7 @@ cmd_boot() {
     echo "기존 tmux 세션 '$sess' 재사용 (boot-manager로 생성됨)"
   else
     tmux new-session -d -s "$sess" -n manager
+    configure_tmux_session_visuals "$sess"
     echo "tmux 세션 '$sess' 생성됨"
   fi
 
@@ -1214,8 +1830,8 @@ cmd_boot() {
       continue
     fi
 
-    if [ "$exec_mode" = "dual" ] && [ "$role" != "monitoring" ]; then
-      # dual 모드: worktree 생성 + claude + codex 양쪽 부팅 (monitoring은 solo)
+    if [ "$exec_mode" = "dual" ] && role_supports_dual "$role"; then
+      # dual 모드: worktree 생성 + claude + codex 양쪽 부팅
       create_worktrees "$project" "$role"
       boot_single_agent "$role" "$project" "" "${role}-claude" || {
         echo "Warning: ${role}-claude 부팅 실패. 건너뜀." >&2
@@ -1234,12 +1850,11 @@ cmd_boot() {
 
   # 5. dashboard 윈도우 생성 (Rich Live TUI) — boot-manager에서 이미 만들었으면 건너뜀
   if ! tmux list-windows -t "$sess" -F '#{window_name}' 2>/dev/null | grep -q '^dashboard$'; then
-    tmux new-window -d -t "$sess" -n "dashboard"
-    tmux send-keys -t "${sess}:dashboard" \
-      "env -u NO_COLOR FORCE_COLOR=1 CLICOLOR_FORCE=1 python3 \"$REPO_ROOT/dashboard/dashboard.py\" \"$project\" --interval 3" Enter
+    ensure_dashboard_window "$project"
     echo "dashboard 윈도우 생성됨"
   else
-    echo "dashboard 윈도우 이미 존재 — 건너뜀"
+    ensure_dashboard_window "$project"
+    echo "dashboard 윈도우 이미 존재 — 재시작"
   fi
 
   # 6. monitor.sh 백그라운드 실행 (자동 재시작 wrapper)
@@ -1263,6 +1878,7 @@ cmd_boot() {
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator monitor_start monitor --detail pid="$monitor_pid" || true
 
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator project_boot_end "$project" || true
+  set_project_stage "$project" "active"
   echo "=== 부팅 완료 ==="
   echo "tmux attach -t $sess 로 세션에 접속하라."
 }
@@ -1686,6 +2302,7 @@ cmd_shutdown() {
   runtime_clear_manager_state "$project" "monitor_pid" || true
   runtime_clear_manager_state "$project" "monitor_heartbeat" || true
   runtime_clear_manager_state "$project" "monitor_nudge_ts" || true
+  clear_project_stage "$project" || true
   runtime_release_manager_lock "$project" || true
 
   # 5. sessions.md 업데이트
@@ -1711,8 +2328,11 @@ cmd_status() {
   sess="$(session_name "$project")"
   local now
   now=$(date +%s)
+  local stage
+  stage="$(get_project_stage "$project")"
 
   echo "=== ${project} 프로젝트 상태 ==="
+  echo "[stage] ${stage}"
 
   # tmux 세션 확인 (idle 시간 포함)
   if tmux has-session -t "$sess" 2>/dev/null; then
@@ -1837,6 +2457,7 @@ fi
 
 if [ $# -lt 2 ]; then
   echo "Usage:" >&2
+  echo "  cmd.sh boot-onboarding {project}" >&2
   echo "  cmd.sh boot-manager   {project}" >&2
   echo "  cmd.sh boot           {project}" >&2
   echo "  cmd.sh dispatch       {role} {task-file} {project}" >&2
@@ -1856,6 +2477,14 @@ command="$1"
 shift
 
 case "$command" in
+  boot-onboarding)
+    [ $# -lt 1 ] && { echo "Usage: cmd.sh boot-onboarding {project}" >&2; exit 1; }
+    cmd_boot_onboarding "$1"
+    ;;
+  handoff)
+    [ $# -lt 1 ] && { echo "Usage: cmd.sh handoff {project}" >&2; exit 1; }
+    cmd_handoff "$1"
+    ;;
   boot-manager)
     [ $# -lt 1 ] && { echo "Usage: cmd.sh boot-manager {project}" >&2; exit 1; }
     cmd_boot_manager "$1"
@@ -1918,7 +2547,7 @@ case "$command" in
     ;;
   *)
     echo "Unknown command: $command" >&2
-    echo "Available: boot-manager, boot, dispatch, dual-dispatch, assign, spawn, kill-agent, shutdown, status, reboot, refresh, merge-worktree, monitor-check, complete, expire-stale" >&2
+    echo "Available: boot-onboarding, boot-manager, boot, dispatch, dual-dispatch, assign, spawn, kill-agent, shutdown, status, reboot, refresh, merge-worktree, monitor-check, complete, expire-stale" >&2
     exit 1
     ;;
 esac

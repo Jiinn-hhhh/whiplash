@@ -47,6 +47,14 @@ Onboarding 에이전트는 Manager 부팅 확인 후 종료한다.
 
 유저가 새 프로젝트를 선택하면, Phase 0("기존 작업물 확인" — "이미 작업중이던 코드나 레포가 있어?")부터 시작한다. 이후 사전 질문(실행 모드) → Phase 1-7 정상 진행.
 
+기본 운영 방식은 다음과 같다.
+
+1. `cmd.sh boot-onboarding {project}`로 onboarding tmux 세션을 띄운다.
+2. onboarding이 분석과 토론을 진행한다.
+3. 준비가 끝나면 onboarding이 내부적으로 `cmd.sh boot-manager {project}`를 실행해 Manager에게 넘긴다.
+
+새 프로젝트라 `projects/{project}/project.md`가 아직 없더라도 `cmd.sh boot-onboarding`이 bootstrap 초안과 기본 디렉토리를 먼저 만든다. 이 초안은 `실행 모드: pending`, `활성 에이전트: 미정` 상태일 수 있으며, onboarding이 사전 질문과 Phase 0-7을 거치며 확정한다.
+
 ### 사전 질문 1: 프레임워크 디버깅
 
 프로젝트 내용에 들어가기 전에 먼저 물어본다.
@@ -71,6 +79,7 @@ Onboarding 에이전트는 Manager 부팅 확인 후 종료한다.
 **참고**: Claude Code를 쓰는 개별 에이전트는 자기 판단으로 Agent Teams를 하위에 활용할 수 있다 (프레임워크 모드가 아닌 개별 도구).
 
 **파일 작업**: 프로젝트 이름 후보를 임시로 정하고 디렉토리 구조와 project.md 초안을 생성한다. (이름은 Phase 1에서 확정 후 변경 가능)
+`boot-onboarding`이 만든 bootstrap 초안이 이미 있으면 그 파일을 덮어쓰지 말고 갱신한다.
 
 ```
 → projects/{name}/ 디렉토리 구조 생성 (디렉토리 생성 목록 참조)
@@ -155,12 +164,14 @@ Phase 0 마지막에, 코드 작업 경로를 확정한다.
 - **보고 채널**: "어디로 받고 싶어?" — reports/ 파일? Slack? 이메일? 대화?
 - **자율 범위**: "어디까지 알아서 하게 할 거야?" — 팀 자율 vs 유저 확인 필요 범위
 - **긴급 알림**: "블로커 생기면 바로 알려줄까, 모아서?" — 즉시 vs 정기 보고
+- **시스템 변경 권한**: `systems-engineer`가 있다면 어떤 환경/행동까지 문서만으로 허용할지 확인한다.
 
 **기술적 전제조건 파악**: 유저가 원하는 운영 방식에 기술적 인프라가 필요하면 반드시 기록한다.
 - 예: Slack 보고 → Slack webhook 설정 필요
 - 예: 이메일 알림 → 이메일 서비스 연동 필요
 - 예: 자동 테스트 결과 보고 → CI/CD 파이프라인 필요
 - 이런 전제조건은 project.md `운영 방식 > 기술적 전제조건`에 기록하고, Manager 인계 시 Developer가 우선 처리하도록 명시한다.
+- `systems-engineer`가 활성인 프로젝트라면 project.md `운영 방식 > 시스템 변경 권한`에도 `team/systems-engineer.md`와 `memory/knowledge/docs/change-authority.md`를 참조한다고 기록한다.
 
 **실행 환경 구체화**: 운영 방식이 합의되면, 프로젝트 유형별로 실현에 필요한 구체적 도구와 설정을 확정한다. 추상적 합의("Slack으로 보고")에서 끝내지 않고, 실행 가능한 수준("#project-alpha 채널, webhook 설정 완료")까지 구체화한다.
 
@@ -191,13 +202,30 @@ Phase 0 마지막에, 코드 작업 경로를 확정한다.
 
 앞선 대화에서 파악한 프로젝트 성격을 바탕으로, 에이전트별 커스터마이징이 필요한지 **스스로 판단**한다. 유저에게 "커스터마이징 할까요?"를 묻지 않는다.
 
+- onboarding 단계에서 보조 에이전트를 띄울 수는 있지만, 이는 **분석 보조**에 한정된다.
+  - 허용 역할: `researcher`, `systems-engineer`
+  - 금지 역할: `developer`, `monitoring`, `manager`
+  - 윈도우 이름은 `onboarding-` 접두어가 필요하다.
+  - 보조 에이전트는 구현/배포/실제 변경 없이 분석, 구조 파악, 문서화까지만 수행한다.
+  - 공식 보고 대상은 `manager`가 아니라 `onboarding`이다. `task_assign`/`task_complete`는 쓰지 않는다.
+
+- **예외: `systems-engineer` 활성 여부는 유저에게 직접 확인한다.**
+  - repo 구조만 보고 확정하지 않는다. 서버/클라우드/배포/runtime의 중요도는 유저의 운영 계획까지 들어야 판단 가능하다.
+  - 온보딩이 먼저 기존 작업물과 대화를 바탕으로 추천안을 만든 뒤, 아래처럼 확인한다.
+  - **질문 문구**: "이 프로젝트에서 서버, 클라우드, 배포, runtime 작업이 얼마나 중요한가? 거의 없음 / 일부 있음 / 핵심임"
+  - **거의 없음**: `systems-engineer` 비활성 기본값
+  - **일부 있음**: `systems-engineer` 포함을 권장하되, 유저 확인 후 결정
+  - **핵심임**: `systems-engineer` 기본 포함 권장
+  - 질문은 설문처럼 던지지 말고, 온보딩이 파악한 근거를 1-2문장으로 먼저 요약한 뒤 확인한다.
 - 프로젝트 유형, 제약사항, 성공 기준 등에서 기본 설정과 다른 초점이 필요하다고 판단되면 `team/{role}.md`를 작성한다.
 - 기본 설정으로 충분하면 건너뛴다.
 - 커스터마이징을 작성한 경우, Phase 7에서 유저에게 함께 보여주고 확인받는다.
-- project.md의 `팀 구성` 섹션에 결과를 기록한다.
+- project.md의 `팀 구성` 섹션에 결과를 기록한다. `systems-engineer`를 제외했다면 그 이유가 `서버/클라우드/배포/runtime 비중이 낮음`인지, 포함했다면 어떤 운영 범위 때문에 필요한지 드러나게 쓴다.
 - `team/{role}.md` 양식은 `common/project-context.md` §7을 따른다.
+- `systems-engineer`를 포함하면 `team/systems-engineer.md`의 `시스템 변경 권한` 표를 작성한다.
+- `systems-engineer`를 포함하면 `memory/knowledge/docs/change-authority.md`도 함께 작성한다. 이 문서에는 실제 수정 가능한 시스템 표면과 정책 근거 초안을 남긴다.
 
-**파일 작업**: 커스터마이징이 필요하면 `team/{role}.md`를 생성한다. project.md의 `팀 구성` 섹션을 기록한다.
+**파일 작업**: 커스터마이징이 필요하면 `team/{role}.md`를 생성한다. `systems-engineer`를 포함하면 `memory/knowledge/docs/change-authority.md`도 함께 작성한다. project.md의 `팀 구성` 섹션을 기록한다.
 
 ### Phase 7: 리뷰 및 확정
 
@@ -209,7 +237,8 @@ Phase 0 마지막에, 코드 작업 경로를 확정한다.
    - 없으면 `general`
    - 새 도메인이 필요하면 유저와 논의 (도메인 생성은 별도 작업)
 3. 유저 확인/수정 후 확정 → project.md에 반영
-4. 실행 모드에 따라 Manager 인계 방식이 다르다
+4. 유저와 최종 리뷰를 마친 뒤 onboarding이 내부적으로 Manager를 부팅한다.
+5. 실행 모드에 따라 Manager 인계 방식이 다르다
 
 #### 부팅 전 검증
 
@@ -217,7 +246,7 @@ Manager 인계 전에 `preflight.sh`가 자동 실행된다 (`cmd.sh boot-manage
 
 #### Manager 인계
 
-Onboarding이 내부적으로 Manager를 tmux 세션에 부팅한다.
+Onboarding이 내부적으로 Manager를 부팅한다.
 
 ```bash
 # Onboarding이 실행 (유저가 실행하지 않음)
@@ -256,10 +285,12 @@ projects/{name}/
     teams/
       research/
       developer/
+      systems-engineer/
   memory/
     manager/
     researcher/
     developer/
+    systems-engineer/
     monitoring/
     onboarding/
     knowledge/

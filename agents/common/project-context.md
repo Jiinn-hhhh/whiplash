@@ -24,6 +24,7 @@
 에이전트 정의 파일(`agents/`)과 도메인 파일(`domains/`)의 경로는 레포 루트 기준이다.
 
 **프로젝트 폴더**: project.md에 `프로젝트 폴더` 경로가 지정되어 있으면, 모든 코드 작업(파일 생성, 수정, 빌드, 테스트 등)은 해당 경로에서 수행한다. 프레임워크 산출물(workspace/, memory/, reports/)과 코드 작업 경로는 별개다.
+기본 규칙상 이 경로의 수정 권한은 Developer와 Systems Engineer에만 있다. 단, 외부 반영은 별도 approval gate를 따른다.
 
 ---
 
@@ -42,15 +43,18 @@ projects/{name}/
     teams/
       research/
       developer/
+      systems-engineer/
   memory/                  # 축적된 상태
     manager/
       sessions.md          #   활성 세션 추적
     researcher/
     developer/
+    systems-engineer/
     monitoring/
     knowledge/
       lessons/
       docs/
+        change-authority.md #   systems-engineer 시스템 수정 가능 표면 / 정책 근거
       discussions/
       meetings/
       archives/
@@ -96,7 +100,7 @@ projects/{name}/
 
 ## 프로젝트 폴더
 - **경로**: {절대 경로 또는 "없음"}
-  - 코드 작업이 있는 프로젝트: 모든 에이전트가 이 경로에서 코드 작업 수행
+  - 코드 작업이 있는 프로젝트: Developer와 Systems Engineer가 이 경로에서 코드/자동화 작업 수행
   - "없음": 코드 작업 없는 프로젝트 (연구, 문서 등)
 
 ## 기존 자원
@@ -124,9 +128,14 @@ projects/{name}/
 - **긴급 알림**: {블로커 발생 시 즉시 / 모아서 보고}
 - **프레임워크 디버깅**: {on | off} (에이전트가 프레임워크 비효율을 feedback/insights.md에 기록할지 여부)
 - **기술적 전제조건**: {운영 방식 실현에 필요한 인프라, 설정 등 또는 "없음"}
+- **시스템 변경 권한**: {기본 금지 / systems-engineer 비활성 / team/systems-engineer.md + memory/knowledge/docs/change-authority.md 참조}
 
 ## 팀 구성
 - **활성 에이전트**: {이 프로젝트에 참여하는 에이전트 목록}
+  - `systems-engineer` 포함 여부는 온보딩 중 유저 확인을 거쳐 결정
+  - 확인 질문 예시: "이 프로젝트에서 서버, 클라우드, 배포, runtime 작업이 얼마나 중요한가? 거의 없음 / 일부 있음 / 핵심임"
+  - 기본 기준: `핵심임`이면 포함 권장, `일부 있음`이면 포함 추천, `거의 없음`이면 제외 가능
+  - `systems-engineer`를 포함하면 `team/systems-engineer.md`와 `memory/knowledge/docs/change-authority.md`를 함께 초안 작성
 - **커스터마이징**: {있으면 team/{role}.md 참조, 없으면 "기본"}
 
 ## 현재 상태
@@ -143,8 +152,9 @@ projects/{name}/
 2. 도메인이 `general`이 아니고 파일이 있으면 `domains/{domain}/context.md`를 읽는다.
 3. 해당 도메인이 `general`이 아니고 자기 역할 파일이 있으면 (`domains/{domain}/{role}.md`) 읽는다.
 4. 해당 프로젝트에 자기 역할 파일이 있으면 (`projects/{name}/team/{role}.md`) 읽는다.
-5. `projects/{name}/memory/knowledge/index.md`를 읽는다.
-6. 이후 workspace/, memory/, reports/ 경로는 해당 프로젝트 기준으로 해석한다.
+5. `systems-engineer`라면 `projects/{name}/memory/knowledge/docs/change-authority.md`를 읽는다. 원격 시스템 변경 전에는 다시 확인한다.
+6. `projects/{name}/memory/knowledge/index.md`를 읽는다.
+7. 이후 workspace/, memory/, reports/ 경로는 해당 프로젝트 기준으로 해석한다.
 
 ---
 
@@ -200,9 +210,45 @@ projects/{name}/team/{role}.md    ← 프로젝트 특화 (프로젝트, 가변)
 (이 프로젝트에서 특별히 피할 것)
 ```
 
+`role`이 `systems-engineer`인 경우에는 아래 섹션을 추가한다.
+
+```markdown
+## 시스템 변경 권한
+- 기본값: 명시되지 않은 원격 시스템 write는 금지
+- 판단 순서:
+  1. 이 표의 환경별 정책 확인
+  2. `memory/knowledge/docs/change-authority.md`의 실제 표면/근거 확인
+  3. 두 문서가 모두 허용할 때만 실행
+
+| 환경 | read | config-change | deploy | service-restart | data-change |
+|------|------|---------------|--------|-----------------|-------------|
+| prod | {허용/금지} | {허용/금지} | {허용/금지} | {허용/금지} | {허용/금지} |
+| staging | {허용/금지} | {허용/금지} | {허용/금지} | {허용/금지} | {허용/금지} |
+| dev | {허용/금지} | {허용/금지} | {허용/금지} | {허용/금지} | {허용/금지} |
+```
+
+### change-authority.md 양식
+
+```markdown
+# 시스템 변경 권한 근거
+
+- **마지막 검증 시각**: YYYY-MM-DD HH:MM TZ
+- **검증 환경**: prod | staging | dev
+- **검증 근거 종류**: AWS API | SSH | systemd | config file | ...
+
+## 목적
+- 실제로 수정 가능한 시스템 표면과 근거를 기록한다.
+- 문서에 없는 원격 시스템 write는 금지다.
+
+## 표면 목록
+| 환경 | 표면 | 허용 행동 | 금지 행동 | 근거 | 마지막 확인 |
+|------|------|-----------|-----------|------|-------------|
+```
+
 ### 작성 규칙
 
 - **온보딩 에이전트가 생성**한다. 유저와의 대화에서 프로젝트별 에이전트 커스터마이징을 도출한 결과물이다.
 - **Manager가 수정 가능**하다. 프로젝트 진행 중 필요 시 유저 합의 하에 업데이트한다.
 - 기본 profile.md나 도메인 파일의 규칙을 **무효화하지 않는다**. 초점과 우선순위를 조정할 뿐이다.
 - project.md의 `팀 구성` 섹션에 개요를 기록하고, 상세는 `team/{role}.md`에 둔다.
+- `systems-engineer`가 활성인 프로젝트라면 `team/systems-engineer.md`와 `memory/knowledge/docs/change-authority.md`를 함께 관리한다.
