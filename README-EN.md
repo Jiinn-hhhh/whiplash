@@ -96,10 +96,10 @@ Manager — user ↔ team hub. Creates agents, distributes tasks, coordinates, r
 
 | Mode | Description | tmux window layout | Cost |
 |------|-------------|-------------------|------|
-| **solo** | Manager runs one agent per role (tmux-based) | `manager`, `developer`, `researcher`, `monitoring` | 1x |
-| **dual** (experimental) | Same task on Claude Code + Codex CLI, Manager drives consensus | `manager`, `developer-claude`, `developer-codex`, `researcher-claude`, `researcher-codex`, `monitoring` | 2x |
+| **solo** | Manager runs one agent per role (tmux-based) | `manager`, `developer`, `researcher`, `monitoring`, optional `systems-engineer` | 1x |
+| **dual** (experimental) | Same task on Claude Code + Codex CLI, Manager drives consensus | `manager`, `developer-claude`, `developer-codex`, `researcher-claude`, `researcher-codex`, `monitoring`, optional `systems-engineer` (solo) | 2x |
 
-- In dual mode, Monitoring always runs solo (no dual needed)
+- In dual mode, Systems Engineer and Monitoring still run solo by default
 - Execution mode is chosen during onboarding and recorded in `project.md`
 
 ---
@@ -107,6 +107,10 @@ Manager — user ↔ team hub. Creates agents, distributes tasks, coordinates, r
 ## Onboarding Process
 
 When a user starts a new project, the Onboarding agent designs it through conversation. Not a survey — it identifies gaps in the user's answers and digs in naturally.
+
+- The default flow starts with `boot-onboarding`; once the design is finalized, onboarding internally runs `boot-manager` and hands off to Manager.
+- If `project.md` does not exist yet, `boot-onboarding` creates bootstrap drafts and the base directory layout first. The draft keeps `execution mode` and `active agents` in a pending state until onboarding finalizes them.
+- During onboarding, helper agents are limited to `researcher` and `systems-engineer`. Spawning `developer`, `monitoring`, or `manager` is intentionally blocked.
 
 <details>
 <summary>Phase 0–7 details</summary>
@@ -120,10 +124,27 @@ When a user starts a new project, the Onboarding agent designs it through conver
 | 3. Constraints | Environment, time, budget, tech limitations | project.md constraints section |
 | 4. Success criteria | Quantitative/qualitative goals | project.md success criteria |
 | 5. Operations | Reporting frequency/channel, autonomy scope, notification verification | project.md operations section |
-| 6. Team customization | Per-agent focus adjustment (if needed) | team/{role}.md |
+| 6. Team customization | Per-agent focus adjustment + decide whether `systems-engineer` is needed | team/{role}.md |
 | 7. Review & finalize | Full review → hand off to Manager | Manager tmux boot |
 
 **Progressive recording**: Each Phase writes to project.md immediately — nothing is deferred to the end.
+
+</details>
+
+<details>
+<summary>Onboarding session</summary>
+
+`cmd.sh boot-onboarding {project}` creates a tmux session with onboarding and dashboard. If the project does not exist yet, it first writes bootstrap drafts for `project.md`, `team/systems-engineer.md`, `memory/knowledge/docs/change-authority.md`, and the base directories, then starts onboarding. In this phase, Onboarding analyzes the existing repo/code, refines the `project.md` draft, proposes the team, decides whether `systems-engineer` should be active, and finally runs `cmd.sh boot-manager {project}` internally once the design is agreed.
+
+When the analysis is large, onboarding may directly spawn these helper agents:
+- `researcher`
+- `systems-engineer`
+
+Constraints:
+- Window names must start with `onboarding-`
+- Only analysis, discussion, and documentation are allowed
+- `task_assign`, `task_complete`, implementation, deployment, and service changes are disallowed
+- Helper agents report to `onboarding`, not to `manager`
 
 </details>
 
@@ -157,30 +178,42 @@ tmux session: whiplash-{project}
   ├─ [3] developer-codex       ← dual mode only
   ├─ [4] researcher(-claude)
   ├─ [5] researcher-codex      ← dual mode only
-  ├─ [6] monitoring
-  └─ [7] researcher-2          ← dynamically spawned (on demand)
+  ├─ [6] systems-engineer      ← active per project
+  ├─ [7] monitoring
+  └─ [8] researcher-2          ← dynamically spawned (on demand)
 ```
 
 <details>
 <summary>Boot flow</summary>
 
 ```
-User ──→ Onboarding ──→ cmd.sh boot-manager ──→ Manager tmux session created
-                                                    │
-                            Manager auto-runs:  cmd.sh boot {project}
-                                                    │
-                            ┌───────────┬───────────┼───────────┐
-                            ↓           ↓           ↓           ↓
-                        dashboard   developer   researcher   monitoring
-                                   (-claude)   (-claude)
-                                   (-codex)    (-codex)     ← dual mode
+User ──→ cmd.sh boot-onboarding ──→ onboarding tmux session
+                                         │
+                                         ├─ onboarding
+                                         ├─ onboarding-research (optional)
+                                         └─ onboarding-systems  (optional)
+                                         │
+                         onboarding internally runs: cmd.sh boot-manager
+                                         │
+                                         ▼
+                                 Manager tmux session created
+                                         │
+                         Manager auto-runs: cmd.sh boot {project}
+                                         │
+                     ┌───────────┬───────────┬───────────────┬───────────┐
+                     ↓           ↓           ↓               ↓           ↓
+                  dashboard   developer   researcher   systems-engineer   monitoring
+                               (-claude)   (-claude)
+                               (-codex)    (-codex)        ← dual mode
 ```
 
-1. Onboarding writes `project.md`, then `cmd.sh boot-manager` to boot Manager
-2. Manager completes onboarding (reads Layer 1 docs), then `cmd.sh boot` to boot team
-3. `preflight.sh` validates dependencies (tmux, jq, python3, codex, etc.)
-4. Each agent: `claude -p` → session_id → tmux window → `claude --resume`
-5. All agents send `agent_ready` → Manager distributes first tasks
+1. `boot-onboarding` creates the onboarding session and dashboard
+2. If the project is new, bootstrap drafts are written first and `project.md` starts in `pending` mode
+3. If needed, onboarding spawns `researcher` / `systems-engineer` analysis helpers
+4. After the final review with the user, onboarding internally runs `cmd.sh boot-manager {project}`
+5. Manager completes onboarding (reads Layer 1 docs), then `cmd.sh boot` to boot the team
+6. `preflight.sh` validates dependencies (tmux, jq, python3, codex, etc.)
+7. All agents send `agent_ready` → Manager distributes first tasks
 
 </details>
 
@@ -337,7 +370,7 @@ Checks:
 - **Codex CLI**: dual mode only. Checks `--dangerously-bypass-approvals-and-sandbox` support
 - **Project structure**: `project.md` exists, all active agents have `profile.md`
 
-Creates `.preflight-ok` marker on first pass to skip package checks on subsequent boots. Claude/Codex auth and project structure are validated every time.
+Creates `.preflight-ok` marker on first pass to skip package checks on subsequent boots. Claude/Codex auth is still validated every time, and project structure validation also runs on every normal boot. The only exception is the internal bootstrap phase of `boot-onboarding`, which temporarily uses `--skip-project-check` while the initial draft project structure is being created.
 
 ---
 

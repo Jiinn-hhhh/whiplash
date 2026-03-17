@@ -37,6 +37,7 @@ _ROLE_ABBR = {
     "manager": "mgr",
     "developer": "dev",
     "researcher": "res",
+    "systems-engineer": "sys",
     "monitoring": "mon",
     "monitor": "mon",
 }
@@ -255,7 +256,7 @@ def parse_project_md(project_dir: str) -> dict[str, str]:
     content = _read_file(os.path.join(project_dir, "project.md"))
     info: dict[str, str] = {
         "name": os.path.basename(os.path.normpath(project_dir)),
-        "mode": "solo",
+        "mode": "pending",
         "domain": "general",
     }
     if not content:
@@ -275,6 +276,8 @@ def parse_project_md(project_dir: str) -> dict[str, str]:
         if key == "mode":
             if "dual" in value.lower():
                 info["mode"] = "dual"
+            elif "pending" in value.lower() or "미정" in value:
+                info["mode"] = "pending"
             else:
                 info["mode"] = "solo"
         elif key == "domain" and value:
@@ -829,8 +832,8 @@ def _render_agents(state: dict) -> Table:
         table.add_row(msg, "", "", "", "", "", "")
         return table
 
-    # 역할 우선순위 정렬: manager → researcher → developer → monitoring
-    _ROLE_ORDER = {"manager": 0, "researcher": 1, "developer": 2, "monitoring": 3}
+    # 역할 우선순위 정렬: manager → systems-engineer → researcher → developer → monitoring
+    _ROLE_ORDER = {"manager": 0, "systems-engineer": 1, "researcher": 2, "developer": 3, "monitoring": 4}
     active_agents.sort(key=lambda a: (
         _ROLE_ORDER.get(a["role"], 99),
         a.get("backend", ""),  # 같은 role 내: claude < codex
@@ -1088,7 +1091,7 @@ _IDLE_FILTER_KR = ["비활성 감지", "재확인 예약", "비활성 재확인"
 _TASK_PATH_RE = re.compile(r'(?:task=|파일=)\S*/?(TASK-\d{3})\S*')
 
 _ROLE_FULL = {
-    "mgr": "manager", "dev": "developer", "res": "researcher",
+    "mgr": "manager", "dev": "developer", "res": "researcher", "sys": "systems-engineer",
     "mon": "monitoring", "orc": "orchestrator",
 }
 

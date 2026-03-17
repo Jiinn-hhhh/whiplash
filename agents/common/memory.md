@@ -16,6 +16,7 @@
 - 항목당 1-2줄 설명 (요약 수준은 [formats.md](formats.md) 참조).
 - 100줄 초과 시 덜 중요한 항목을 제거한다 (파일 자체는 삭제하지 않음).
 - 새 교훈이나 주요 문서 추가 시 index를 업데이트한다.
+- 장기적으로 참조하는 canonical 문서만 올린다. 특히 live 시스템 문서는 표준 파일명 링크를 유지하고, 매 점검 로그를 전부 index에 나열하지 않는다.
 
 ---
 
@@ -50,6 +51,15 @@
 
 - `memory/knowledge/docs/` 폴더에 레퍼런스 문서를 저장한다.
 - 깊이 참고용. 배경 지식(`index.md`)에서 관련 문서를 안내하고, 필요시 가서 읽는다.
+- live 시스템 관련 canonical 문서는 가능하면 고정 파일명을 유지한다.
+  - `live-topology.md`
+  - `deployment-map.md`
+  - `runtime-inventory.md`
+  - `live-code-state.md`
+  - `drift-report.md`
+  - `runbook.md`
+- Systems Engineer가 이 파일들의 실질적 유지 책임을 가진다. Manager는 `index.md`에서 이 문서들의 링크와 1줄 요약을 큐레이션한다.
+- 문서에는 비밀값을 넣지 않는다. 구조, 경로, 이름, 역할, 검증 방법만 기록한다.
 
 ---
 
@@ -84,3 +94,4 @@
 - 의미적으로 중복되는 교훈을 별도로 생성하지 않는다.
 - 아카이브된 교훈을 삭제하지 않는다.
 - 끝난 토론/회의록을 `workspace/shared/`에 방치하지 않는다.
+- live 시스템 문서를 날짜별 파일로 계속 새로 만들며 canonical 파일명을 버리지 않는다.

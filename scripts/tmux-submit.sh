@@ -319,7 +319,15 @@ tmux_submit_pasted_payload() {
 
   # 붙여넣은 내용이 pane 하단에 실제로 보일 때까지 대기한다.
   if ! tmux_submit__wait_for_payload_state "$tmux_target" "$payload" visible 8 0.15; then
-    return 1
+    # Fallback: Claude Code TUI는 멀티라인 페이스트를 "[Pasted text #N +XX lines]"로
+    # 접어서 표시한다. 이 경우 원본 텍스트 매칭이 불가능하므로, Rich TUI에서
+    # [Pasted text 패턴이 보이면 붙여넣기 성공으로 간주한다.
+    local fallback_capture
+    fallback_capture="$(tmux_submit__capture_recent "$tmux_target" 20)"
+    if ! tmux_submit__is_rich_tui_capture "$fallback_capture" || \
+       ! printf '%s\n' "$fallback_capture" | grep -q '\[Pasted text'; then
+      return 1
+    fi
   fi
 
   if ! tmux send-keys -t "$tmux_target" Enter 2>/dev/null; then

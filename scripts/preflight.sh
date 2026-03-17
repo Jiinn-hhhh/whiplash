@@ -1,7 +1,7 @@
 #!/bin/bash
 # preflight.sh -- 부팅 전 환경 검증 + 자동 설치
 #
-# Usage: preflight.sh {project} [--mode solo|dual]
+# Usage: preflight.sh {project} [--mode solo|dual] [--skip-project-check]
 # 종료 코드: 0=통과, 1=실패
 #
 # 동작 원칙:
@@ -20,7 +20,7 @@ MARKER="$REPO_ROOT/.preflight-ok"
 # ── 인자 파싱 ──
 
 if [ $# -lt 1 ]; then
-  echo "Usage: preflight.sh {project} [--mode solo|dual]" >&2
+  echo "Usage: preflight.sh {project} [--mode solo|dual] [--skip-project-check]" >&2
   exit 1
 fi
 
@@ -28,9 +28,11 @@ PROJECT="$1"
 shift
 
 MODE="solo"
+SKIP_PROJECT_CHECK="0"
 while [ $# -gt 0 ]; do
   case "$1" in
     --mode) MODE="${2:-solo}"; shift 2 ;;
+    --skip-project-check) SKIP_PROJECT_CHECK="1"; shift ;;
     *)      shift ;;
   esac
 done
@@ -204,6 +206,10 @@ info "=== Preflight 검증 시작 (project: $PROJECT, mode: $MODE) ==="
 ensure_packages
 check_claude_auth
 check_codex
-check_project
+if [ "$SKIP_PROJECT_CHECK" = "1" ]; then
+  info "프로젝트 구조 검사는 건너뜀 (--skip-project-check)"
+else
+  check_project
+fi
 
 info "=== Preflight 검증 통과 ==="

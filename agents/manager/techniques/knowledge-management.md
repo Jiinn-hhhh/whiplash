@@ -33,6 +33,15 @@
 - 새 교훈 추가 시
 - 교훈 아카이브 시
 - 주요 문서 추가/변경 시
+- Systems Engineer가 `live-topology.md`, `deployment-map.md`, `runtime-inventory.md`, `live-code-state.md`, `drift-report.md`, `runbook.md`를 갱신했을 때
+
+### 운영 문서 큐레이션
+- `memory/knowledge/docs/`의 live 시스템 canonical 문서는 index에 1줄씩 유지한다.
+- 한 줄에는 아래만 남긴다.
+  - 문서명
+  - 무엇을 설명하는지
+  - 마지막 검증 시각 또는 검증 범위
+- 세부 점검 로그까지 index에 올리지 않는다. canonical 문서만 올린다.
 
 ---
 

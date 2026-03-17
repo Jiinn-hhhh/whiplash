@@ -286,8 +286,8 @@ validate_routing() {
     exit 1
   fi
 
-  if [ "$kind" = "agent_ready" ] && [ "$to" != "manager" ] && [ "$to" != "user" ]; then
-    echo "Error: agent_ready는 manager 또는 user에게만 보낼 수 있다." >&2
+  if [ "$kind" = "agent_ready" ] && [ "$to" != "manager" ] && [ "$to" != "user" ] && [ "$to" != "onboarding" ]; then
+    echo "Error: agent_ready는 manager, onboarding 또는 user에게만 보낼 수 있다." >&2
     exit 1
   fi
 
@@ -299,6 +299,12 @@ validate_routing() {
   if [ "$to" != "manager" ] && [ "$to" != "user" ]; then
     case "$kind" in
       task_assign|status_update|need_input|escalation|consensus_request|consensus_response) ;;
+      agent_ready)
+        if [ "$to" != "onboarding" ]; then
+          echo "Error: agent_ready의 peer direct 대상은 onboarding만 허용된다." >&2
+          exit 1
+        fi
+        ;;
       *)
         echo "Error: ${kind}는 peer/worker 대상 직접 전송을 지원하지 않는다." >&2
         exit 1
@@ -420,6 +426,12 @@ mirror_peer_message_to_manager() {
   fi
 
   if [ "$from" = "manager" ]; then
+    return 0
+  fi
+
+  local project_stage
+  project_stage="$(runtime_get_manager_state "$project" "project_stage" "active" 2>/dev/null || echo "active")"
+  if [ "$project_stage" = "onboarding" ]; then
     return 0
   fi
 

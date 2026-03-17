@@ -385,7 +385,7 @@ python3 dashboard/dashboard.py {project} --interval 3
 - **Codex CLI**: dual 모드에서만 확인. `--dangerously-bypass-approvals-and-sandbox` 지원 여부
 - **프로젝트 구조**: `project.md` 존재, 활성 에이전트의 `profile.md` 존재
 
-최초 통과 시 `.preflight-ok` 마커를 생성하여 이후 패키지 검사를 건너뛴다. Claude/Codex 인증과 프로젝트 구조 검증은 매번 실행.
+최초 통과 시 `.preflight-ok` 마커를 생성하여 이후 패키지 검사를 건너뛴다. Claude/Codex 인증은 매번 실행하고, 프로젝트 구조 검증도 기본적으로 매번 실행한다. 단, `boot-onboarding`이 새 프로젝트 bootstrap 초안을 만드는 단계에서는 내부적으로 `--skip-project-check`를 사용해 이 검사를 잠시 건너뛴다.
 
 ---
 

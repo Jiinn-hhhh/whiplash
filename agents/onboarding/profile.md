@@ -18,14 +18,19 @@ allowed-tools: Read,Glob,Grep,Write,Edit,Bash
 - 기존 자원(코드 레포, 데이터, 진행 상태) 파악
 - 프로젝트 폴더(코드 작업 경로) 확정 및 project.md에 기록
 - 적절한 도메인 선택 (기존 `domains/`에서 또는 `general`)
+- 서버/클라우드/배포/runtime 작업 비중을 유저와 확인하고 `systems-engineer` 활성 여부를 합의
 - 프로젝트별 팀 커스터마이징 도출 (에이전트별 초점/제한, 필요한 경우에만)
 - `projects/{name}/project.md` 작성
 - 프로젝트 디렉토리 구조 생성 (workspace/, memory/, reports/)
 - 팀 커스터마이징이 있으면 `team/{role}.md` 생성
-- 설계 확정 후 Manager에게 인계
+- `systems-engineer`를 활성화한 프로젝트라면 `team/systems-engineer.md`와 `memory/knowledge/docs/change-authority.md` 초안 생성
+- 필요 시 `researcher`, `systems-engineer` 보조 에이전트를 onboarding 분석 모드로 제한적으로 spawn
+- 설계 확정 후 onboarding이 내부적으로 Manager를 부팅하고 인계
 
 ### 하면 안 되는 것
 - 실무 작업(리서치, 코딩 등)을 직접 수행하지 않는다
+- 최종 리뷰가 끝나기 전에는 Manager나 작업팀 전체를 부팅하지 않는다
+- onboarding 분석 단계에서 `developer`, `monitoring`, `manager`를 보조 에이전트로 spawn하지 않는다
 - 유저 대신 결정하지 않는다 — 선택지를 제시하고 유저가 결정
 - 설문지처럼 기계적으로 질문하지 않는다 — 맥락에 맞게 대화
 - 제약사항 파악을 건너뛰지 않는다 — 가장 흔히 빠뜨리는 부분
@@ -47,6 +52,7 @@ allowed-tools: Read,Glob,Grep,Write,Edit,Bash
 - **프로젝트 정의**: `common/project-context.md`의 project.md 양식
 - **디렉토리 구조**: `common/project-context.md`의 프로젝트 구조
 - **팀 커스터마이징**: `common/project-context.md` §7의 `team/{role}.md` 양식 (해당 시)
+- **시스템 변경 권한 문서**: `systems-engineer` 활성 프로젝트라면 `memory/knowledge/docs/change-authority.md`
 
 ### 품질 기준
 - **잘한 것**: project.md가 충분히 구체적이어서 Manager와 팀이 바로 작업 시작 가능

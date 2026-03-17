@@ -8,7 +8,7 @@
 
 ### 시점
 
-- 프로덕션 배포 완료 후
+- release handoff 완료 후
 - 장애 해결 후 (장애 분석 보고서에서 도출)
 - 아키텍처 결정 후 (ADR에서 일반화 가능한 교훈)
 - 기술 부채 해결 후
@@ -41,7 +41,7 @@
 1. 새 구현을 시작할 때 `memory/knowledge/lessons/`를 검토한다.
 2. 직접 관련되지 않더라도 구조적으로 유사한 교훈을 탐색한다.
    - 예: 데이터 파이프라인 교훈이 로그 수집 시스템에도 적용 가능한가?
-   - 예: Researcher의 실험 교훈이 인프라 설계에 시사점을 주는가?
+   - 예: Researcher의 실험 교훈이 API/서비스 구조 설계에 시사점을 주는가?
 3. 적용 가능한 교훈을 발견하면 현재 구현에 어떻게 적용할지 기술한다.
 4. 적용 시 `Cite LESSON-NNN` 형식으로 인용한다.
 
@@ -67,7 +67,7 @@
 | 기술 설계서 (ADR 등) | `memory/knowledge/docs/` |
 | 기술 보고서 (장애 분석 등) | `workspace/shared/` 또는 `memory/knowledge/docs/` |
 | 사용자용 보고서/산출물 | `reports/` |
-| Researcher 인프라 관련 | `workspace/shared/` (Researcher 알림) |
+| Systems Engineer 협업 메모 | `workspace/shared/` |
 
 4. 중간 결과, 실험 빌드, 미검증 코드는 `workspace/teams/developer/`에 남긴다.
 
@@ -75,7 +75,7 @@
 
 ## 4. 기술 보고서 작성
 
-장애 분석, 인프라 상태 보고 등을 `common/formats.md`의 보고서(Report) 양식으로 작성한다.
+코드 변경 영향, 장애 분석에서의 애플리케이션 관점 정리 등을 `common/formats.md`의 보고서(Report) 양식으로 작성한다.
 
 ### 장애 분석 보고서 추가 항목
 

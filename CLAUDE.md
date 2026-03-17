@@ -19,7 +19,7 @@
 
 **Whiplash** — AI 에이전트 팀 거버넌스 프레임워크 (한국어). 마크다운 문서로 역할, 절차, 소통 규칙을 정의하면 에이전트가 자율 협업한다.
 
-- **에이전트**: Onboarding → Manager → Developer, Researcher, Monitoring
+- **에이전트**: Onboarding → Manager → Developer, Researcher, Systems Engineer(선택), Monitoring
 - **구조**: `agents/`(정의, immutable) + `domains/`(도메인, immutable) + `scripts/`(인프라 스크립트) + `projects/`(런타임, gitignored)
 - **각 에이전트**: `profile.md`(역할) + `techniques/`(방법론)
 - **실행 모드**: solo(tmux 단일 백엔드) / dual(Claude Code + Codex 이중 실행, 실험적)

@@ -56,4 +56,15 @@
 
 ---
 
+## 역할별 기본 배정 힌트
+
+- `Systems Engineer`: live 구조 파악, AWS/클라우드, 배포 경로, 런타임 드리프트, 변경 영향 분석
+- `Developer`: 앱 코드 구현, 테스트, 인터페이스 변경, 제품 기능 완성
+- `Researcher`: 외부 자료 조사, 비교 분석, 실험/검증
+- `Monitoring`: 정기 점검, 상태 감지, 경고/위험 알림
+
+운영/배포/런타임 관련 태스크는 가능하면 Systems Engineer가 먼저 현재 상태를 검증하고, 그 결과를 바탕으로 Developer 태스크를 분리한다.
+
+---
+
 > 모니터링 운영은 `monitoring-oversight.md` 참조.
