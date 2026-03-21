@@ -1,7 +1,7 @@
 # agents/common — 에이전트 공통 규칙
 
 에이전트 팀 프레임워크에서 **모든 에이전트가 따르는 공통 규칙**을 정의한다.
-개별 에이전트(manager, researcher, developer, systems-engineer 등)는 이 common을 기반으로 자기만의 특화 규칙을 추가한다.
+개별 에이전트(discussion, manager, researcher, developer, systems-engineer 등)는 이 common을 기반으로 자기만의 특화 규칙을 추가한다.
 
 ---
 
@@ -35,6 +35,7 @@ whiplash/
         shared/              #     진행 중인 토론, 회의, 공지
         teams/{team-name}/   #     팀별 내부 작업 공간
       memory/                #   축적된 상태
+        discussion/          #     전략 토론 메모, manager handoff
         manager/             #     sessions.md, assignments.md
         {role}/              #     에이전트 개인 메모
         knowledge/           #     공유 지식
@@ -53,6 +54,7 @@ whiplash/
 - Git tracked = `agents/` + `domains/` + `scripts/` + `dashboard/` + `feedback/`. 런타임 = `projects/`.
 - `pixel-agents/`, `system_develop/` 같은 로컬 실험/보조 폴더가 보여도 프레임워크 핵심 경로는 위 구조가 기준이다.
 - 에이전트 문서의 workspace/, memory/, reports/ 경로는 **현재 프로젝트 기준 상대 경로**로 해석한다.
+- `discussion`, `manager`, `onboarding`은 control-plane 역할이다. 일반적으로 project.md `활성 에이전트`에는 worker/team 역할만 적고, control-plane 역할은 부팅 흐름에서 별도로 올라간다.
 - 상세: [project-context.md](project-context.md), [communication.md](communication.md) §1
 
 ---
@@ -79,6 +81,19 @@ whiplash/
 ### 백엔드 네이티브 기능 적극 활용
 Claude Code의 subagent / TeamCreate / 병렬 태스크와 Codex CLI의 subagent / agent team / delegation / 병렬 태스크처럼 각 백엔드가 제공하는 네이티브 기능을 적극적으로 활용한다. 특정 백엔드에 팀 기능이 있으면 수동 분해보다 우선 검토한다. 프레임워크가 모든 것을 재발명하지 않는다 — 백엔드가 잘하는 것은 백엔드에 맡긴다.
 이 문서들과 역할 문서에서 `서브에이전트`라고 쓰면, 특별한 예외가 없는 한 Claude Code와 Codex CLI의 네이티브 subagent / agent team을 모두 포함하는 표현으로 이해한다.
+- 이 레포는 repo-local native subagent pack을 함께 제공한다:
+  - Claude Code: `.claude/agents/`
+  - Codex CLI: `.codex/agents/`
+- `manager`, `discussion`, `developer`, `researcher`, `systems-engineer`는 비사소한 작업에서 이 pack을 **기본값**으로 활용한다.
+- `manager`는 목표, 제약, 우선순위를 준다. `developer`, `researcher`, `systems-engineer` 같은 execution lead는 어떤 specialist를 어떤 순서로 호출할지 스스로 결정한다.
+- "subagent를 하나도 쓰지 않는 경로"는 trivial 예외일 때만 허용한다. 그렇지 않으면 어떤 specialist를 썼는지 또는 왜 생략했는지 설명할 수 있어야 한다.
+- 역할별 기본 fan-out 규칙은 각 역할의 `techniques/subagent-orchestration.md`에 정의한다.
+
+### 작업 루프 정책
+- backend 실행 모드(`solo | dual`)와 작업 루프(`guided | ralph`)는 별도 축이다.
+- `guided`는 현재 기본 방식이다. 중요한 방향 전환은 user 확인을 거칠 수 있다.
+- `ralph`는 기본적으로 user 승인 없이 계속 진행한다. 다만 user는 언제든 manager/discussion에 개입할 수 있고, 그 입력은 async 업데이트로 흡수된다.
+- `ralph`에서는 blocker, scope 축소, 최종 완료를 user-facing 알림 채널에 남기되, 전체 루프를 멈추지 않는다.
 
 ### 안티패턴 명시
 에이전트 정의 시 "하면 안 되는 것"을 구체적으로 기술한다.

@@ -87,6 +87,23 @@ Onboarding 에이전트는 Manager 부팅 확인 후 종료한다.
 → projects/{name}/memory/knowledge/index.md 초기화
 ```
 
+### 사전 질문 3: 작업 루프 정책
+
+**질문**: "중간중간 사람 확인을 받으며 갈지(guided), 아니면 팀이 알아서 끝까지 밀어붙일지(ralph)?"
+
+- **guided**: 현재 기본 방식. 중요한 방향 전환이나 막힘에서 user 확인을 요청할 수 있다.
+- **ralph**: user 승인 입력을 기다리지 않는다. blocker / scope 축소 / 최종 완료만 알림 채널에 남기고 계속 진행한다. user는 manager/discussion에 언제든 개입할 수 있지만, 기본 동작은 async 흡수다.
+
+`ralph`를 고르면 아래 두 항목을 onboarding 중 반드시 user가 직접 작성/선택하게 한다.
+
+1. **랄프 완료 기준**
+   - "어떤 상태가 되면 이번 프로젝트/사이클이 완료라고 볼지"를 user가 직접 적는다.
+2. **랄프 종료 방식**
+   - `stop-on-criteria`: 위 완료 기준을 만족하면 종료
+   - `continue-until-no-improvement`: 완료 기준을 만족한 뒤에도 개선을 계속하고, 팀이 보수적으로 더 이상 의미 있는 개선이 어렵다고 판단할 때만 종료
+
+**파일 작업**: project.md `운영 방식`에 `작업 루프`, `랄프 완료 기준`, `랄프 종료 방식`을 기록한다.
+
 ### Phase 0: 기존 작업물 확인
 
 대화의 맨 처음에 유저에게 이미 진행 중인 외부 작업물이 있는지 물어본다.
@@ -224,6 +241,10 @@ Phase 0 마지막에, 코드 작업 경로를 확정한다.
 - `team/{role}.md` 양식은 `common/project-context.md` §7을 따른다.
 - `systems-engineer`를 포함하면 `team/systems-engineer.md`의 `시스템 변경 권한` 표를 작성한다.
 - `systems-engineer`를 포함하면 `memory/knowledge/docs/change-authority.md`도 함께 작성한다. 이 문서에는 실제 수정 가능한 시스템 표면과 정책 근거 초안을 남긴다.
+- `작업 루프 = ralph`이고 `systems-engineer`를 포함하면 한 질문을 더 한다.
+  - **질문 문구**: "랄프 루프에서 systems-engineer가 문서에 적힌 원격 변경까지 자율로 진행해도 될까, 아니면 local/read 수준까지만 맡길까?"
+  - 답변 결과를 `team/systems-engineer.md`와 `memory/knowledge/docs/change-authority.md`에 함께 반영한다.
+  - 온보딩이 대신 판단하지 않는다. project-by-project로 유저가 정한다.
 
 **파일 작업**: 커스터마이징이 필요하면 `team/{role}.md`를 생성한다. `systems-engineer`를 포함하면 `memory/knowledge/docs/change-authority.md`도 함께 작성한다. project.md의 `팀 구성` 섹션을 기록한다.
 

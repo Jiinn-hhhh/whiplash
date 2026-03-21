@@ -96,6 +96,7 @@ ensure_onboarding_project_layout() {
     "$base/workspace/teams/research" \
     "$base/workspace/teams/developer" \
     "$base/workspace/teams/systems-engineer" \
+    "$base/memory/discussion" \
     "$base/memory/manager" \
     "$base/memory/researcher" \
     "$base/memory/developer" \
@@ -133,6 +134,7 @@ write_onboarding_systems_engineer_team_md() {
 
 ## 시스템 변경 권한
 - 기본값: 명시되지 않은 원격 시스템 \`write/apply/restart/deploy/data change\`는 금지
+- Ralph 자율 실행: 미정 (온보딩 시 프로젝트별로 확정)
 - 판단 순서:
   1. 이 표의 환경별 정책 확인
   2. \`memory/knowledge/docs/change-authority.md\`의 실제 표면/근거 확인
@@ -158,6 +160,7 @@ write_onboarding_change_authority_md() {
 - **마지막 검증 시각**: 미정
 - **검증 환경**: 미정
 - **검증 근거 종류**: 미정
+- **Ralph 자율 권한**: 미정
 
 ## 목적
 - Systems Engineer가 실제로 수정 가능한 시스템 표면과 근거를 기록한다.
@@ -165,11 +168,11 @@ write_onboarding_change_authority_md() {
 - 애매하거나 새 변경이 필요하면 Manager가 사용자 합의를 받아 이 문서를 갱신한다.
 
 ## 표면 목록
-| 환경 | 표면 | 허용 행동 | 금지 행동 | 근거 | 마지막 확인 |
-|------|------|-----------|-----------|------|-------------|
-| prod | 미정 | 없음 | 모든 write | 온보딩 전 | 미정 |
-| staging | 미정 | 없음 | 모든 write | 온보딩 전 | 미정 |
-| dev | 미정 | 없음 | 모든 write | 온보딩 전 | 미정 |
+| 환경 | 표면 | 허용 행동 | Ralph 자율 | 금지 행동 | 근거 | 마지막 확인 |
+|------|------|-----------|------------|-----------|------|-------------|
+| prod | 미정 | 없음 | 미정 | 모든 write | 온보딩 전 | 미정 |
+| staging | 미정 | 없음 | 미정 | 모든 write | 온보딩 전 | 미정 |
+| dev | 미정 | 없음 | 미정 | 모든 write | 온보딩 전 | 미정 |
 EOF
 }
 
@@ -212,6 +215,9 @@ write_onboarding_bootstrap_project_md() {
 
 ## 운영 방식
 - **실행 모드**: pending
+- **작업 루프**: pending
+- **랄프 완료 기준**: 미정
+- **랄프 종료 방식**: 미정
 - **보고 빈도**: 미정
 - **보고 채널**: 미정
 - **자율 범위**: 미정
@@ -222,6 +228,7 @@ write_onboarding_bootstrap_project_md() {
 
 ## 팀 구성
 - **활성 에이전트**: 미정
+  - `manager`, `discussion`은 control-plane 역할이라 bootstrap 이후 자동 부팅된다.
 - **커스터마이징**: 기본
 
 ## 현재 상태
@@ -334,6 +341,22 @@ role_uses_dual_worktree() {
   esac
 }
 
+role_uses_ralph_worktree() {
+  local role="$1"
+  case "$role" in
+    developer|systems-engineer) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+role_supports_native_subagents() {
+  local role="$1"
+  case "$role" in
+    manager|discussion|developer|researcher|systems-engineer) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 agent_env_script_path() {
   local project="$1" agent_id="$2"
   printf '%s/runtime/agent-env/%s.sh\n' "$(project_dir "$project")" "$agent_id"
@@ -348,6 +371,9 @@ write_agent_env_script() {
   mkdir -p "$(dirname "$script_path")"
   {
     printf 'export PATH=%q\n' "$base_path"
+    printf 'export WHIPLASH_REPO_ROOT=%q\n' "$REPO_ROOT"
+    printf 'export WHIPLASH_NATIVE_CLAUDE_AGENTS=%q\n' "${REPO_ROOT}/.claude/agents"
+    printf 'export WHIPLASH_NATIVE_CODEX_AGENTS=%q\n' "${REPO_ROOT}/.codex/agents"
   } > "$script_path"
   chmod 600 "$script_path"
 
@@ -357,7 +383,16 @@ write_agent_env_script() {
 run_with_agent_env() {
   local project="$1" role="$2" agent_id="$3"
   shift 3
-  "$@"
+  local script_path
+  script_path="$(agent_env_script_path "$project" "$agent_id")"
+  (
+    if [ -f "$script_path" ]; then
+      # shellcheck source=/dev/null
+      . "$script_path"
+    fi
+    cd "$REPO_ROOT"
+    "$@"
+  )
 }
 
 get_manager_backend() {
@@ -374,15 +409,18 @@ get_codex_model() {
     return
   fi
 
-  local cfg="${HOME}/.codex/config.toml"
-  if [ -f "$cfg" ]; then
+  local cfg
+  for cfg in "${REPO_ROOT}/.codex/config.toml" "${HOME}/.codex/config.toml"; do
+    if [ ! -f "$cfg" ]; then
+      continue
+    fi
     local model
     model=$(sed -n 's/^model = "\(.*\)"/\1/p' "$cfg" | head -1)
     if [ -n "$model" ]; then
       echo "$model"
       return
     fi
-  fi
+  done
 
   echo "codex"
 }
@@ -468,6 +506,46 @@ get_exec_mode() {
     | tr -d '*|' \
     | tr '[:upper:]' '[:lower:]')
   if [ "$mode" = "dual" ]; then echo "dual"; else echo "solo"; fi
+}
+
+# project.md에서 작업 루프 추출 (guided | ralph, 기본값 guided)
+get_loop_mode() {
+  local project="$1"
+  local project_md="$(project_dir "$project")/project.md"
+  local mode
+  mode=$({ grep -i "작업 루프" "$project_md" 2>/dev/null || true; } \
+    | head -1 \
+    | sed 's/.*: *//' \
+    | sed 's/ *(.*)//' \
+    | tr -d '[:space:]' \
+    | tr -d '*|' \
+    | tr '[:upper:]' '[:lower:]')
+  if [ "$mode" = "ralph" ]; then
+    echo "ralph"
+  else
+    echo "guided"
+  fi
+}
+
+get_ralph_completion_mode() {
+  local project="$1"
+  local project_md="$(project_dir "$project")/project.md"
+  local mode
+  mode=$({ grep -i "랄프 종료 방식" "$project_md" 2>/dev/null || true; } \
+    | head -1 \
+    | sed 's/.*: *//' \
+    | sed 's/ *(.*)//' \
+    | tr -d '[:space:]' \
+    | tr -d '*|' \
+    | tr '[:upper:]' '[:lower:]')
+  case "$mode" in
+    continue-until-no-improvement|continue_until_no_improvement|open-ended|open_ended)
+      echo "continue-until-no-improvement"
+      ;;
+    *)
+      echo "stop-on-criteria"
+      ;;
+  esac
 }
 
 get_project_stage() {
@@ -719,6 +797,66 @@ remove_agent_worktree() {
   git -C "$code_repo" branch -D "$branch" 2>/dev/null || true
 }
 
+ralph_worktree_agent_id() {
+  local agent_id="$1"
+  if [[ "$agent_id" == *-ralph ]]; then
+    echo "$agent_id"
+  else
+    echo "${agent_id}-ralph"
+  fi
+}
+
+create_ralph_worktree() {
+  local project="$1"
+  local agent_id="$2"
+  local code_repo
+  code_repo="$(get_code_repo "$project")"
+  if [ -z "$code_repo" ] || [ ! -d "$code_repo" ]; then
+    return 0
+  fi
+
+  local wt_agent_id wt_dir wt_path branch
+  wt_agent_id="$(ralph_worktree_agent_id "$agent_id")"
+  wt_dir="${code_repo}/.worktrees"
+  wt_path="${wt_dir}/${wt_agent_id}"
+  branch="ralph/${wt_agent_id}"
+  mkdir -p "$wt_dir"
+
+  if [ -d "$wt_path" ]; then
+    sync_worktree_support_paths "$code_repo" "$wt_path"
+    return 0
+  fi
+
+  if ! git -C "$code_repo" worktree add "$wt_path" -b "$branch" 2>&1; then
+    echo "Warning: ralph worktree 생성 실패: ${wt_path}" >&2
+    return 1
+  fi
+
+  sync_worktree_support_paths "$code_repo" "$wt_path"
+  return 0
+}
+
+remove_ralph_worktree() {
+  local project="$1"
+  local agent_id="$2"
+  local code_repo
+  code_repo="$(get_code_repo "$project")"
+  if [ -z "$code_repo" ] || [ ! -d "$code_repo" ]; then
+    return 0
+  fi
+
+  local wt_agent_id wt_dir wt_path branch
+  wt_agent_id="$(ralph_worktree_agent_id "$agent_id")"
+  wt_dir="${code_repo}/.worktrees"
+  wt_path="${wt_dir}/${wt_agent_id}"
+  branch="ralph/${wt_agent_id}"
+
+  if [ -d "$wt_path" ]; then
+    git -C "$code_repo" worktree remove "$wt_path" --force 2>/dev/null || true
+  fi
+  git -C "$code_repo" branch -D "$branch" 2>/dev/null || true
+}
+
 # 부팅 메시지 생성
 build_boot_message() {
   local role="$1"
@@ -735,8 +873,16 @@ build_boot_message() {
   local layer3_domain_line
   local need_input_action
   local mutation_safety_note
+  local native_subagent_note=""
+  local loop_mode
+  local ralph_completion_mode
+  local loop_mode_note=""
+  local user_notice_cmd="bash \"$TOOLS_DIR/user-notify.sh\""
 
-  if [ -z "$ready_target" ] && { [ "$role" = "manager" ] || [ "$role" = "onboarding" ]; }; then
+  loop_mode="$(get_loop_mode "$project")"
+  ralph_completion_mode="$(get_ralph_completion_mode "$project")"
+
+  if [ -z "$ready_target" ] && { [ "$role" = "manager" ] || [ "$role" = "onboarding" ] || [ "$role" = "discussion" ]; }; then
     ready_target="user"
   elif [ -z "$ready_target" ]; then
     ready_target="manager"
@@ -755,20 +901,148 @@ build_boot_message() {
     need_input_action="- need_input: 응답 필요. 특히 monitor의 \"plan mode 판단 필요\" 알림을 받으면 해당 agent pane 최근 출력과 task/report 맥락을 읽고, 승인 대기인지 단순 설계 단계인지 판단해 지시 또는 승인 여부를 결정"
   fi
 
+  if role_supports_native_subagents "$role"; then
+    native_subagent_note="$(cat <<BOOTRULES
+13. 이 레포에는 repo-local native subagent pack이 있다:
+    - Claude Code: ${REPO_ROOT}/.claude/agents/
+    - Codex CLI: ${REPO_ROOT}/.codex/agents/
+    - 비사소한 작업은 agents/${role}/techniques/subagent-orchestration.md 를 초기에 읽고, 기본적으로 최소 1개 이상 specialist를 먼저 호출해라.
+    - 복잡한 작업은 2-way 이상 병렬 fan-out을 기본값으로 삼아라.
+    - execution lead라면 어떤 specialist를 부를지 네가 판단한다. manager는 outcome/제약을 주고, 내부 fan-out 조합은 세세히 지시하지 않는다.
+    - 최종 권한과 공식 산출물 책임은 항상 너에게 있다. subagent 결과를 그대로 최종본으로 내지 마라.
+BOOTRULES
+)"
+  else
+    native_subagent_note="$(cat <<BOOTRULES
+13. Claude Code/Codex CLI가 제공하는 네이티브 subagent / agent team / parallel 기능은 필요 시 활용할 수 있다.
+    단, 이 역할의 기본 책임과 권한 경계를 우선한다.
+BOOTRULES
+)"
+  fi
+
+  if [ "$role" = "manager" ] && [ "$loop_mode" = "ralph" ]; then
+    loop_mode_note="$(cat <<BOOTRULES
+[Ralph loop 규칙]
+- 현재 프로젝트의 작업 루프는 ralph 다.
+- user 승인/확인 입력을 기다리며 작업을 멈추지 마라.
+- manager → user need_input / escalation은 금지다. 대신 ${user_notice_cmd} ${project} "제목" "내용" [level] 로 알리고 계속 진행해라.
+- 블로커, scope 축소, 최종 완료는 user_notice로 남겨라.
+- discussion 또는 user 개입이 와도 전체 루프를 pause 하지 말고 activity/handoff를 반영한 뒤 해당 레인만 재계획해라.
+- 종료 방식: ${ralph_completion_mode}. stop-on-criteria면 project.md의 랄프 완료 기준을 만족할 때 끝내고, continue-until-no-improvement면 완료 기준 충족 후에도 개선 loop를 계속 돌려라.
+BOOTRULES
+)"
+  elif [ "$loop_mode" = "ralph" ]; then
+    loop_mode_note="$(cat <<BOOTRULES
+[Ralph loop 규칙]
+- 현재 프로젝트의 작업 루프는 ralph 다.
+- user 확인을 기다리며 멈추지 마라. 필요한 판단은 manager에게 올리고, user-facing 알림은 manager가 user_notice로 처리한다.
+- 블로커를 만나면 manager에게 이유와 fallback/options를 짧게 알리고, 가능한 대체 경로로 계속 진행해라.
+- discussion이나 user의 새 방향 입력은 pause 신호가 아니라 async 업데이트다. manager의 새 지시가 오면 그 방향으로 흡수해라.
+- 종료는 manager가 project.md의 랄프 정책을 만족했다고 판단할 때만 선언한다.
+BOOTRULES
+)"
+  fi
+
+  if [ "$role" = "discussion" ]; then
+    local discussion_layer2_domain_line discussion_layer3_domain_line
+    if [ "$domain" = "general" ]; then
+      discussion_layer2_domain_line="8. 이 프로젝트 도메인은 general이다. 추가 domain context는 없다."
+      discussion_layer3_domain_line="9. general 도메인이므로 role-specific domain 파일도 없다."
+    else
+      discussion_layer2_domain_line="8. (파일이 있으면) domains/${domain}/context.md 읽기"
+      discussion_layer3_domain_line="9. (파일이 있으면) domains/${domain}/discussion.md"
+    fi
+
+    cat << BOOTMSG
+너는 discussion 에이전트다.
+레포 루트: ${REPO_ROOT}
+현재 프로젝트: projects/${project}/
+주의: worktree나 다른 디렉토리로 이동한 뒤에도 whiplash 문서/스크립트는 위 레포 루트 기준 절대경로로 다뤄라.
+
+아래 온보딩 절차를 순서대로 따라라 (Progressive Disclosure — 필요한 것만 필요한 시점에):
+
+[Layer 1 — 필수, 지금 즉시 읽기]
+1. agents/common/README.md 읽기
+2. agents/discussion/profile.md 읽기
+3. projects/${project}/project.md 읽기
+
+[Layer 2 — 전략 대화 시작 시 읽기]
+4. memory/manager/activity.md 읽기 (있으면 최근 판단과 변경 이유 확인)
+5. memory/onboarding/handoff.md 읽기 (있으면 초기 설계 맥락 확인)
+6. memory/knowledge/index.md 읽기 (지도만, 전체 읽기 아님)
+7. 해당 대화에 필요한 agents/discussion/techniques/*.md 읽기
+${discussion_layer2_domain_line}
+
+[Layer 3 — 필요할 때만 읽기]
+8. agents/common/project-context.md (경로 해석 등 필요 시)
+${discussion_layer3_domain_line}
+10. (해당 시) projects/${project}/team/discussion.md
+11. 필요하면 memory/manager/sessions.md, memory/manager/assignments.md, workspace/shared/announcements/ 를 읽어라.
+    단, "지금 누가 뭘 하고 있는지"의 공식 source of truth는 manager다.
+
+12. discussion의 기본 산출물:
+    - ongoing decision note: memory/discussion/decision-notes.md
+    - 실행 변경 handoff: memory/discussion/handoff.md
+    - handoff는 유저와 합의되어 실행에 반영되어야 하는 경우에만 갱신한다.
+
+13. 라우팅 규칙:
+    - 전략, 설계, 요구사항, 우선순위, 코드 방향 토론은 네가 담당한다.
+    - 현재 진행 상황, 누가 작업 중인지, blocker, idle 상태, runtime health는 manager가 담당한다.
+    - 상태 질문을 받으면 manager에게 안내하고, 설계 질문을 받으면 스스로 끝까지 토론해라.
+
+14. 권한과 금지:
+    - 직접 task_assign, task_complete, reboot, refresh, spawn, merge-worktree, dispatch를 실행하지 마라.
+    - developer, researcher, systems-engineer에게 직접 실행 지시하지 마라.
+    - 코드 구현이나 리서치 실무를 직접 수행하지 마라.
+    - 공식 실행 변경은 handoff 문서로 정리하고 manager에게 status_update로 알려라.
+
+15. manager handoff 알림 예시:
+    ${message_cmd} ${project} ${agent_id} manager status_update normal "discussion handoff 준비" "memory/discussion/handoff.md를 읽고 실행 계획에 반영해라"
+
+16. handoff 작성 규칙:
+    - 유저와 합의된 내용만 handoff로 승격해라.
+    - handoff 알림이 전달되려면 User approved: yes, Why this change, Scope impact, Manager next action 필드가 모두 있어야 한다.
+    - 목표, 변경 이유, 영향 범위, manager가 바로 실행에 옮겨야 할 다음 액션을 짧고 명확하게 적어라.
+    - 실행 변경이 없으면 decision note만 갱신하고 handoff는 만들지 마라.
+
+17. repo-local native subagent pack:
+    - Claude Code: ${REPO_ROOT}/.claude/agents/
+    - Codex CLI: ${REPO_ROOT}/.codex/agents/
+    - 비사소한 전략 토론은 agents/discussion/techniques/subagent-orchestration.md 를 초기에 읽고, 관련 specialist를 먼저 호출해라.
+    - discussion은 전략 토론에 필요한 aide를 스스로 고른다. manager가 discussion 내부 specialist 조합을 세세히 지정하지 않는다.
+    - 최종 추천안과 handoff 책임은 항상 너에게 있다.
+
+${loop_mode_note}
+${extra}
+온보딩이 끝나면 준비 완료를 알림으로 보고해라:
+${message_cmd} ${project} ${agent_id} ${ready_target} agent_ready normal "온보딩 완료" "${agent_id} 에이전트 준비 완료"
+BOOTMSG
+
+    if [ -n "$pending_task" ]; then
+      cat << TASKMSG
+
+[재부팅 후 태스크 복구]
+이전 세션에서 중단된 태스크가 있다: ${pending_task}
+해당 파일을 읽고 작업을 이어서 진행해라.
+TASKMSG
+    fi
+    return 0
+  fi
+
   if [ "$role" = "systems-engineer" ]; then
     mutation_safety_note="$(cat <<BOOTRULES
-14. 외부 반영 안전 규칙:
+15. 외부 반영 안전 규칙:
     - 로컬 파일 수정, 테스트, 빌드, 로컬 git commit은 가능하다.
     - 원격 시스템 변경 전에는 projects/${project}/team/systems-engineer.md 와 projects/${project}/memory/knowledge/docs/change-authority.md 를 다시 읽어라.
-    - 문서에 없는 변경이거나 애매하면 manager에게 escalation하고, Manager가 사용자 합의 후 문서를 갱신하게 해라.
+    - 문서에 없는 변경이거나 애매하면 manager에게 escalation하고, manager가 프로젝트의 현재 loop 정책에 맞게 판단하게 해라.
 BOOTRULES
 )"
   else
     mutation_safety_note="$(cat <<BOOTRULES
-14. 외부 반영 안전 규칙:
+15. 외부 반영 안전 규칙:
     - 로컬 파일 수정, 테스트, 빌드, 로컬 git commit은 가능하다.
     - 외부 반영이 실제로 필요한 변경은 프로젝트 문서와 현재 지시를 먼저 확인해라.
-    - 범위가 애매하면 manager 또는 user에게 확인을 요청해라.
+    - 범위가 애매하면 manager에게 확인을 요청해라. user 직접 승인은 manager가 판단해 처리한다.
 BOOTRULES
 )"
   fi
@@ -826,24 +1100,29 @@ ${layer3_domain_line}
     종류별 행동:
     - task_complete: 태스크 결과 확인 후 다음 단계
     - status_update: 참고
-    ${need_input_action}
+${need_input_action}
     - escalation: 긴급 처리
     - agent_ready: 에이전트 준비 확인
     - reboot_notice: 에이전트 복구 상태 확인
     - consensus_request: 비교 문서를 읽고 consensus_response로 답변
 
-13. Claude Code/Codex CLI가 제공하는 네이티브 subagent / agent team / parallel 기능을 적극 활용하라.
-    단, 외부에 공유하는 공식 결과는 반드시 네가 직접 검토·정리한 뒤 보고해라.
+${native_subagent_note}
+${loop_mode_note}
 
 ${mutation_safety_note}
 ${extra}
 $(
   # 듀얼 모드 워크트리 경로 안내
   _exec_mode="$(get_exec_mode "$project")"
+  _loop_mode="$(get_loop_mode "$project")"
   _code_repo="$(get_code_repo "$project")"
   if [ "$_exec_mode" = "dual" ] && [ -n "$_code_repo" ] && { [[ "$agent_id" == *-claude ]] || [[ "$agent_id" == *-codex ]]; }; then
     echo "작업 디렉토리: ${_code_repo}/.worktrees/${agent_id}/"
     echo "주의: 반드시 이 디렉토리 안에서만 코드를 수정하라. 메인 레포를 직접 수정하지 마라."
+  elif [ "$_loop_mode" = "ralph" ] && [ -n "$_code_repo" ] && role_uses_ralph_worktree "$role"; then
+    _ralph_agent_id="$(ralph_worktree_agent_id "$agent_id")"
+    echo "작업 디렉토리: ${_code_repo}/.worktrees/${_ralph_agent_id}/"
+    echo "주의: ralph 루프에서는 이 worktree 상태를 기준으로 이어서 작업한다. 메인 레포 대신 이 경로를 우선 사용해라."
   fi
 )
 온보딩이 끝나면 준비 완료를 알림으로 보고해라:
@@ -892,9 +1171,9 @@ record_assignment() {
 |----------|-----------|----------|------|
 HEADER
   fi
-  # 기존 active → completed
+  # 기존 active → superseded (재계획/교체를 completed와 구분)
   if grep -q "| ${agent} |.*| active |" "$af" 2>/dev/null; then
-    sed_inplace "s/| ${agent} |\(.*\)| active |/| ${agent} |\1| completed |/" "$af"
+    sed_inplace "s/| ${agent} |\(.*\)| active |/| ${agent} |\1| superseded |/" "$af"
   fi
   echo "| ${agent} | ${task_file} | $(date '+%Y-%m-%d %H:%M') | active |" >> "$af"
 }
@@ -1248,7 +1527,7 @@ boot_single_agent() {
   tmux new-window -d -t "$sess" -n "$window_name"
   local resume_tools_flag=""
   [ -n "$tools" ] && resume_tools_flag=" --allowedTools $tools"
-  tmux send-keys -t "$tmux_target" ". $(printf '%q' "$agent_env_script") && env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude --resume $session_id --dangerously-skip-permissions${resume_tools_flag}" Enter
+  tmux send-keys -t "$tmux_target" "cd $(printf '%q' "$REPO_ROOT") && . $(printf '%q' "$agent_env_script") && env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude --resume $session_id --dangerously-skip-permissions${resume_tools_flag}" Enter
 
   # 부팅 확인: claude 프로세스 시작 대기 (최대 10초)
   local boot_pane_pid
@@ -1421,7 +1700,7 @@ boot_manager_window() {
     tmux_target="$(session_name "$project"):manager"
     mgr_resume_flag=""
     [ -n "$mgr_tools" ] && mgr_resume_flag=" --allowedTools $mgr_tools"
-    tmux send-keys -t "$tmux_target" ". $(printf '%q' "$manager_env_script") && env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude --resume $session_id --dangerously-skip-permissions${mgr_resume_flag}" Enter
+    tmux send-keys -t "$tmux_target" "cd $(printf '%q' "$REPO_ROOT") && . $(printf '%q' "$manager_env_script") && env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude --resume $session_id --dangerously-skip-permissions${mgr_resume_flag}" Enter
 
     boot_pane_pid=$(tmux list-panes -t "$tmux_target" -F '#{pane_pid}' 2>/dev/null | head -1)
     if [ -n "$boot_pane_pid" ]; then
@@ -1729,6 +2008,8 @@ cmd_boot_manager() {
   sess="$(session_name "$project")"
   local stage
   stage="$(get_project_stage "$project")"
+  local previous_stage="$stage"
+  local created_session=0
 
   if tmux has-session -t "$sess" 2>/dev/null; then
     if [ "$stage" = "onboarding" ]; then
@@ -1744,6 +2025,9 @@ cmd_boot_manager() {
 
   echo "=== Manager 부팅 ==="
   ensure_tmux_session_with_dashboard "$project"
+  if tmux has-session -t "$sess" 2>/dev/null; then
+    created_session=1
+  fi
   set_project_stage "$project" "handoff"
 
   echo ""
@@ -1756,7 +2040,13 @@ cmd_boot_manager() {
 
   local start_lines
   start_lines="$(log_message_line_count "$project")"
-  boot_manager_window "$project" || exit 1
+  boot_manager_window "$project" || {
+    set_project_stage "$project" "$previous_stage"
+    if [ "$created_session" -eq 1 ]; then
+      tmux kill-session -t "$sess" 2>/dev/null || true
+    fi
+    exit 1
+  }
 
   echo "Manager 온보딩 대기 중..."
   wait_for_delivered_message "$project" "$start_lines" '\[delivered\] manager → user agent_ready normal "온보딩 완료"' || {
@@ -1786,6 +2076,8 @@ cmd_boot() {
   validate_project_name "$project"
   local exec_mode
   exec_mode="$(get_exec_mode "$project")"
+  local loop_mode
+  loop_mode="$(get_loop_mode "$project")"
   local stage
   stage="$(get_project_stage "$project")"
 
@@ -1800,8 +2092,8 @@ cmd_boot() {
   local sess
   sess="$(session_name "$project")"
 
-  echo "=== ${project} 프로젝트 부팅 (mode: ${exec_mode}) ==="
-  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator project_boot_start "$project" --detail mode="$exec_mode" || true
+  echo "=== ${project} 프로젝트 부팅 (mode: ${exec_mode}, loop: ${loop_mode}) ==="
+  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator project_boot_start "$project" --detail mode="$exec_mode" loop="$loop_mode" || true
 
   # 1. sessions.md 초기화 (멱등 — boot-manager에서 이미 생성했으면 건너뜀)
   init_sessions_file "$project"
@@ -1810,8 +2102,10 @@ cmd_boot() {
   if tmux has-session -t "$sess" 2>/dev/null; then
     echo "기존 tmux 세션 '$sess' 재사용 (boot-manager로 생성됨)"
   else
-    tmux new-session -d -s "$sess" -n manager
-    configure_tmux_session_visuals "$sess"
+    ensure_tmux_session_with_dashboard "$project"
+    if ! tmux list-windows -t "$sess" -F '#{window_name}' 2>/dev/null | grep -q '^manager$'; then
+      tmux new-window -d -t "$sess" -n manager
+    fi
     echo "tmux 세션 '$sess' 생성됨"
   fi
 
@@ -1824,9 +2118,15 @@ cmd_boot() {
     exit 1
   fi
 
+  local discussion_backend
+  discussion_backend="$(get_manager_backend)"
+  boot_agent_with_backend "discussion" "$project" "discussion" "$discussion_backend" "" "" "user" || {
+    echo "Warning: discussion 부팅 실패. 건너뜀." >&2
+  }
+
   for role in $agents; do
-    # manager는 이미 부팅됨
-    if [ "$role" = "manager" ]; then
+    # manager/discussion은 control-plane 역할로 별도 처리됨
+    if [ "$role" = "manager" ] || [ "$role" = "discussion" ]; then
       continue
     fi
 
@@ -1841,6 +2141,9 @@ cmd_boot() {
       }
     else
       # solo 모드 (기존 동작)
+      if [ "$loop_mode" = "ralph" ] && role_uses_ralph_worktree "$role"; then
+        create_ralph_worktree "$project" "$role" || true
+      fi
       boot_single_agent "$role" "$project" || {
         echo "Warning: ${role} 부팅 실패. 건너뜀." >&2
         continue
@@ -2308,7 +2611,11 @@ cmd_shutdown() {
   # 5. sessions.md 업데이트
   close_all_sessions "$project"
 
-  # 6. 런타임 파일 정리 (reboot 카운터, heartbeat, 메시지 큐, reboot lock)
+  # 6. persistent ralph worktree 정리
+  remove_ralph_worktree "$project" "developer" || true
+  remove_ralph_worktree "$project" "systems-engineer" || true
+
+  # 7. 런타임 파일 정리 (reboot 카운터, heartbeat, 메시지 큐, reboot lock)
   rm -rf "$(runtime_message_queue_dir "$project")"
   rm -f "$(runtime_reboot_state_file "$project")"
   rm -f "$(runtime_idle_state_file "$project")"

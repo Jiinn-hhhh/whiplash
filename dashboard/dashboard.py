@@ -35,6 +35,7 @@ _KST = timezone(timedelta(hours=9))
 
 _ROLE_ABBR = {
     "manager": "mgr",
+    "discussion": "dis",
     "developer": "dev",
     "researcher": "res",
     "systems-engineer": "sys",
@@ -229,6 +230,8 @@ def _parse_project_field(line: str) -> tuple[str, str] | None:
         return "domain", value
     if "execution mode" in key or "실행 모드" in key:
         return "mode", value
+    if "loop mode" in key or "작업 루프" in key:
+        return "loop_mode", value
     return None
 
 
@@ -252,11 +255,12 @@ def _build_console() -> Console:
 # ──────────────────────────────────────────────
 
 def parse_project_md(project_dir: str) -> dict[str, str]:
-    """project.md에서 프로젝트 이름, 도메인, 실행 모드 추출."""
+    """project.md에서 프로젝트 이름, 도메인, 실행/루프 모드 추출."""
     content = _read_file(os.path.join(project_dir, "project.md"))
     info: dict[str, str] = {
         "name": os.path.basename(os.path.normpath(project_dir)),
         "mode": "pending",
+        "loop_mode": "guided",
         "domain": "general",
     }
     if not content:
@@ -280,6 +284,14 @@ def parse_project_md(project_dir: str) -> dict[str, str]:
                 info["mode"] = "pending"
             else:
                 info["mode"] = "solo"
+        elif key == "loop_mode":
+            lowered = value.lower()
+            if "ralph" in lowered:
+                info["loop_mode"] = "ralph"
+            elif "pending" in lowered or "미정" in value:
+                info["loop_mode"] = "pending"
+            else:
+                info["loop_mode"] = "guided"
         elif key == "domain" and value:
             info["domain"] = value
 
@@ -792,14 +804,18 @@ def _render_header(state: dict) -> Panel:
     now = state["now"]
     name = proj.get("name", "?")
     mode = proj.get("mode", "solo")
+    loop_mode = proj.get("loop_mode", "guided")
     time_str = now.strftime("%Y-%m-%d %H:%M:%S")
-    left = f"  WHIPLASH  {name}  {mode}"
+    mode_label = f"{mode}/{loop_mode}"
+    left = f"  WHIPLASH  {name}  {mode_label}"
     title = Text()
     title.append("  WHIPLASH", style="bold white")
     title.append("  ")
     title.append(name, style="bold cyan")
     title.append("  ")
     title.append(mode, style="bold magenta")
+    title.append("/", style="bold white")
+    title.append(loop_mode, style="bold yellow" if loop_mode == "ralph" else "bold green")
     # right-align time: Panel adds ~4 chars of border
     padding = max(1, 72 - len(left) - len(time_str))
     title.append(" " * padding)
@@ -832,8 +848,15 @@ def _render_agents(state: dict) -> Table:
         table.add_row(msg, "", "", "", "", "", "")
         return table
 
-    # 역할 우선순위 정렬: manager → systems-engineer → researcher → developer → monitoring
-    _ROLE_ORDER = {"manager": 0, "systems-engineer": 1, "researcher": 2, "developer": 3, "monitoring": 4}
+    # 역할 우선순위 정렬: manager → discussion → systems-engineer → researcher → developer → monitoring
+    _ROLE_ORDER = {
+        "manager": 0,
+        "discussion": 1,
+        "systems-engineer": 2,
+        "researcher": 3,
+        "developer": 4,
+        "monitoring": 5,
+    }
     active_agents.sort(key=lambda a: (
         _ROLE_ORDER.get(a["role"], 99),
         a.get("backend", ""),  # 같은 role 내: claude < codex
@@ -932,11 +955,11 @@ def _render_active_tasks(state: dict) -> Panel | None:
     return Panel(table, title="ACTIVE TASKS", title_align="left", border_style="cyan", expand=False)
 
 
-_ALERT_KINDS = frozenset({"escalation", "need_input"})
+_ALERT_KINDS = frozenset({"escalation", "need_input", "user_notice"})
 
 
 def _render_user_alerts(state: dict) -> Panel | None:
-    """유저 대상 알림 (escalation, need_input) 패널. alert_resolve로 해결된 건 숨김."""
+    """유저 대상 알림 패널. alert_resolve로 해결된 건 숨김."""
     # resolve된 subject 수집
     resolved_subjects = {
         e["subject"]
@@ -969,6 +992,8 @@ def _render_user_alerts(state: dict) -> Panel | None:
         kind = entry.get("kind", "")
         if kind == "escalation":
             icon = Text("!", style="bold red")
+        elif kind == "user_notice":
+            icon = Text("i", style="bold cyan")
         else:
             icon = Text("?", style="bold yellow")
         table.add_row(
@@ -1091,7 +1116,7 @@ _IDLE_FILTER_KR = ["비활성 감지", "재확인 예약", "비활성 재확인"
 _TASK_PATH_RE = re.compile(r'(?:task=|파일=)\S*/?(TASK-\d{3})\S*')
 
 _ROLE_FULL = {
-    "mgr": "manager", "dev": "developer", "res": "researcher", "sys": "systems-engineer",
+    "mgr": "manager", "dis": "discussion", "dev": "developer", "res": "researcher", "sys": "systems-engineer",
     "mon": "monitoring", "orc": "orchestrator",
 }
 

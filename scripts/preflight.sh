@@ -128,7 +128,18 @@ check_claude_auth() {
     fail "claude CLI가 설치되어 있지 않다. https://docs.anthropic.com 참고."
   fi
 
-  info "Claude CLI 확인됨."
+  info "Claude CLI 인증 상태 확인 중..."
+
+  local auth_json logged_in auth_method
+  auth_json="$(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude auth status 2>/dev/null || true)"
+  logged_in="$(printf '%s' "$auth_json" | jq -r '.loggedIn // false' 2>/dev/null || printf 'false')"
+  auth_method="$(printf '%s' "$auth_json" | jq -r '.authMethod // "unknown"' 2>/dev/null || printf 'unknown')"
+
+  if [ "$logged_in" != "true" ]; then
+    fail "Claude CLI가 로그인되지 않았다. 'claude auth login' 또는 '/login' 후 재시도해라. (authMethod: ${auth_method})"
+  fi
+
+  info "Claude CLI 인증 확인 완료."
 }
 
 # ── 3. Codex CLI 검증 (dual 모드만, 매번) ──
@@ -155,6 +166,55 @@ check_codex() {
   fi
 
   info "Codex CLI 확인 완료. ($codex_bin)"
+}
+
+check_native_subagents() {
+  info "repo-local native subagent pack 확인 중..."
+
+  local required_agents=(
+    task-distributor
+    consensus-reviewer
+    report-synthesizer
+    code-mapper
+    docs-researcher
+    reviewer
+    debugger
+    search-specialist
+    runtime-auditor
+    architect-reviewer
+    refactoring-specialist
+    test-automator
+    security-auditor
+    performance-engineer
+    deployment-engineer
+  )
+  local role_profiles=(
+    manager
+    discussion
+    developer
+    researcher
+    systems-engineer
+  )
+  local agent_name
+  for agent_name in "${required_agents[@]}"; do
+    [ -f "$REPO_ROOT/.claude/agents/${agent_name}.md" ] || fail "Claude subagent pack 누락: .claude/agents/${agent_name}.md"
+    [ -f "$REPO_ROOT/.codex/agents/${agent_name}.toml" ] || fail "Codex subagent pack 누락: .codex/agents/${agent_name}.toml"
+  done
+
+  [ -f "$REPO_ROOT/.codex/config.toml" ] || fail "Codex project config 누락: .codex/config.toml"
+  grep -q '^model = "gpt-5.4"$' "$REPO_ROOT/.codex/config.toml" || fail ".codex/config.toml 에 top-level model = \"gpt-5.4\" 설정이 없다."
+  grep -q '^\[agents\]' "$REPO_ROOT/.codex/config.toml" || fail ".codex/config.toml 에 [agents] 섹션이 없다."
+  grep -q '^max_threads = ' "$REPO_ROOT/.codex/config.toml" || fail ".codex/config.toml 에 max_threads 설정이 없다."
+  grep -q '^max_depth = ' "$REPO_ROOT/.codex/config.toml" || fail ".codex/config.toml 에 max_depth 설정이 없다."
+
+  local role profile
+  for role in "${role_profiles[@]}"; do
+    profile="$REPO_ROOT/agents/${role}/profile.md"
+    [ -f "$profile" ] || fail "role profile 누락: $profile"
+    grep -q '^allowed-tools: .*Agent' "$profile" || fail "${role} profile 에 Agent tool 허용이 없다."
+  done
+
+  info "repo-local native subagent pack 확인 완료."
 }
 
 # ── 4. 프로젝트 구조 검증 (매번) ──
@@ -206,6 +266,7 @@ info "=== Preflight 검증 시작 (project: $PROJECT, mode: $MODE) ==="
 ensure_packages
 check_claude_auth
 check_codex
+check_native_subagents
 if [ "$SKIP_PROJECT_CHECK" = "1" ]; then
   info "프로젝트 구조 검사는 건너뜀 (--skip-project-check)"
 else

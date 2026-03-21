@@ -170,6 +170,12 @@ int main(int argc, char **argv) {
     return 0;
   }
 
+  if (argc > 2 && strcmp(argv[1], "auth") == 0 && strcmp(argv[2], "status") == 0) {
+    const char *json = "{\"loggedIn\":true,\"authMethod\":\"test\"}\n";
+    write_all(json, strlen(json));
+    return 0;
+  }
+
   if (argc > 1 && strcmp(argv[1], "-p") == 0) {
     const char *json = "{\"session_id\":\"fake-session\"}\n";
     write_all(json, strlen(json));
@@ -423,7 +429,7 @@ module = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(module)
 info = module.parse_project_md(project_dir)
-print(f'{info["name"]}|{info["mode"]}|{info["domain"]}')
+print(f'{info["name"]}|{info["mode"]}|{info["loop_mode"]}|{info["domain"]}')
 PY
 }
 
@@ -1170,7 +1176,7 @@ test_scenario_9() {
 
   local legacy_info
   legacy_info="$(probe_dashboard_project)"
-  assert_eq "legacy project.md 파싱" "_stability-test|solo|general" "$legacy_info"
+  assert_eq "legacy project.md 파싱" "_stability-test|solo|guided|general" "$legacy_info"
 
   cat > "$PROJECT_DIR/project.md" << 'EOF'
 # Project: canonical-test
@@ -1181,6 +1187,7 @@ test_scenario_9() {
 
 ## 운영 방식
 - **실행 모드**: dual
+- **작업 루프**: ralph
 
 ## 팀 구성
 - **활성 에이전트**: developer, researcher
@@ -1188,7 +1195,7 @@ EOF
 
   local canonical_info
   canonical_info="$(probe_dashboard_project)"
-  assert_eq "canonical project.md 파싱" "canonical-test|dual|deep-learning" "$canonical_info"
+  assert_eq "canonical project.md 파싱" "canonical-test|dual|ralph|deep-learning" "$canonical_info"
 
   mkdir -p "$PROJECT_DIR/memory/manager"
   cat > "$PROJECT_DIR/memory/manager/sessions.md" << 'EOF'
@@ -1996,10 +2003,12 @@ test_scenario_22() {
 
   assert_file_exists "bootstrap project.md 생성" "$project_md"
   assert_file_exists "bootstrap knowledge index 생성" "$index_md"
+  assert_true "bootstrap discussion memory 디렉토리 생성" test -d "$PROJECT_DIR/memory/discussion"
   assert_file_exists "bootstrap systems-engineer team 문서 생성" "$team_systems_md"
   assert_file_exists "bootstrap change-authority 문서 생성" "$change_authority_md"
   assert_file_contains "bootstrap project.md pending 실행 모드" "$project_md" "실행 모드.*pending"
   assert_file_contains "bootstrap project.md 활성 에이전트 미정" "$project_md" "활성 에이전트.*미정"
+  assert_file_contains "bootstrap project.md control-plane 자동 부팅 안내" "$project_md" "control-plane 역할이라 bootstrap 이후 자동 부팅"
   assert_file_contains "bootstrap project.md 시스템 변경 권한 안내" "$project_md" "시스템 변경 권한"
   assert_file_not_contains "bootstrap change-authority 문서에 machine policy 없음" "$change_authority_md" "Machine Policy"
   assert_true "bootstrap runtime 루트 생성" test -d "$PROJECT_DIR/runtime"
@@ -2030,7 +2039,7 @@ test_scenario_22() {
 
   local dashboard_project
   dashboard_project="$(probe_dashboard_project)"
-  assert_eq "dashboard pending mode 파싱" "${PROJECT}|pending|general" "$dashboard_project"
+  assert_eq "dashboard pending mode 파싱" "${PROJECT}|pending|pending|general" "$dashboard_project"
 
   echo "  시나리오 22 완료"
 }
@@ -2237,6 +2246,386 @@ EOF
 }
 
 # ──────────────────────────────────────────────
+# 시나리오 26: discussion role wiring
+# ──────────────────────────────────────────────
+
+test_scenario_26() {
+  echo ""
+  echo "=== 시나리오 26: discussion wiring ==="
+  cleanup
+  setup_test_project
+  build_fake_claude
+
+  cat > "$PROJECT_DIR/project.md" << 'EOF'
+# Project: discussion-role-test
+
+## 기본 정보
+- **Domain** (또는 **도메인**): general
+
+## 운영 방식
+- **실행 모드**: solo
+
+## 팀 구성
+- **활성 에이전트**: developer, researcher
+EOF
+
+  local discussion_msg
+  discussion_msg="$(probe_cmd_boot_message discussion "$PROJECT")"
+
+  TOTAL=$((TOTAL + 1))
+  if echo "$discussion_msg" | grep -q 'memory/discussion/decision-notes.md'; then
+    echo "  PASS: discussion 부팅 메시지에 decision-notes 안내 포함"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: discussion 부팅 메시지에 decision-notes 안내 누락"
+    FAIL=$((FAIL + 1))
+  fi
+
+  TOTAL=$((TOTAL + 1))
+  if echo "$discussion_msg" | grep -q 'memory/discussion/handoff.md'; then
+    echo "  PASS: discussion 부팅 메시지에 handoff 안내 포함"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: discussion 부팅 메시지에 handoff 안내 누락"
+    FAIL=$((FAIL + 1))
+  fi
+
+  TOTAL=$((TOTAL + 1))
+  if echo "$discussion_msg" | grep -q 'discussion user agent_ready normal "온보딩 완료"'; then
+    echo "  PASS: discussion agent_ready 대상은 user"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: discussion agent_ready 대상이 user가 아님"
+    FAIL=$((FAIL + 1))
+  fi
+
+  TOTAL=$((TOTAL + 1))
+  if echo "$discussion_msg" | grep -q '현재 진행 상황.*manager'; then
+    echo "  PASS: discussion 부팅 메시지에 manager 라우팅 안내 포함"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: discussion 부팅 메시지에 manager 라우팅 안내 누락"
+    FAIL=$((FAIL + 1))
+  fi
+
+  local dashboard_role_map
+  dashboard_role_map="$(python3 - "$REPO_ROOT" <<'PY'
+import importlib.util
+import pathlib
+import sys
+
+repo_root = pathlib.Path(sys.argv[1])
+module_path = repo_root / "dashboard" / "dashboard.py"
+spec = importlib.util.spec_from_file_location("whiplash_dashboard", module_path)
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+print(f'{module._ROLE_ABBR["discussion"]}|{module._ROLE_FULL["dis"]}')
+PY
+)"
+  assert_eq "dashboard discussion 약어/역매핑" "dis|discussion" "$dashboard_role_map"
+
+  local boot_log="$PROJECT_DIR/discussion-boot.log"
+  assert_true "cmd.sh boot 성공" bash -c 'PATH="$1:$PATH" bash "$2/cmd.sh" boot "$3" >"$4" 2>&1' -- "$PROJECT_DIR" "$TOOLS_DIR" "$PROJECT" "$boot_log"
+
+  local discussion_window_count
+  discussion_window_count="$(tmux list-windows -t "$SESSION" -F '#{window_name}' | grep -c '^discussion$' || true)"
+  assert_eq "cmd.sh boot가 discussion window 자동 부팅" "1" "$discussion_window_count"
+
+  local discussion_session_count
+  discussion_session_count="$(grep -c '| discussion | claude |' "$PROJECT_DIR/memory/manager/sessions.md" || true)"
+  assert_eq "sessions.md에 discussion 세션 기록" "1" "$discussion_session_count"
+
+  echo "  시나리오 26 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 27: native subagent starter pack 계약
+# ──────────────────────────────────────────────
+
+test_scenario_27() {
+  echo ""
+  echo "=== 시나리오 27: native subagent starter pack 계약 ==="
+  cleanup
+  setup_test_project
+
+  local native_agents=(
+    task-distributor
+    consensus-reviewer
+    report-synthesizer
+    code-mapper
+    docs-researcher
+    reviewer
+    debugger
+    search-specialist
+    runtime-auditor
+    architect-reviewer
+    refactoring-specialist
+    test-automator
+    security-auditor
+    performance-engineer
+    deployment-engineer
+  )
+  local agent_name
+  for agent_name in "${native_agents[@]}"; do
+    assert_file_exists "Claude subagent pack 존재: ${agent_name}" "$REPO_ROOT/.claude/agents/${agent_name}.md"
+    assert_file_exists "Codex subagent pack 존재: ${agent_name}" "$REPO_ROOT/.codex/agents/${agent_name}.toml"
+  done
+
+  assert_file_exists "Codex project config 존재" "$REPO_ROOT/.codex/config.toml"
+  assert_file_contains "Codex project config top-level model 설정" "$REPO_ROOT/.codex/config.toml" "^model = \"gpt-5.4\"$"
+  assert_file_contains "Codex project config에 [agents] 섹션" "$REPO_ROOT/.codex/config.toml" "^\\[agents\\]$"
+  assert_file_contains "Codex project config max_threads 설정" "$REPO_ROOT/.codex/config.toml" "^max_threads = 6$"
+  assert_file_contains "Codex project config max_depth 설정" "$REPO_ROOT/.codex/config.toml" "^max_depth = 1$"
+
+  local codex_model
+  codex_model="$(invoke_cmd_function get_codex_model)"
+  assert_eq "repo-local Codex model 우선 사용" "gpt-5.4" "$codex_model"
+
+  assert_file_contains "manager profile Agent 허용" "$REPO_ROOT/agents/manager/profile.md" "^allowed-tools: .*Agent"
+  assert_file_contains "discussion profile Agent 허용" "$REPO_ROOT/agents/discussion/profile.md" "^allowed-tools: .*Agent"
+  assert_file_contains "developer profile Agent 허용" "$REPO_ROOT/agents/developer/profile.md" "^allowed-tools: .*Agent"
+  assert_file_contains "researcher profile Agent 허용" "$REPO_ROOT/agents/researcher/profile.md" "^allowed-tools: .*Agent"
+  assert_file_contains "systems-engineer profile Agent 허용" "$REPO_ROOT/agents/systems-engineer/profile.md" "^allowed-tools: .*Agent"
+
+  local developer_msg
+  developer_msg="$(probe_cmd_boot_message developer "$PROJECT")"
+  TOTAL=$((TOTAL + 1))
+  if echo "$developer_msg" | grep -q '\.claude/agents/' && \
+     echo "$developer_msg" | grep -q '\.codex/agents/' && \
+     echo "$developer_msg" | grep -q 'agents/developer/techniques/subagent-orchestration.md' && \
+     echo "$developer_msg" | grep -q '2-way 이상 병렬 fan-out' && \
+     echo "$developer_msg" | grep -q 'execution lead라면 어떤 specialist를 부를지 네가 판단한다'; then
+    echo "  PASS: developer 부팅 메시지에 native subagent kickoff 규칙 포함"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: developer 부팅 메시지에 native subagent kickoff 규칙 누락"
+    FAIL=$((FAIL + 1))
+  fi
+
+  local manager_msg
+  manager_msg="$(probe_cmd_boot_message manager "$PROJECT")"
+  TOTAL=$((TOTAL + 1))
+  if echo "$manager_msg" | grep -q 'agents/manager/techniques/subagent-orchestration.md' && \
+     echo "$manager_msg" | grep -q '최종 권한과 공식 산출물 책임은 항상 너에게 있다'; then
+    echo "  PASS: manager 부팅 메시지에 staff subagent 책임 규칙 포함"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: manager 부팅 메시지에 staff subagent 책임 규칙 누락"
+    FAIL=$((FAIL + 1))
+  fi
+
+  local discussion_msg
+  discussion_msg="$(probe_cmd_boot_message discussion "$PROJECT")"
+  TOTAL=$((TOTAL + 1))
+  if echo "$discussion_msg" | grep -q 'agents/discussion/techniques/subagent-orchestration.md' && \
+     echo "$discussion_msg" | grep -q '최종 추천안과 handoff 책임은 항상 너에게 있다'; then
+    echo "  PASS: discussion 부팅 메시지에 native subagent 책임 규칙 포함"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: discussion 부팅 메시지에 native subagent 책임 규칙 누락"
+    FAIL=$((FAIL + 1))
+  fi
+
+  local env_script
+  env_script="$(invoke_cmd_function write_agent_env_script "$PROJECT" "developer" "developer")"
+  assert_file_contains "agent env script에 repo root export" "$env_script" "^export WHIPLASH_REPO_ROOT="
+  assert_file_contains "agent env script에 Claude pack export" "$env_script" "^export WHIPLASH_NATIVE_CLAUDE_AGENTS="
+  assert_file_contains "agent env script에 Codex pack export" "$env_script" "^export WHIPLASH_NATIVE_CODEX_AGENTS="
+
+  echo "  시나리오 27 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 28: kickoff reminder + discussion handoff gate
+# ──────────────────────────────────────────────
+
+test_scenario_28() {
+  echo ""
+  echo "=== 시나리오 28: kickoff reminder + discussion handoff gate ==="
+  cleanup
+  setup_test_project
+  build_fake_claude
+
+  tmux new-session -d -s "$SESSION" -n dashboard
+  create_fake_agent "manager"
+  create_fake_agent "developer"
+  register_fake_agent "developer" "developer"
+
+  bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer \
+    task_assign normal "workspace/tasks/TASK-009.md" "kickoff reminder smoke" >/dev/null
+
+  local developer_pane_dump=""
+  local attempt
+  for attempt in 1 2 3 4 5 6; do
+    developer_pane_dump="$(tmux capture-pane -pJ -t "${SESSION}:developer" -S -80 2>/dev/null || true)"
+    if echo "$developer_pane_dump" | grep -q '\[kickoff reminder\]'; then
+      break
+    fi
+    sleep 1
+  done
+
+  TOTAL=$((TOTAL + 1))
+  if echo "$developer_pane_dump" | grep -q '\[kickoff reminder\]' && \
+     echo "$developer_pane_dump" | grep -q 'specialist 최소 1개' && \
+     echo "$developer_pane_dump" | grep -q '2-way 이상 병렬 fan-out'; then
+    echo "  PASS: developer task_assign에 kickoff reminder 포함"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: developer task_assign에 kickoff reminder 누락"
+    FAIL=$((FAIL + 1))
+  fi
+
+  local handoff_file="$PROJECT_DIR/memory/discussion/handoff.md"
+  mkdir -p "$(dirname "$handoff_file")"
+
+  cat > "$handoff_file" << 'EOF'
+# Discussion Handoff
+
+- **Date**: 2026-03-20 18:30
+- **Author**: discussion
+- **User approved**: no
+
+## Why this change
+- 방향은 유망하지만 아직 확정되지 않았다.
+
+## Scope impact
+- developer 우선순위가 바뀔 수 있다.
+EOF
+
+  assert_false "invalid discussion handoff 알림 거부" \
+    bash "$TOOLS_DIR/message.sh" "$PROJECT" discussion manager \
+      status_update normal "discussion handoff 준비" "memory/discussion/handoff.md를 읽고 실행 계획에 반영해라"
+
+  cat > "$handoff_file" << 'EOF'
+# Discussion Handoff
+
+- **Date**: 2026-03-20 18:31
+- **Author**: discussion
+- **User approved**: yes
+
+## Why this change
+- 유저가 backend-native subagent 사용을 기본 전략으로 유지하되, execution lead가 내부 specialist 조합을 자율 결정하는 방향에 동의했다.
+
+## Scope impact
+- manager는 outcome/constraint 중심으로 지시하고, developer/researcher/systems-engineer는 internal fan-out을 자율 결정한다.
+
+## Manager next action
+- 관련 지시 문구와 운영 문서를 이 원칙으로 정렬한다.
+EOF
+
+  assert_true "valid discussion handoff 알림 전달" \
+    bash "$TOOLS_DIR/message.sh" "$PROJECT" discussion manager \
+      status_update normal "discussion handoff 준비" "memory/discussion/handoff.md를 읽고 실행 계획에 반영해라"
+
+  local manager_pane_dump=""
+  for attempt in 1 2 3 4 5 6; do
+    manager_pane_dump="$(tmux capture-pane -pJ -t "${SESSION}:manager" -S -80 2>/dev/null || true)"
+    if echo "$manager_pane_dump" | grep -q 'discussion handoff 준비'; then
+      break
+    fi
+    sleep 1
+  done
+
+  TOTAL=$((TOTAL + 1))
+  if echo "$manager_pane_dump" | grep -q 'discussion handoff 준비' && \
+     echo "$manager_pane_dump" | grep -q 'memory/discussion/handoff.md'; then
+    echo "  PASS: valid discussion handoff가 manager에 전달됨"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: valid discussion handoff가 manager에 전달되지 않음"
+    FAIL=$((FAIL + 1))
+  fi
+
+  echo "  시나리오 28 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 29: ralph loop message/worktree 계약
+# ──────────────────────────────────────────────
+
+test_scenario_29() {
+  echo ""
+  echo "=== 시나리오 29: ralph loop message/worktree 계약 ==="
+  cleanup
+  setup_test_project
+  build_fake_claude
+
+  cat > "$PROJECT_DIR/project.md" << 'EOF'
+# Project: ralph-test
+
+## 기본 정보
+- **Domain**: general
+
+## 프로젝트 폴더
+- **경로**: PROJECT_CODE_REPO_PLACEHOLDER
+
+## 운영 방식
+- **실행 모드**: solo
+- **작업 루프**: ralph
+- **랄프 완료 기준**: 로컬 테스트 통과 + 최종 결과 보고 제출
+- **랄프 종료 방식**: stop-on-criteria
+
+## 팀 구성
+- **활성 에이전트**: developer, researcher, systems-engineer
+EOF
+
+  local code_repo="$PROJECT_DIR/codebase"
+  mkdir -p "$code_repo"
+  git -C "$code_repo" init >/dev/null 2>&1
+  echo "seed" > "$code_repo/README.md"
+  git -C "$code_repo" add README.md >/dev/null 2>&1
+  git -C "$code_repo" -c user.name=test -c user.email=test@example.com commit -m init >/dev/null 2>&1
+  python3 - "$PROJECT_DIR/project.md" "$code_repo" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+code_repo = sys.argv[2]
+path.write_text(path.read_text().replace("PROJECT_CODE_REPO_PLACEHOLDER", code_repo), encoding="utf-8")
+PY
+
+  assert_false "ralph manager->user need_input 거부" \
+    bash "$TOOLS_DIR/message.sh" "$PROJECT" manager user \
+      need_input normal "방향 선택 필요" "ralph에서는 승인 대기를 금지한다"
+
+  assert_true "ralph user_notice 허용" \
+    bash "$TOOLS_DIR/message.sh" "$PROJECT" manager user \
+      user_notice normal "자동 진행" "scope 축소 후 계속 진행"
+
+  assert_file_contains "user_notice가 message.log에 기록됨" \
+    "$PROJECT_DIR/logs/message.log" \
+    "manager → user user_notice normal \"자동 진행\""
+
+  tmux new-session -d -s "$SESSION" -n dashboard
+  create_fake_agent "manager"
+  create_fake_agent "developer"
+  register_fake_agent "developer" "developer"
+
+  bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer \
+    task_assign normal "workspace/tasks/TASK-010.md" "first ralph task" >/dev/null
+  bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer \
+    task_assign normal "workspace/tasks/TASK-011.md" "replacement ralph task" >/dev/null
+
+  local af="$PROJECT_DIR/memory/manager/assignments.md"
+  assert_file_contains "기존 active task가 superseded 처리됨" "$af" \
+    "| developer | workspace/tasks/TASK-010.md |"
+  assert_file_contains "기존 active task 상태 superseded" "$af" \
+    "superseded |"
+  assert_file_contains "새 ralph task는 active 유지" "$af" \
+    "| developer | workspace/tasks/TASK-011.md |"
+  assert_file_contains "새 ralph task 상태 active" "$af" \
+    "active |"
+
+  invoke_cmd_function create_ralph_worktree "$PROJECT" developer
+  local ralph_wt="$code_repo/.worktrees/developer-ralph"
+  assert_true "developer ralph worktree 생성" test -d "$ralph_wt"
+  invoke_cmd_function remove_ralph_worktree "$PROJECT" developer
+
+  echo "  시나리오 29 완료"
+}
+
+# ──────────────────────────────────────────────
 # 메인
 # ──────────────────────────────────────────────
 
@@ -2275,6 +2664,10 @@ test_scenario_22
 test_scenario_23
 test_scenario_24
 test_scenario_25
+test_scenario_26
+test_scenario_27
+test_scenario_28
+test_scenario_29
 
 echo ""
 echo "============================================"

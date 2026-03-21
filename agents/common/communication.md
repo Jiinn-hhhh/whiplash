@@ -119,7 +119,7 @@ bash scripts/message.sh {project} {from} {to} {kind} {priority} "{subject}" "{co
 ```
 
 - kind: `task_complete` | `status_update` | `need_input` | `escalation` | `agent_ready` | `reboot_notice` | `consensus_request`
-- 추가 kind: `consensus_response`, `task_assign`, `alert_resolve`
+- 추가 kind: `consensus_response`, `task_assign`, `alert_resolve`, `user_notice`
 - priority: `normal` | `urgent`
 - Interactive 세션에는 한 줄 알림을 직접 입력한다. rich TUI(Claude/Codex)는 `send-keys -l`, 그 외 셸/REPL은 기존 paste 기반 전달을 사용한다.
 
@@ -129,10 +129,12 @@ bash scripts/message.sh {project} {from} {to} {kind} {priority} "{subject}" "{co
 - 기존 소통(토론, 회의, 공지) 규칙을 **대체하지 않는다**. 보충한다.
 - `task_assign`는 Manager만 보낼 수 있다.
 - `task_complete`, `agent_ready`, `reboot_notice`의 정식 수신자는 Manager만 된다.
+- `user_notice`는 Manager가 유저에게 남기는 비차단 알림이다.
 - peer direct는 `status_update`, `need_input`, `escalation`, `consensus_request`, `consensus_response`만 허용한다.
 - peer direct 메시지는 Manager에도 자동 미러링된다.
 - 메시지 로그(`logs/message.log`)가 이력을 기록한다.
 - 알림 프로토콜 상세는 `agents/manager/techniques/orchestration.md` §11 참조.
+- `작업 루프 = ralph`인 프로젝트에서는 Manager가 유저에게 `need_input` / `escalation`으로 승인을 요청하지 않는다. user-facing 자동 알림은 `user_notice`를 사용한다.
 
 ### 완료 보고 규칙 (백프레셔 게이트)
 

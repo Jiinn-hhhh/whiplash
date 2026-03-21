@@ -37,7 +37,7 @@ Open Claude Code in the whiplash directory and start talking.
 ### 3. What Happens Next
 
 ```
-User conversation → Onboarding designs project → Manager assembles team → Agents work
+User conversation → Onboarding designs project → Manager + Discussion form the control plane → Agents work
 ```
 
 Watch agents via tmux:
@@ -64,13 +64,13 @@ tmux attach -t whiplash-{project-name}
 
 ```
 User — occasional intervention. Critical decisions only.
- ↕
-Onboarding — designs projects through conversation with user.
- ↕
-Manager — user ↔ team hub. Creates agents, distributes tasks, coordinates, reports.
- ├── Researcher (research team lead)
- ├── Developer (development team lead)
- └── Monitoring (independent observer)
+ ├── Onboarding — one-shot setup through user conversation
+ ├── Discussion — long-form strategy/design/priority conversation
+ └── Manager — execution hub for status, blockers, distribution, and reporting
+      ├── Researcher (research team lead)
+      ├── Developer (development team lead)
+      ├── Systems Engineer (platform lead, optional)
+      └── Monitoring (independent observer)
 ```
 
 <details>
@@ -79,14 +79,16 @@ Manager — user ↔ team hub. Creates agents, distributes tasks, coordinates, r
 | Agent | Role | Model | Allowed Tools |
 |-------|------|-------|---------------|
 | **Onboarding** | Designs projects via user conversation. Creates project.md, hands off to Manager | opus | Read,Glob,Grep,Write,Edit,Bash |
-| **Manager** | User ↔ team hub. Agent lifecycle, task distribution, coordination, reporting | opus | Read,Glob,Grep,Bash,WebSearch,WebFetch |
-| **Researcher** | Source collection/analysis, experiments (prototype-level), direction proposals | opus | Read,Glob,Grep,Bash,WebSearch,WebFetch |
+| **Discussion** | Holds long-form strategy/design/priority discussion with the user and writes manager handoffs when decisions should change execution | opus | Read,Glob,Grep,Write,Edit,Bash,WebSearch,WebFetch,Agent |
+| **Manager** | User ↔ team hub. Agent lifecycle, task distribution, coordination, reporting | opus | Read,Glob,Grep,Bash,WebSearch,WebFetch,Agent |
+| **Researcher** | Source collection/analysis, experiments (prototype-level), direction proposals | opus | Read,Glob,Grep,Bash,WebSearch,WebFetch,Agent |
 | **Developer** | Production code, architecture design, infrastructure | opus | All |
+| **Systems Engineer** | Live systems, deployment paths, runtime, cloud, and drift analysis | opus | All + Agent |
 | **Monitoring** | Independent observer. Infra/environment health checks | haiku | Read,Glob,Grep,Bash |
 
 - Models and allowed tools are defined in each agent's `profile.md` within `<!-- agent-meta -->` blocks
 - `cmd.sh` auto-parses these at boot time and applies `--model` and `--allowedTools` flags
-- Only Developer has Write/Edit tools, restricting production code modification to Developer
+- Only Developer and Systems Engineer have broad code/runtime mutation authority; Discussion may write notes/handoffs, while other roles stay read-heavy by default
 
 </details>
 
@@ -96,11 +98,26 @@ Manager — user ↔ team hub. Creates agents, distributes tasks, coordinates, r
 
 | Mode | Description | tmux window layout | Cost |
 |------|-------------|-------------------|------|
-| **solo** | Manager runs one agent per role (tmux-based) | `manager`, `developer`, `researcher`, `monitoring`, optional `systems-engineer` | 1x |
-| **dual** (experimental) | Same task on Claude Code + Codex CLI, Manager drives consensus | `manager`, `developer-claude`, `developer-codex`, `researcher-claude`, `researcher-codex`, `monitoring`, optional `systems-engineer` (solo) | 2x |
+| **solo** | Manager runs one agent per role (tmux-based) | `manager`, `discussion`, `developer`, `researcher`, `monitoring`, optional `systems-engineer` | 1x |
+| **dual** (experimental) | Same task on Claude Code + Codex CLI, Manager drives consensus | `manager`, `discussion`, `developer-claude`, `developer-codex`, `researcher-claude`, `researcher-codex`, `monitoring`, optional `systems-engineer` (solo) | 2x |
 
-- In dual mode, Systems Engineer and Monitoring still run solo by default
+- In dual mode, Discussion, Systems Engineer, and Monitoring still run solo by default
 - Execution mode is chosen during onboarding and recorded in `project.md`
+
+## Conversation Routing
+
+- Use `discussion` for strategy, architecture, requirements, priorities, and code-direction debate.
+- Use `manager` for live execution state, ownership, blockers, idle agents, and runtime health.
+- When `discussion` reaches a user-approved execution change, it writes `memory/discussion/handoff.md` and `manager` applies it to the working plan.
+
+## Native Subagents
+
+- This repo ships a repo-local native subagent starter pack.
+  - Claude Code: `.claude/agents/`
+  - Codex CLI: `.codex/agents/`
+- `manager`, `discussion`, `developer`, `researcher`, and `systems-engineer` use this pack by default on non-trivial tasks.
+- `manager` sets outcomes and constraints, while `developer`, `researcher`, and `systems-engineer` decide which specialist subagents to fan out internally.
+- Role-specific kickoff rules live in each role's `techniques/subagent-orchestration.md`, and the current starter pack is documented in [`docs/native-subagents.md`](docs/native-subagents.md).
 
 ---
 
@@ -174,13 +191,14 @@ Manager runs the team inside a tmux session. Each agent runs independently in it
 tmux session: whiplash-{project}
   ├─ [0] dashboard             ← real-time TUI dashboard (Rich)
   ├─ [1] manager
-  ├─ [2] developer(-claude)
-  ├─ [3] developer-codex       ← dual mode only
-  ├─ [4] researcher(-claude)
-  ├─ [5] researcher-codex      ← dual mode only
-  ├─ [6] systems-engineer      ← active per project
-  ├─ [7] monitoring
-  └─ [8] researcher-2          ← dynamically spawned (on demand)
+  ├─ [2] discussion            ← always solo
+  ├─ [3] developer(-claude)
+  ├─ [4] developer-codex       ← dual mode only
+  ├─ [5] researcher(-claude)
+  ├─ [6] researcher-codex      ← dual mode only
+  ├─ [7] systems-engineer      ← active per project
+  ├─ [8] monitoring
+  └─ [9] researcher-2          ← dynamically spawned (on demand)
 ```
 
 <details>
@@ -200,18 +218,18 @@ User ──→ cmd.sh boot-onboarding ──→ onboarding tmux session
                                          │
                          Manager auto-runs: cmd.sh boot {project}
                                          │
-                     ┌───────────┬───────────┬───────────────┬───────────┐
-                     ↓           ↓           ↓               ↓           ↓
-                  dashboard   developer   researcher   systems-engineer   monitoring
-                               (-claude)   (-claude)
-                               (-codex)    (-codex)        ← dual mode
+                 ┌───────────┬────────────┬───────────┬───────────────┬───────────┐
+                 ↓           ↓            ↓           ↓               ↓           ↓
+              dashboard   discussion   developer   researcher   systems-engineer   monitoring
+                                           (-claude)   (-claude)
+                                           (-codex)    (-codex)        ← dual mode
 ```
 
 1. `boot-onboarding` creates the onboarding session and dashboard
 2. If the project is new, bootstrap drafts are written first and `project.md` starts in `pending` mode
 3. If needed, onboarding spawns `researcher` / `systems-engineer` analysis helpers
 4. After the final review with the user, onboarding internally runs `cmd.sh boot-manager {project}`
-5. Manager completes onboarding (reads Layer 1 docs), then `cmd.sh boot` to boot the team
+5. Manager completes onboarding (reads Layer 1 docs), then `cmd.sh boot` to boot `discussion` and the team
 6. `preflight.sh` validates dependencies (tmux, jq, python3, codex, etc.)
 7. All agents send `agent_ready` → Manager distributes first tasks
 
@@ -462,6 +480,7 @@ whiplash/
 ├── agents/                      # Agent definitions (immutable, git tracked)
 │   ├── common/                  #   Shared rules + project conventions
 │   ├── onboarding/              #   Onboarding agent
+│   ├── discussion/              #   Discussion agent
 │   ├── manager/                 #   Manager agent
 │   │   ├── profile.md           #     Role definition + agent-meta
 │   │   └── techniques/ (6)      #     Procedures
@@ -471,6 +490,9 @@ whiplash/
 │   ├── developer/               #   Developer agent
 │   │   ├── profile.md
 │   │   └── techniques/ (5)
+│   ├── systems-engineer/        #   Systems Engineer agent
+│   │   ├── profile.md
+│   │   └── techniques/ (4)
 │   └── monitoring/              #   Monitoring agent
 │       ├── profile.md
 │       └── techniques/ (2)
@@ -485,6 +507,7 @@ whiplash/
 ├── dashboard/                   # Real-time TUI dashboard
 │   ├── dashboard.py             #   Rich Live-based status monitoring
 │   └── requirements.txt         #   Dashboard dependencies
+├── docs/                        # Framework design / roadmap docs
 ├── feedback/                    # Framework improvement insights
 └── projects/                    # Per-project runtime (mutable, gitignored)
     └── {project-name}/
@@ -495,6 +518,7 @@ whiplash/
         │   ├── shared/          #     Shared (discussions, meetings, announcements, task directives)
         │   └── teams/           #     Per-role work directories
         ├── memory/              #   Accumulated state
+        │   ├── discussion/      #     Strategy notes and manager handoffs
         │   ├── knowledge/       #     Shared knowledge (index, lessons, archives)
         │   ├── manager/         #     sessions.md, assignments.md
         │   └── {role}/          #     Per-role personal memory

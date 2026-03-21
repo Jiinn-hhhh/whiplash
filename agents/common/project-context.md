@@ -13,6 +13,7 @@
 | `workspace/shared/` | `projects/{name}/workspace/shared/` |
 | `workspace/teams/` | `projects/{name}/workspace/teams/` |
 | `memory/knowledge/` | `projects/{name}/memory/knowledge/` |
+| `memory/discussion/` | `projects/{name}/memory/discussion/` |
 | `memory/{role}/` | `projects/{name}/memory/{role}/` |
 | `runtime/manager-state.tsv` | `projects/{name}/runtime/manager-state.tsv` |
 | `runtime/reboot-state.tsv` | `projects/{name}/runtime/reboot-state.tsv` |
@@ -45,6 +46,9 @@ projects/{name}/
       developer/
       systems-engineer/
   memory/                  # 축적된 상태
+    discussion/
+      decision-notes.md    #   전략 토론 메모 (선택)
+      handoff.md           #   manager에게 넘길 실행 변경 handoff (선택)
     manager/
       sessions.md          #   활성 세션 추적
     researcher/
@@ -121,6 +125,9 @@ projects/{name}/
 
 ## 운영 방식
 - **실행 모드**: {solo | dual}
+- **작업 루프**: {guided | ralph}
+- **랄프 완료 기준**: {유저가 적은 완료 기준 또는 "해당 없음"}
+- **랄프 종료 방식**: {stop-on-criteria | continue-until-no-improvement 또는 "해당 없음"}
 - **보고 빈도**: {매일 / 마일스톤마다 / 요청 시 등}
 - **보고 채널**: {reports/ 파일 / Slack / 이메일 / 대화 내 등}
 - Slack을 쓰는 프로젝트면 `bash scripts/slack.sh {project} "제목" "내용" [level]`로 webhook 전송 가능
@@ -129,9 +136,12 @@ projects/{name}/
 - **프레임워크 디버깅**: {on | off} (에이전트가 프레임워크 비효율을 feedback/insights.md에 기록할지 여부)
 - **기술적 전제조건**: {운영 방식 실현에 필요한 인프라, 설정 등 또는 "없음"}
 - **시스템 변경 권한**: {기본 금지 / systems-engineer 비활성 / team/systems-engineer.md + memory/knowledge/docs/change-authority.md 참조}
+- `작업 루프 = ralph`면 manager는 user 승인 입력을 기다리며 멈추지 않는다. 대신 blocker / scope 축소 / 최종 완료를 알림 채널에 남기고 계속 진행한다.
+- `랄프 종료 방식 = continue-until-no-improvement`이면 완료 기준 충족 후에도 개선 loop를 이어가며, 팀이 보수적으로 "더 이상 의미 있는 개선이 어렵다"고 판단할 때만 종료한다.
 
 ## 팀 구성
 - **활성 에이전트**: {이 프로젝트에 참여하는 에이전트 목록}
+  - `manager`, `discussion`은 control-plane 역할이라 명시하지 않아도 부팅 흐름에서 자동 포함된다.
   - `systems-engineer` 포함 여부는 온보딩 중 유저 확인을 거쳐 결정
   - 확인 질문 예시: "이 프로젝트에서 서버, 클라우드, 배포, runtime 작업이 얼마나 중요한가? 거의 없음 / 일부 있음 / 핵심임"
   - 기본 기준: `핵심임`이면 포함 권장, `일부 있음`이면 포함 추천, `거의 없음`이면 제외 가능

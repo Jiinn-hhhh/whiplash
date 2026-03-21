@@ -27,10 +27,10 @@ fi
 
 # kind 검증
 case "$kind" in
-  task_complete|status_update|need_input|escalation|agent_ready|reboot_notice|consensus_request|consensus_response|alert_resolve|task_assign) ;;
+  task_complete|status_update|need_input|escalation|agent_ready|reboot_notice|consensus_request|consensus_response|alert_resolve|task_assign|user_notice) ;;
   *)
     echo "Error: 잘못된 kind: $kind" >&2
-    echo "허용: task_complete, status_update, need_input, escalation, agent_ready, reboot_notice, consensus_request, consensus_response, alert_resolve, task_assign" >&2
+    echo "허용: task_complete, status_update, need_input, escalation, agent_ready, reboot_notice, consensus_request, consensus_response, alert_resolve, task_assign, user_notice" >&2
     exit 1
     ;;
 esac
@@ -85,6 +85,27 @@ assignments_file() {
   echo "$repo_root/projects/$project/memory/manager/assignments.md"
 }
 
+project_md_path() {
+  echo "$repo_root/projects/$project/project.md"
+}
+
+get_loop_mode() {
+  local project_md mode
+  project_md="$(project_md_path)"
+  mode=$({ grep -i "작업 루프" "$project_md" 2>/dev/null || true; } \
+    | head -1 \
+    | sed 's/.*: *//' \
+    | sed 's/ *(.*)//' \
+    | tr -d '[:space:]' \
+    | tr -d '*|' \
+    | tr '[:upper:]' '[:lower:]')
+  if [ "$mode" = "ralph" ]; then
+    echo "ralph"
+  else
+    echo "guided"
+  fi
+}
+
 normalize_task_ref() {
   local task_ref="$1"
   local project_root="$repo_root/projects/$project"
@@ -124,7 +145,7 @@ HEADER
   fi
 
   if grep -q "| ${agent} |.*| active |" "$af" 2>/dev/null; then
-    sed_inplace "s/| ${agent} |\(.*\)| active |/| ${agent} |\1| completed |/" "$af"
+    sed_inplace "s/| ${agent} |\(.*\)| active |/| ${agent} |\1| superseded |/" "$af"
   fi
 
   task_ref="$(normalize_task_ref "$task_ref")"
@@ -148,6 +169,82 @@ prepare_task_assign_report_stub() {
   local normalized_task
   normalized_task="$(normalize_task_ref "$subject")"
   task_assign_report_rel="$(runtime_write_task_report_stub "$project" "$normalized_task" "$to" "manager")"
+}
+
+is_execution_lead_task_assign_target() {
+  case "$1" in
+    developer|developer-claude|developer-codex|researcher|researcher-claude|researcher-codex|systems-engineer)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+discussion_handoff_file() {
+  printf '%s/projects/%s/memory/discussion/handoff.md\n' "$repo_root" "$project"
+}
+
+section_has_body() {
+  local file="$1"
+  local heading="$2"
+  awk -v heading="$heading" '
+    $0 == heading { in_section = 1; next }
+    in_section && /^## / { exit found ? 0 : 1 }
+    in_section && $0 !~ /^[[:space:]]*$/ { found = 1 }
+    END {
+      if (!in_section) exit 1
+      exit found ? 0 : 1
+    }
+  ' "$file"
+}
+
+is_discussion_handoff_notification() {
+  [ "$from" = "discussion" ] || return 1
+  [ "$to" = "manager" ] || return 1
+  [ "$kind" = "status_update" ] || return 1
+  [[ "$content" == *"memory/discussion/handoff.md"* ]]
+}
+
+validate_discussion_handoff_contract() {
+  if ! is_discussion_handoff_notification; then
+    return 0
+  fi
+
+  local handoff_file handoff_rel
+  handoff_file="$(discussion_handoff_file)"
+  handoff_rel="$(runtime_project_relative_path "$project" "$handoff_file")"
+
+  if [ ! -f "$handoff_file" ]; then
+    echo "Error: discussion handoff 알림 전 handoff 문서가 필요하다: ${handoff_rel}" >&2
+    exit 1
+  fi
+
+  if ! grep -Eq '^- \*\*User approved\*\*: yes([[:space:]]*)$' "$handoff_file"; then
+    echo "Error: discussion handoff는 '- **User approved**: yes'가 필요하다: ${handoff_rel}" >&2
+    exit 1
+  fi
+
+  if ! section_has_body "$handoff_file" "## Why this change"; then
+    echo "Error: discussion handoff에 '## Why this change' 본문이 필요하다: ${handoff_rel}" >&2
+    exit 1
+  fi
+
+  if ! section_has_body "$handoff_file" "## Scope impact"; then
+    echo "Error: discussion handoff에 '## Scope impact' 본문이 필요하다: ${handoff_rel}" >&2
+    exit 1
+  fi
+
+  if ! section_has_body "$handoff_file" "## Manager next action"; then
+    echo "Error: discussion handoff에 '## Manager next action' 본문이 필요하다: ${handoff_rel}" >&2
+    exit 1
+  fi
+
+  if grep -q "작성 필요" "$handoff_file" 2>/dev/null; then
+    echo "Error: discussion handoff에 미완성 placeholder가 남아 있다: ${handoff_rel}" >&2
+    exit 1
+  fi
 }
 
 validate_task_complete_report() {
@@ -185,6 +282,10 @@ validate_task_complete_report() {
 augment_content_with_report_context() {
   if [ "$kind" = "task_assign" ] && [ -n "$task_assign_report_rel" ] && [[ "$content" != *"$task_assign_report_rel"* ]]; then
     content="${content} 결과 보고서는 ${task_assign_report_rel}에 작성하고 완료 전 Status를 final로 바꿔라."
+  fi
+
+  if [ "$kind" = "task_assign" ] && is_execution_lead_task_assign_target "$to"; then
+    content="${content} [kickoff reminder] 비사소한 작업이면 specialist 최소 1개, 복잡한 작업이면 2-way 이상 병렬 fan-out을 기본값으로 잡아라. 어떤 specialist를 부를지는 네가 판단해라."
   fi
 
   if [ "$kind" = "task_complete" ] && [ -n "$task_complete_report_rel" ] && [[ "$content" != *"$task_complete_report_rel"* ]]; then
@@ -281,6 +382,11 @@ validate_routing() {
     exit 1
   fi
 
+  if [ "$kind" = "user_notice" ] && { [ "$from" != "manager" ] || [ "$to" != "user" ]; }; then
+    echo "Error: user_notice는 manager → user 전송만 허용된다." >&2
+    exit 1
+  fi
+
   if [ "$kind" = "task_complete" ] && [ "$to" != "manager" ]; then
     echo "Error: task_complete는 manager에게만 보낼 수 있다." >&2
     exit 1
@@ -307,6 +413,15 @@ validate_routing() {
         ;;
       *)
         echo "Error: ${kind}는 peer/worker 대상 직접 전송을 지원하지 않는다." >&2
+        exit 1
+        ;;
+    esac
+  fi
+
+  if [ "$(get_loop_mode)" = "ralph" ] && [ "$from" = "manager" ] && [ "$to" = "user" ]; then
+    case "$kind" in
+      need_input|escalation)
+        echo "Error: ralph loop에서는 manager → user need_input/escalation을 보낼 수 없다. user_notice를 사용해라." >&2
         exit 1
         ;;
     esac
@@ -469,6 +584,7 @@ apply_bookkeeping() {
 
 validate_routing
 prepare_task_assign_report_stub
+validate_discussion_handoff_contract
 validate_task_complete_report
 apply_bookkeeping
 augment_content_with_report_context
