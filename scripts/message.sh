@@ -211,13 +211,8 @@ clear_waiting_report() {
 
 resolve_backend() {
   local window_name="$1"
-  case "$window_name" in
-    *-codex|*-codex-*)
-      echo "codex"
-      return
-      ;;
-  esac
 
+  # sessions.md에서 backend 확인 (codex-rpc 포함)
   local sf="$repo_root/projects/$project/memory/manager/sessions.md"
   if [ -f "$sf" ]; then
     local backend
@@ -234,6 +229,14 @@ resolve_backend() {
     fi
   fi
 
+  # Fallback: window name 패턴 매칭
+  case "$window_name" in
+    *-codex|*-codex-*)
+      echo "codex"
+      return
+      ;;
+  esac
+
   echo "claude"
 }
 
@@ -245,12 +248,32 @@ target_window_exists() {
 target_has_live_agent() {
   local window_name="$1"
   local tmux_target="${session}:${window_name}"
+  local backend
+  backend="$(resolve_backend "$window_name")"
+
+  # codex-rpc: PID 파일 기반 생존 확인 (tmux 윈도우는 표시용)
+  if [ "$backend" = "codex-rpc" ]; then
+    local pid_file="$repo_root/projects/$project/runtime/codex-${window_name}.pid"
+    if [ -f "$pid_file" ]; then
+      local rpc_pid
+      rpc_pid=$(cat "$pid_file" 2>/dev/null)
+      if [ -n "$rpc_pid" ] && kill -0 "$rpc_pid" 2>/dev/null; then
+        return 0
+      fi
+    fi
+    # PID 파일 없으면 codex-rpc.py status로 확인
+    local status_json
+    status_json=$(python3 "$repo_root/scripts/codex-rpc.py" status "$project" "$window_name" 2>/dev/null || echo '{"alive":false}')
+    echo "$status_json" | python3 -c "import sys,json; sys.exit(0 if json.load(sys.stdin).get('alive') else 1)" 2>/dev/null
+    return $?
+  fi
+
+  # claude / codex (tmux): 기존 로직
   target_window_exists "$window_name" || return 1
 
-  local pane_pid backend
+  local pane_pid
   pane_pid=$(tmux list-panes -t "$tmux_target" -F '#{pane_pid}' 2>/dev/null | head -1)
   [ -n "$pane_pid" ] || return 1
-  backend="$(resolve_backend "$window_name")"
   if [ "$backend" = "codex" ]; then
     pgrep -P "$pane_pid" codex >/dev/null 2>&1
   else
@@ -396,8 +419,29 @@ submit_notification() {
   local target="$1"
   local notification="$2"
   local tmux_target="${session}:${target}"
-  local attempt
 
+  # codex-rpc 백엔드: JSON-RPC turn/start로 메시지 전달
+  local target_backend
+  target_backend="$(resolve_backend "$target")"
+  if [ "$target_backend" = "codex-rpc" ]; then
+    local log_file="$repo_root/projects/$project/logs/codex-rpc.log"
+    mkdir -p "$(dirname "$log_file")"
+    # Worktree cwd 결정
+    local dispatch_cwd="$repo_root"
+    local pf_dir
+    pf_dir="$(project_folder "$project" 2>/dev/null || true)"
+    if [ -n "$pf_dir" ] && [ -d "${pf_dir}/.worktrees/${target}" ]; then
+      dispatch_cwd="${pf_dir}/.worktrees/${target}"
+    fi
+    if python3 "$repo_root/scripts/codex-rpc.py" dispatch "$project" "$target" "$notification" \
+         --cwd "$dispatch_cwd" 2>>"$log_file"; then
+      return 0
+    fi
+    return 1
+  fi
+
+  # claude / codex (tmux): 기존 로직
+  local attempt
   for attempt in 1 2; do
     if tmux_submit_pasted_payload "$tmux_target" "$notification" "notify"; then
       runtime_clear_message_refresh_ts "$project" "$target" || true

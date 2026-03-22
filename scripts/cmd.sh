@@ -1287,46 +1287,63 @@ boot_codex_agent() {
   local tmux_target="${sess}:${window_name}"
   local codex_model
   codex_model="$(get_codex_model)"
-  local codex_env
-  codex_env="$(build_codex_env_prefix)"
-  local codex_env_args
-  codex_env_args="${codex_env#env }"
-  local agent_env_script
-  agent_env_script="$(write_agent_env_script "$project" "$role" "$agent_id")"
   # codex CLI 설치 확인
   if ! command -v codex &>/dev/null; then
     echo "Warning: codex CLI가 설치되어 있지 않다. ${window_name} 부팅 건너뜀." >&2
     return 1
   fi
 
-  echo "--- ${window_name} (codex interactive mode) 부팅 중 ---"
+  # --- codex-rpc (app-server) 모드 ---
+  # tmux TUI 대신 JSON-RPC app-server를 사용하여 안정적으로 부팅
+  echo "--- ${window_name} (codex-rpc app-server mode) 부팅 중 ---"
 
-  local boot_msg bootstrap_path bootstrap_prompt
+  local boot_msg bootstrap_path
   boot_msg="$(build_boot_message "$role" "$project" "$extra_boot_msg" "$agent_id" "" "$ready_target_override")"
   bootstrap_path="$(prepare_codex_bootstrap_file "$project" "$agent_id" "$boot_msg")"
-  bootstrap_prompt="$(build_codex_bootstrap_prompt "$bootstrap_path")"
 
-  tmux new-window -d -t "$sess" -n "$window_name"
-  tmux send-keys -t "$tmux_target" \
-    "cd $(printf '%q' "$REPO_ROOT") && . $(printf '%q' "$agent_env_script") &&${codex_env_args:+ ${codex_env_args}} codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox" Enter
-  sleep 4
-  local prompt_ok=0
-  local attempt
-  for attempt in 1 2 3 4 5; do
-    if send_codex_prompt_tmux "$tmux_target" "$bootstrap_prompt"; then
-      prompt_ok=1
-      break
+  # Worktree cwd 결정
+  local agent_cwd="$REPO_ROOT"
+  local project_dir
+  project_dir="$(project_folder "$project")"
+  if [ -n "$project_dir" ]; then
+    local worktree_dir="${project_dir}/.worktrees/${window_name}"
+    if [ -d "$worktree_dir" ]; then
+      agent_cwd="$worktree_dir"
     fi
-    sleep 2
-  done
-  if [ "$prompt_ok" -ne 1 ]; then
-    echo "Warning: ${window_name} codex TUI 온보딩 프롬프트 전달 실패." >&2
-    tmux kill-window -t "$tmux_target" 2>/dev/null || true
+  fi
+
+  local rpc_output rpc_exit
+  local log_file="${REPO_ROOT}/projects/${project}/logs/codex-rpc.log"
+  mkdir -p "$(dirname "$log_file")"
+  rpc_output=$(python3 "$TOOLS_DIR/codex-rpc.py" boot "$project" "$agent_id" "$agent_cwd" \
+    ${codex_model:+--model "$codex_model"} \
+    --bootstrap "$bootstrap_path" \
+    2>>"$log_file") || rpc_exit=$?
+
+  if [ "${rpc_exit:-0}" -ne 0 ]; then
+    echo "Warning: ${window_name} codex-rpc 부팅 실패." >&2
     return 1
   fi
-  add_session_row "$project" "$role" "codex-interactive" "$tmux_target" "$codex_model" "codex"
-  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator codex_boot "$window_name" --detail tmux="$tmux_target" mode="codex-interactive" || true
-  echo "${window_name} 부팅 완료: tmux=${tmux_target} (codex interactive mode)"
+
+  local thread_id rpc_pid
+  thread_id=$(echo "$rpc_output" | grep "^thread_id=" | cut -d= -f2)
+  rpc_pid=$(echo "$rpc_output" | grep "^pid=" | cut -d= -f2)
+
+  if [ -z "$thread_id" ]; then
+    echo "Warning: ${window_name} thread_id를 받지 못함." >&2
+    return 1
+  fi
+
+  # tmux 윈도우 생성 (모니터링/세션 추적용 — 실제 프로세스는 codex-rpc가 관리)
+  if ! tmux list-windows -t "$sess" -F '#{window_name}' 2>/dev/null | grep -q "^${window_name}$"; then
+    tmux new-window -d -t "$sess" -n "$window_name"
+    tmux send-keys -t "$tmux_target" \
+      "echo 'codex-rpc agent: ${window_name} (thread=${thread_id}, pid=${rpc_pid})'; echo 'Use codex-rpc.sh to interact.'; cat" Enter
+  fi
+
+  add_session_row "$project" "$role" "codex-rpc:${thread_id}" "$tmux_target" "$codex_model" "codex-rpc"
+  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator codex_boot "$window_name" --detail thread="$thread_id" pid="$rpc_pid" mode="codex-rpc" || true
+  echo "${window_name} 부팅 완료: thread=${thread_id}, pid=${rpc_pid} (codex-rpc app-server mode)"
   return 0
 }
 
@@ -1589,15 +1606,28 @@ cmd_kill_agent() {
   fi
 
   # 종료
-  tmux send-keys -t "${sess}:${window_name}" "/exit" Enter
+  # codex-rpc 에이전트인지 확인
+  local agent_backend="claude"
+  local sf
+  sf="$(sessions_file "$project")"
+  if [ -f "$sf" ]; then
+    agent_backend=$(awk -F'|' -v target="${sess}:${window_name}" \
+      'function trim(s){gsub(/^[[:space:]]+|[[:space:]]+$/,"",s);return s} trim($5)==target && trim($6)=="active"{print trim($3)}' "$sf" | tail -1)
+    agent_backend="${agent_backend:-claude}"
+  fi
+
+  if [ "$agent_backend" = "codex-rpc" ]; then
+    # codex-rpc: app-server 프로세스 종료
+    python3 "$TOOLS_DIR/codex-rpc.py" shutdown "$project" "$window_name" 2>/dev/null || true
+  fi
+
+  tmux send-keys -t "${sess}:${window_name}" "/exit" Enter 2>/dev/null || true
   sleep 3
   tmux kill-window -t "${sess}:${window_name}" 2>/dev/null || true
 
   remove_agent_worktree "$project" "$window_name" || true
 
   # sessions.md 업데이트
-  local sf
-  sf="$(sessions_file "$project")"
   if [ -f "$sf" ]; then
     sed_inplace "s/| ${sess}:${window_name} | active |/| ${sess}:${window_name} | closed |/g" "$sf"
   fi
@@ -2025,9 +2055,27 @@ cmd_reboot() {
   pending_task="$(get_active_task "$project" "$window_name")" || pending_task=""
 
   # 4. backend에 따라 적절한 부팅 함수 호출
-  if [ "$backend" = "codex" ]; then
-    boot_codex_agent "$role" "$project" "$window_name" || {
-      echo "Error: ${window_name} 리부팅 실패." >&2
+  if [ "$backend" = "codex-rpc" ] || [ "$backend" = "codex" ]; then
+    # codex-rpc: thread/resume으로 세션 보존 리부팅
+    local agent_cwd="$REPO_ROOT"
+    local pf_dir
+    pf_dir="$(project_folder "$project")"
+    if [ -n "$pf_dir" ] && [ -d "${pf_dir}/.worktrees/${window_name}" ]; then
+      agent_cwd="${pf_dir}/.worktrees/${window_name}"
+    fi
+    local log_file="${REPO_ROOT}/projects/${project}/logs/codex-rpc.log"
+    mkdir -p "$(dirname "$log_file")"
+    local codex_model
+    codex_model="$(get_codex_model)"
+    local boot_msg bootstrap_path
+    boot_msg="$(build_boot_message "$role" "$project" "" "$window_name" "" "")"
+    bootstrap_path="$(prepare_codex_bootstrap_file "$project" "$window_name" "$boot_msg")"
+
+    python3 "$TOOLS_DIR/codex-rpc.py" reboot "$project" "$window_name" "$agent_cwd" \
+      ${codex_model:+--model "$codex_model"} \
+      --bootstrap "$bootstrap_path" \
+      2>>"$log_file" || {
+      echo "Error: ${window_name} codex-rpc 리부팅 실패." >&2
       runtime_clear_reboot_lock_ts "$project" "$window_name"
       exit 1
     }
