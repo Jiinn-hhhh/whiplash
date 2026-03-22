@@ -2663,30 +2663,38 @@ cmd_status() {
 
   # monitor.sh 확인 (PID + heartbeat 신선도)
   ensure_manager_runtime_layout "$project"
-  local pid hb_time
+  local pid lock_pid active_pid hb_time
   pid="$(runtime_get_manager_state "$project" "monitor_pid" "" 2>/dev/null || true)"
-  if [ -n "$pid" ]; then
-    if ! [[ "$pid" =~ ^[0-9]+$ ]]; then
-      echo "[monitor] PID 상태값이 잘못됨: '$pid'"
-    elif kill -0 "$pid" 2>/dev/null; then
-      hb_time="$(runtime_get_manager_state "$project" "monitor_heartbeat" "" 2>/dev/null || true)"
-      if [ -n "$hb_time" ]; then
-        if [[ "$hb_time" =~ ^[0-9]+$ ]]; then
-          local hb_age=$((now - hb_time))
-          if [ "$hb_age" -gt 90 ]; then
-            echo "[monitor] 실행 중 (PID: $pid) -- WARNING: heartbeat ${hb_age}초 전 (좀비 가능성)"
-          else
-            echo "[monitor] 실행 중 (PID: $pid, heartbeat: ${hb_age}초 전)"
-          fi
+  lock_pid="$(runtime_get_manager_state "$project" "monitor_lock_pid" "" 2>/dev/null || true)"
+
+  if [[ "${lock_pid:-}" =~ ^[0-9]+$ ]] && kill -0 "$lock_pid" 2>/dev/null; then
+    active_pid="$lock_pid"
+  elif [[ "${pid:-}" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+    active_pid="$pid"
+  else
+    active_pid=""
+  fi
+
+  if [ -n "$pid" ] && ! [[ "$pid" =~ ^[0-9]+$ ]]; then
+    echo "[monitor] PID 상태값이 잘못됨: '$pid'"
+  elif [ -n "$active_pid" ]; then
+    hb_time="$(runtime_get_manager_state "$project" "monitor_heartbeat" "" 2>/dev/null || true)"
+    if [ -n "$hb_time" ]; then
+      if [[ "$hb_time" =~ ^[0-9]+$ ]]; then
+        local hb_age=$((now - hb_time))
+        if [ "$hb_age" -gt 90 ]; then
+          echo "[monitor] 실행 중 (PID: $active_pid) -- WARNING: heartbeat ${hb_age}초 전 (좀비 가능성)"
         else
-          echo "[monitor] 실행 중 (PID: $pid, heartbeat 상태값이 잘못됨)"
+          echo "[monitor] 실행 중 (PID: $active_pid, heartbeat: ${hb_age}초 전)"
         fi
       else
-        echo "[monitor] 실행 중 (PID: $pid, heartbeat 없음)"
+        echo "[monitor] 실행 중 (PID: $active_pid, heartbeat 상태값이 잘못됨)"
       fi
     else
-      echo "[monitor] 프로세스 죽음 (PID: $pid)"
+      echo "[monitor] 실행 중 (PID: $active_pid, heartbeat 없음)"
     fi
+  elif [ -n "$pid" ]; then
+    echo "[monitor] 프로세스 죽음 (PID: $pid)"
   else
     echo "[monitor] 미시작"
   fi
