@@ -138,13 +138,8 @@ reset_reboot_count() {
 
 get_window_backend() {
   local win_name="$1"
-  case "$win_name" in
-    *-codex|*-codex-*)
-    echo "codex"
-    return
-    ;;
-  esac
 
+  # sessions.md 우선 확인 (codex-rpc 포함)
   local sessions_file="$REPO_ROOT/projects/$PROJECT/memory/manager/sessions.md"
   if [ -f "$sessions_file" ]; then
     local backend
@@ -160,6 +155,14 @@ get_window_backend() {
       return
     fi
   fi
+
+  # Fallback: window name 패턴 매칭
+  case "$win_name" in
+    *-codex|*-codex-*)
+    echo "codex"
+    return
+    ;;
+  esac
 
   echo "claude"
 }
@@ -258,7 +261,27 @@ submit_notification() {
 is_agent_alive() {
   local win_name="$1"
   local tmux_target="${SESSION}:${win_name}"
-  # 윈도우 존재 + 에이전트 프로세스 생존 둘 다 확인
+  local backend
+  backend="$(get_window_backend "$win_name")"
+
+  # codex-rpc: PID 파일 기반 생존 확인
+  if [ "$backend" = "codex-rpc" ]; then
+    local pid_file="$REPO_ROOT/projects/$PROJECT/runtime/codex-${win_name}.pid"
+    if [ -f "$pid_file" ]; then
+      local rpc_pid
+      rpc_pid=$(cat "$pid_file" 2>/dev/null)
+      if [ -n "$rpc_pid" ] && kill -0 "$rpc_pid" 2>/dev/null; then
+        return 0
+      fi
+    fi
+    # PID 파일이 없거나 프로세스가 죽었으면 codex-rpc.py status 확인
+    local status_json
+    status_json=$(python3 "$REPO_ROOT/scripts/codex-rpc.py" status "$PROJECT" "$win_name" 2>/dev/null || echo '{"alive":false}')
+    echo "$status_json" | python3 -c "import sys,json; sys.exit(0 if json.load(sys.stdin).get('alive') else 1)" 2>/dev/null
+    return $?
+  fi
+
+  # claude / codex (tmux): 기존 로직
   if ! tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -q "^${win_name}$"; then
     return 1
   fi
@@ -266,8 +289,6 @@ is_agent_alive() {
   pane_info=$(tmux list-panes -t "$tmux_target" -F '#{pane_pid}|#{pane_current_command}' 2>/dev/null | head -1)
   pane_pid="${pane_info%%|*}"
   pane_cmd="${pane_info#*|}"
-  local backend
-  backend="$(get_window_backend "$win_name")"
   if [ "$backend" = "codex" ]; then
     if [ "$pane_cmd" = "codex" ]; then
       return 0
