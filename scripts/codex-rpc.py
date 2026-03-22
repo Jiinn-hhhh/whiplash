@@ -354,8 +354,13 @@ class CodexAppServerClient:
 # Daemon process  (long-lived, watches command queue)
 # ---------------------------------------------------------------------------
 
-async def daemon_main(project: str, role: str, client: CodexAppServerClient):
-    """Event loop for the daemon: watch queue dir for command files."""
+async def daemon_main(project: str, role: str, client: CodexAppServerClient,
+                      model: Optional[str] = None, cwd: str = "."):
+    """Event loop for the daemon: watch queue dir for command files.
+
+    If the app-server process dies (idle timeout, crash), automatically
+    restart it and resume the thread to maintain liveness.
+    """
     qdir = get_queue_dir(project, role)
     qdir.mkdir(parents=True, exist_ok=True)
     logger.info("Daemon ready, watching %s", qdir)
@@ -363,12 +368,34 @@ async def daemon_main(project: str, role: str, client: CodexAppServerClient):
     save_thread_info(project, role, client.thread_id,
                      client.process.pid, "idle")
 
-    while True:
-        # Check app-server health
+    shutdown_requested = False
+    while not shutdown_requested:
+        # Check app-server health — restart if dead
         if client.process.poll() is not None:
-            logger.error("app-server process died (exit=%s)", client.process.returncode)
-            save_thread_info(project, role, client.thread_id, 0, "crashed")
-            break
+            logger.warning("app-server exited (code=%s), restarting...",
+                           client.process.returncode)
+            thread_id = client.thread_id
+            try:
+                await _safe_shutdown(client)
+                client = CodexAppServerClient(project=project, role=role)
+                await client.start_and_resume(thread_id, model=model, cwd=cwd)
+                save_thread_info(project, role, client.thread_id,
+                                 client.process.pid, "idle")
+                logger.info("app-server restarted, thread resumed: %s", client.thread_id)
+            except Exception as e:
+                logger.error("Restart failed: %s — retrying in 10s", e)
+                await _safe_shutdown(client)
+                await asyncio.sleep(10)
+                try:
+                    client = CodexAppServerClient(project=project, role=role)
+                    await client.start_and_resume(thread_id, model=model, cwd=cwd)
+                    save_thread_info(project, role, client.thread_id,
+                                     client.process.pid, "idle")
+                    logger.info("app-server restarted on retry")
+                except Exception as e2:
+                    logger.error("Restart retry failed: %s — daemon exiting", e2)
+                    save_thread_info(project, role, thread_id or "", 0, "crashed")
+                    break
 
         # Scan for command files
         cmd_files = sorted(globmod.glob(str(qdir / "cmd-*.json")))
@@ -410,17 +437,19 @@ async def daemon_main(project: str, role: str, client: CodexAppServerClient):
                 logger.info("Shutdown requested")
                 result_file.write_text(json.dumps({"status": "ok"}))
                 cmd_file.unlink(missing_ok=True)
+                shutdown_requested = True
                 break
 
             cmd_file.unlink(missing_ok=True)
         else:
             await asyncio.sleep(DAEMON_POLL_INTERVAL_S)
             continue
-        # break from inner loop → exit outer
-        break
+
+        if shutdown_requested:
+            break
 
     # Cleanup
-    await client.shutdown()
+    await _safe_shutdown(client)
     save_thread_info(project, role, client.thread_id or "", 0, "stopped")
     remove_pid_file(project, role)
     logger.info("Daemon exiting")
@@ -544,7 +573,8 @@ async def cmd_boot(args):
                 await daemon_client.start_and_resume(thread_id, model=args.model, cwd=args.cwd)
                 save_thread_info(args.project, args.role, daemon_client.thread_id,
                                  os.getpid(), "idle")
-                await daemon_main(args.project, args.role, daemon_client)
+                await daemon_main(args.project, args.role, daemon_client,
+                             model=args.model, cwd=args.cwd)
             except Exception as e:
                 logger.error("Daemon startup failed: %s", e)
                 await _safe_shutdown(daemon_client)
