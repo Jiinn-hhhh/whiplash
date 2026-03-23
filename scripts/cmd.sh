@@ -2336,9 +2336,30 @@ boot_single_agent() {
       python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot_fail "$window_name" --detail reason="claude 프로세스 미시작" || true
       return 1
     fi
+    sleep 1
+  done
+  if ! agent_window_has_live_backend "$sess" "$window_name" "claude"; then
+    echo "Warning: ${window_name} claude 프로세스 10초 내 미시작." >&2
+    python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot_fail "$window_name" --detail reason="claude 프로세스 미시작" || true
+    return 1
   fi
 
-  # sessions.md에 기록
+  local prompt_ok=0
+  for i in 1 2 3 4 5; do
+    if tmux_submit_pasted_payload "$tmux_target" "$boot_msg" "${window_name}-boot"; then
+      prompt_ok=1
+      break
+    fi
+    sleep 2
+  done
+  if [ "$prompt_ok" -ne 1 ]; then
+    echo "Warning: ${window_name} 온보딩 프롬프트 전달 실패." >&2
+    python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot_fail "$window_name" --detail reason="온보딩 프롬프트 전달 실패" || true
+    tmux kill-window -t "$tmux_target" 2>/dev/null || true
+    return 1
+  fi
+
+  # sessions.md에는 visible boot prompt 전달 이후에만 기록한다.
   add_session_row "$project" "$role" "$session_id" "$tmux_target" "$model" "claude"
 
   if ! submit_tmux_prompt_when_ready "$tmux_target" "$boot_msg" "${window_name}-boot"; then
