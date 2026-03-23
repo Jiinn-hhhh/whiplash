@@ -53,7 +53,11 @@ PY
 )"
 
 if [ "$has_slack" = "1" ]; then
-  bash "$SCRIPT_DIR/slack.sh" --no-mention "$project" "$title" "$message" "$level" >/dev/null 2>&1 || true
+  if [ "$level" = "urgent" ] || [ "$level" = "failure" ]; then
+    bash "$SCRIPT_DIR/slack.sh" "$project" "$title" "$message" "$level" >/dev/null 2>&1 || true
+  else
+    bash "$SCRIPT_DIR/slack.sh" --no-mention "$project" "$title" "$message" "$level" >/dev/null 2>&1 || true
+  fi
 fi
 
 echo "user-notify 완료: ${project} | ${level} | ${title}"
