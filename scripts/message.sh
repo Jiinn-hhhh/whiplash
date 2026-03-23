@@ -598,10 +598,12 @@ case "${delivery_state%%|*}" in
   healthy)
     ;;
   auth-blocked)
+    apply_bookkeeping
     queue_with_optional_mirror "queued-auth-blocked"
     exit 0
     ;;
   *)
+    apply_bookkeeping
     queue_with_optional_mirror
     exit 0
     ;;

@@ -3184,7 +3184,7 @@ EOF
   local pane_dump seen_boot_prompt=false attempt
   for attempt in $(seq 1 8); do
     sleep 1
-    pane_dump="$(tmux capture-pane -pJ -t "${SESSION}:developer" -S -160 2>/dev/null || true)"
+    pane_dump="$(tmux capture-pane -pJ -t "${SESSION}:developer" -S -500 2>/dev/null || true)"
     if echo "$pane_dump" | grep -q "TASK-011"; then
       seen_boot_prompt=true
       break
