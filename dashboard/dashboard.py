@@ -357,41 +357,71 @@ def get_tmux_activity(session_name: str) -> dict[str, int]:
     return result
 
 
-def get_tmux_panes(session_name: str) -> dict[str, int]:
-    """tmux 세션의 모든 윈도우별 첫 pane pid 반환."""
+def get_tmux_panes(session_name: str) -> dict[str, dict[str, Any]]:
+    """tmux 세션의 모든 윈도우별 첫 pane pid/current_command 반환."""
     try:
         out = subprocess.check_output(
             [
-                "tmux", "list-panes", "-a", "-t", session_name,
-                "-F", "#{session_name}|#{window_name}|#{pane_pid}",
+                "tmux", "list-panes", "-s", "-t", session_name,
+                "-F", "#{session_name}|#{window_name}|#{pane_pid}|#{pane_current_command}",
             ],
             text=True, stderr=subprocess.DEVNULL,
         )
     except (subprocess.CalledProcessError, FileNotFoundError):
         return {}
 
-    panes: dict[str, int] = {}
+    panes: dict[str, dict[str, Any]] = {}
     for line in out.strip().splitlines():
-        parts = line.split("|", 2)
-        if len(parts) != 3 or not parts[2].isdigit():
+        parts = line.split("|", 3)
+        if len(parts) != 4 or not parts[2].isdigit():
             continue
         if parts[0] != session_name:
             continue
-        panes.setdefault(parts[1], int(parts[2]))
+        panes.setdefault(parts[1], {"pid": int(parts[2]), "command": parts[3]})
     return panes
 
 
-def _agent_process_alive(pane_pid: int, backend: str) -> bool:
-    expected = "codex" if backend == "codex" else "claude"
-    try:
-        return subprocess.run(
-            ["pgrep", "-P", str(pane_pid), expected],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        ).returncode == 0
-    except FileNotFoundError:
+def _normalize_command_name(command: str) -> str:
+    return os.path.basename(command.strip())
+
+
+def _command_matches_backend(command: str, backend: str) -> bool:
+    normalized = _normalize_command_name(command)
+    if not normalized:
         return False
+    expected = "codex" if backend == "codex" else "claude"
+    return normalized.startswith(expected)
+
+
+def _agent_process_alive(pane_pid: int, pane_command: str, backend: str) -> bool:
+    if _command_matches_backend(pane_command, backend):
+        return True
+
+    try:
+        child_pids = subprocess.check_output(
+            ["pgrep", "-P", str(pane_pid)],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+    for child_pid in child_pids.splitlines():
+        child_pid = child_pid.strip()
+        if not child_pid.isdigit():
+            continue
+        try:
+            child_command = subprocess.check_output(
+                ["ps", "-o", "comm=", "-p", child_pid],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            continue
+        if _command_matches_backend(child_command, backend):
+            return True
+
+    return False
 
 
 def check_monitor(project_dir: str) -> dict[str, Any]:
@@ -677,10 +707,12 @@ def collect(project_dir: str, session_name: str,
         if agent["status"] != "active":
             agent["display_status"] = "CLOSED"
             continue
-        pane_pid = tmux_panes.get(win_name)
-        if pane_pid is None:
+        pane_info = tmux_panes.get(win_name)
+        if pane_info is None:
             agent["display_status"] = "ABSENT"
-        elif _agent_process_alive(pane_pid, agent.get("backend", "")):
+        elif _agent_process_alive(
+            pane_info["pid"], pane_info.get("command", ""), agent.get("backend", "")
+        ):
             agent["display_status"] = "ALIVE"
         else:
             agent["display_status"] = "CRASHED"

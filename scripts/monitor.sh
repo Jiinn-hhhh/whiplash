@@ -328,6 +328,8 @@ process_tree_named() {
   return 1
 }
 
+
+
 is_agent_alive() {
   local win_name="$1"
   local indices backend idx pane_info pane_pid pane_cmd
@@ -354,8 +356,6 @@ is_agent_alive() {
 }
 
 session_epoch_marker() {
-  # #{session_name}|#{session_created} — 세션 name + 생성 시각으로 epoch 식별
-  # (#{session_id}는 $0/$1 형식이라 쉘/awk 컨텍스트에서 의도치 않은 전개 위험)
   tmux display-message -p -t "$SESSION" '#{session_name}|#{session_created}' 2>/dev/null || true
 }
 
@@ -408,8 +408,6 @@ handle_session_epoch_transition() {
     return 0
   fi
 
-  # legacy 포맷 감지: 이전 #{session_id} 기반 "$N|..." → 현재 #{session_name} 기반으로 전환
-  # 포맷 불일치는 진짜 epoch 변경이 아니므로 무해하게 overwrite
   if [[ "$previous_epoch" == \$* ]] && [[ "$current_epoch" != \$* ]]; then
     runtime_set_manager_state "$PROJECT" "session_epoch" "$current_epoch"
     python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor session_epoch_format_migrated "$SESSION" \
