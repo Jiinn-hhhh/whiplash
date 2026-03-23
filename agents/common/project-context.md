@@ -125,6 +125,7 @@ projects/{name}/
 
 ## 운영 방식
 - **실행 모드**: {solo | dual}
+- **control-plane 백엔드**: {codex | claude}
 - **작업 루프**: {guided | ralph}
 - **랄프 완료 기준**: {유저가 적은 완료 기준 또는 "해당 없음"}
 - **랄프 종료 방식**: {stop-on-criteria | continue-until-no-improvement 또는 "해당 없음"}
@@ -138,6 +139,7 @@ projects/{name}/
 - **시스템 변경 권한**: {기본 금지 / systems-engineer 비활성 / team/systems-engineer.md + memory/knowledge/docs/change-authority.md 참조}
 - `작업 루프 = ralph`면 manager는 user 승인 입력을 기다리며 멈추지 않는다. 대신 blocker / scope 축소 / 최종 완료를 알림 채널에 남기고 계속 진행한다.
 - `랄프 종료 방식 = continue-until-no-improvement`이면 완료 기준 충족 후에도 개선 loop를 이어가며, 팀이 보수적으로 "더 이상 의미 있는 개선이 어렵다"고 판단할 때만 종료한다.
+- 기본값은 `codex`다. onboarding이 유저와 합의해 `claude`로 바꿀 수 있다.
 
 ## 팀 구성
 - **활성 에이전트**: {이 프로젝트에 참여하는 에이전트 목록}

@@ -9,7 +9,7 @@
 #   - 이미 설치됨 → 조용히 통과
 #   - 자동 설치 불가 → 에러 메시지 + exit 1
 #   - 최초 성공 후 .preflight-ok 마커 → 이후 패키지 검사 건너뜀
-#   - claude 인증, codex(dual), 프로젝트 구조 검증은 매번 실행
+#   - claude 인증, codex(dual/control-plane), 프로젝트 구조 검증은 매번 실행
 
 set -euo pipefail
 
@@ -142,21 +142,64 @@ check_claude_auth() {
   info "Claude CLI 인증 확인 완료."
 }
 
-# ── 3. Codex CLI 검증 (dual 모드만, 매번) ──
+# ── 3. Codex CLI 검증 (dual 모드 또는 codex control-plane, 매번) ──
+
+get_manager_backend() {
+  local backend="${WHIPLASH_MANAGER_BACKEND:-}"
+
+  if [ -n "$backend" ]; then
+    case "$backend" in
+      claude|codex)
+        echo "$backend"
+        return
+        ;;
+    esac
+  fi
+
+  local project_md="$REPO_ROOT/projects/$PROJECT/project.md"
+  local parsed
+  parsed=$({ grep -i "control-plane backend\|control-plane 백엔드" "$project_md" 2>/dev/null || true; } \
+    | head -1 \
+    | sed 's/.*: *//' \
+    | sed 's/ *(.*)//' \
+    | tr -d '[:space:]' \
+    | tr -d '*|' \
+    | tr '[:upper:]' '[:lower:]')
+  case "$parsed" in
+    claude|codex)
+      echo "$parsed"
+      return
+      ;;
+  esac
+
+  echo "codex"
+}
 
 check_codex() {
-  if [ "$MODE" != "dual" ]; then
+  local requires_codex=0
+  if [ "$MODE" = "dual" ] || [ "$(get_manager_backend)" = "codex" ]; then
+    requires_codex=1
+  fi
+
+  if [ "$requires_codex" -ne 1 ]; then
     return 0
   fi
 
-  info "Codex CLI 확인 중 (dual 모드)..."
+  if [ "$MODE" = "dual" ]; then
+    info "Codex CLI 확인 중 (dual 모드)..."
+  else
+    info "Codex CLI 확인 중 (codex control-plane 기본 backend)..."
+  fi
 
   # 바이너리 존재 확인 (alias가 아닌 실제 실행파일)
   local codex_bin
   codex_bin=$(command -p which codex 2>/dev/null) || codex_bin=$(type -P codex 2>/dev/null) || codex_bin=""
 
   if [ -z "$codex_bin" ]; then
-    fail "dual 모드이지만 codex CLI가 설치되어 있지 않다. codex CLI를 설치하거나 solo 모드로 전환해라."
+    if [ "$MODE" = "dual" ]; then
+      fail "dual 모드이지만 codex CLI가 설치되어 있지 않다. codex CLI를 설치하거나 solo 모드로 전환해라."
+    fi
+    fail "manager/discussion/onboarding 기본 backend가 codex라 codex CLI가 필요하다. codex CLI를 설치하거나 WHIPLASH_MANAGER_BACKEND=claude 로 실행해라."
   fi
 
   # --dangerously-bypass-approvals-and-sandbox 플래그 지원 확인

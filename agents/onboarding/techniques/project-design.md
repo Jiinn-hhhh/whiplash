@@ -53,7 +53,7 @@ Onboarding 에이전트는 Manager 부팅 확인 후 종료한다.
 2. onboarding이 분석과 토론을 진행한다.
 3. 준비가 끝나면 onboarding이 내부적으로 `cmd.sh boot-manager {project}`를 실행해 Manager에게 넘긴다.
 
-새 프로젝트라 `projects/{project}/project.md`가 아직 없더라도 `cmd.sh boot-onboarding`이 bootstrap 초안과 기본 디렉토리를 먼저 만든다. 이 초안은 `실행 모드: pending`, `활성 에이전트: 미정` 상태일 수 있으며, onboarding이 사전 질문과 Phase 0-7을 거치며 확정한다.
+새 프로젝트라 `projects/{project}/project.md`가 아직 없더라도 `cmd.sh boot-onboarding`이 bootstrap 초안과 기본 디렉토리를 먼저 만든다. 이 초안은 `실행 모드: pending`, `control-plane 백엔드: pending`, `활성 에이전트: 미정` 상태일 수 있으며, onboarding이 사전 질문과 Phase 0-7을 거치며 확정한다.
 
 ### 사전 질문 1: 프레임워크 디버깅
 
@@ -73,7 +73,7 @@ Onboarding 에이전트는 Manager 부팅 확인 후 종료한다.
 
 | 모드 | 설명 | 장점 | 단점 |
 |------|------|------|------|
-| solo | Manager가 역할별 에이전트를 하나씩 실행 (tmux 기반). Manager와 같은 백엔드 사용 | 비용 최소, 안정적 | 에이전트 동시 실행 불가 |
+| solo | Manager가 역할별 에이전트를 하나씩 실행 (tmux 기반). control-plane 백엔드는 별도 선택 가능 | 비용 최소, 안정적 | 에이전트 동시 실행 불가 |
 | dual (실험적) | 같은 태스크를 두 백엔드에서 이중 실행 | 다양한 관점, 합의 기반 | 비용 2x↑, 인프라 복잡, E2E 미검증 |
 
 **참고**: Claude Code를 쓰는 개별 에이전트는 자기 판단으로 Agent Teams를 하위에 활용할 수 있다 (프레임워크 모드가 아닌 개별 도구).
@@ -87,7 +87,21 @@ Onboarding 에이전트는 Manager 부팅 확인 후 종료한다.
 → projects/{name}/memory/knowledge/index.md 초기화
 ```
 
-### 사전 질문 3: 작업 루프 정책
+### 사전 질문 3: control-plane 백엔드
+
+**질문**: "control-plane(Onboarding / Manager / Discussion)은 기본값인 Codex로 돌릴까, 아니면 Claude로 바꿀까?"
+
+- **기본값**: `codex`
+- **Claude 선호 / Codex 미설치 / Codex를 쓰기 싫음** → `claude`
+
+| 선택 | 설명 |
+|------|------|
+| codex | 기본값. onboarding / manager / discussion을 Codex CLI로 실행 |
+| claude | control-plane을 Claude Code로 실행. 실무 역할은 기존 실행 모드 규칙(solo/dual)을 그대로 따름 |
+
+**파일 작업**: project.md `운영 방식`에 `control-plane 백엔드`를 기록한다.
+
+### 사전 질문 4: 작업 루프 정책
 
 **질문**: "중간중간 사람 확인을 받으며 갈지(guided), 아니면 팀이 알아서 끝까지 밀어붙일지(ralph)?"
 
@@ -263,7 +277,7 @@ Phase 0 마지막에, 코드 작업 경로를 확정한다.
 
 #### 부팅 전 검증
 
-Manager 인계 전에 `preflight.sh`가 자동 실행된다 (`cmd.sh boot-manager` 내부). 누락된 패키지는 자동 설치되며, claude 인증이나 codex(dual 모드) 등 자동 해결 불가 항목이 실패하면 유저에게 안내하고 부팅을 중단한다.
+Manager 인계 전에 `preflight.sh`가 자동 실행된다 (`cmd.sh boot-manager` 내부). 누락된 패키지는 자동 설치되며, claude 인증이나 codex(control-plane 기본 backend / dual 모드) 등 자동 해결 불가 항목이 실패하면 유저에게 안내하고 부팅을 중단한다.
 
 #### Manager 인계
 

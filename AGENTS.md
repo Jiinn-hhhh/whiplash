@@ -1,5 +1,20 @@
 # Repository Guidelines
 
+## Immediate Start Instructions (Codex Session Start)
+
+You are Whiplash framework's **Onboarding agent** by default.
+
+### First Action
+1. Check the `projects/` directory.
+2. If existing projects are present, show the list and ask:
+   "기존 프로젝트를 이어할까, 새 프로젝트를 시작할까?"
+3. If no project exists, start new-project onboarding.
+
+### Role Activation
+- Onboarding procedure: `agents/onboarding/techniques/project-design.md`
+- Role definition: `agents/onboarding/profile.md`
+- If the user explicitly specifies another agent role, read `agents/{role}/profile.md` and switch to that role.
+
 ## Project Structure & Module Organization
 Whiplash is a document-driven multi-agent framework. Core framework paths are `agents/`, `domains/`, `scripts/`, `dashboard/`, `feedback/`, and `projects/`. Agent role definitions and operating rules live under `agents/<role>/`; domain-specific guidance lives in `domains/`. Shell orchestration is in `scripts/`, and the Rich TUI dashboard is in `dashboard/`. Runtime project state is generated under `projects/<project-name>/` and should be treated as project data, not framework source. Nearby folders such as `pixel-agents/` and `system_develop/` are auxiliary experiments.
 

@@ -18,8 +18,9 @@ npm install -g @anthropic-ai/claude-code
 brew install tmux jq        # or apt install tmux jq
 pip install rich             # for dashboard
 
-# Optional (dual mode)
+# Default control-plane backend
 # Codex CLI: https://github.com/openai/codex
+# To force a Claude control plane, run with WHIPLASH_MANAGER_BACKEND=claude
 
 git clone https://github.com/Jiinn-hhhh/whiplash.git
 cd whiplash
@@ -102,6 +103,7 @@ User — occasional intervention. Critical decisions only.
 | **dual** (experimental) | Same task on Claude Code + Codex CLI, Manager drives consensus | `manager`, `discussion`, `developer-claude`, `developer-codex`, `researcher-claude`, `researcher-codex`, `monitoring`, optional `systems-engineer` (solo) | 2x |
 
 - In dual mode, Discussion, Systems Engineer, and Monitoring still run solo by default
+- Onboarding, Manager, and Discussion default to Codex CLI as the control-plane backend. Onboarding can change this per project, and `WHIPLASH_MANAGER_BACKEND=claude` still works as an override.
 - Execution mode is chosen during onboarding and recorded in `project.md`
 
 ## Conversation Routing
@@ -126,7 +128,7 @@ User — occasional intervention. Critical decisions only.
 When a user starts a new project, the Onboarding agent designs it through conversation. Not a survey — it identifies gaps in the user's answers and digs in naturally.
 
 - The default flow starts with `boot-onboarding`; once the design is finalized, onboarding internally runs `boot-manager` and hands off to Manager.
-- If `project.md` does not exist yet, `boot-onboarding` creates bootstrap drafts and the base directory layout first. The draft keeps `execution mode` and `active agents` in a pending state until onboarding finalizes them.
+- If `project.md` does not exist yet, `boot-onboarding` creates bootstrap drafts and the base directory layout first. The draft keeps `execution mode`, `control-plane backend`, and `active agents` in a pending state until onboarding finalizes them.
 - During onboarding, helper agents are limited to `researcher` and `systems-engineer`. Spawning `developer`, `monitoring`, or `manager` is intentionally blocked.
 
 <details>
@@ -134,7 +136,7 @@ When a user starts a new project, the Onboarding agent designs it through conver
 
 | Phase | Description | Output |
 |-------|-------------|--------|
-| Pre-question | Execution mode selection (solo / dual) | project.md draft, directory structure |
+| Pre-question | Execution mode (solo / dual) + control-plane backend (codex / claude) + loop policy selection | project.md draft, directory structure |
 | 0. Existing work | Thoroughly analyze existing code/repos if any | — |
 | 1. Big picture | Project type, goal, motivation | project.md name & goal |
 | 2. Existing resources | Code, data, reference materials | project.md resources section |
@@ -385,7 +387,7 @@ python3 dashboard/dashboard.py {project} --interval 3
 Checks:
 - **Packages**: tmux, jq, python3, pgrep — auto-installs if possible (brew/apt)
 - **Claude CLI**: verifies `claude` command exists
-- **Codex CLI**: dual mode only. Checks `--dangerously-bypass-approvals-and-sandbox` support
+- **Codex CLI**: required in dual mode or when the default control-plane backend is Codex. Checks `--dangerously-bypass-approvals-and-sandbox` support
 - **Project structure**: `project.md` exists, all active agents have `profile.md`
 
 Creates `.preflight-ok` marker on first pass to skip package checks on subsequent boots. Claude/Codex auth is still validated every time, and project structure validation also runs on every normal boot. The only exception is the internal bootstrap phase of `boot-onboarding`, which temporarily uses `--skip-project-check` while the initial draft project structure is being created.

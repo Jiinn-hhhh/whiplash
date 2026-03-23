@@ -18,8 +18,9 @@ npm install -g @anthropic-ai/claude-code
 brew install tmux jq        # 또는 apt install tmux jq
 pip install rich             # 대시보드용
 
-# 선택 (dual 모드)
+# 기본 control-plane backend용
 # Codex CLI: https://github.com/openai/codex
+# Claude control-plane을 원하면 WHIPLASH_MANAGER_BACKEND=claude 로 실행
 
 git clone https://github.com/Jiinn-hhhh/whiplash.git
 cd whiplash
@@ -105,7 +106,8 @@ tmux attach -t whiplash-{project-name}
 - Dual 모드에서 Monitoring은 항상 solo로 실행 (이중 실행 불필요)
 - Discussion은 항상 solo로 실행 (전략 토론 역할, backend 복제 불필요)
 - Systems Engineer는 dual 모드에서도 기본적으로 solo로 실행
-- 실행 모드는 온보딩 시 유저가 선택, `project.md`에 기록
+- Onboarding, Manager, Discussion의 기본 backend는 Codex CLI다. 온보딩에서 프로젝트별로 Claude로 바꿀 수 있고, `WHIPLASH_MANAGER_BACKEND=claude`는 여전히 override로 동작한다.
+- 실행 모드와 control-plane 백엔드는 온보딩 시 유저가 선택, `project.md`에 기록
 
 ## 작업 루프
 
@@ -142,7 +144,7 @@ tmux attach -t whiplash-{project-name}
 유저가 새 프로젝트를 시작하면 Onboarding 에이전트가 대화를 통해 프로젝트를 설계한다. 설문이 아니라 토론 — 유저 답변에서 빠진 것을 파악하고 자연스럽게 파고든다.
 
 - 기본 흐름은 `boot-onboarding`으로 onboarding 세션을 먼저 띄우고, 설계가 확정되면 onboarding이 내부적으로 `boot-manager`를 실행해 Manager에게 넘기는 것이다.
-- 새 프로젝트에서 `project.md`가 아직 없으면 `boot-onboarding`이 bootstrap 초안과 기본 디렉토리를 자동 생성한다. 이 초안의 `실행 모드`, `작업 루프`, `활성 에이전트`는 온보딩 과정에서 확정한다.
+- 새 프로젝트에서 `project.md`가 아직 없으면 `boot-onboarding`이 bootstrap 초안과 기본 디렉토리를 자동 생성한다. 이 초안의 `실행 모드`, `control-plane 백엔드`, `작업 루프`, `활성 에이전트`는 온보딩 과정에서 확정한다.
 - onboarding 단계에서는 필요 시 `researcher`, `systems-engineer` 보조 에이전트를 제한적으로 띄울 수 있다. `developer`, `monitoring`, `manager` spawn은 금지다.
 
 <details>
@@ -150,7 +152,7 @@ tmux attach -t whiplash-{project-name}
 
 | Phase | 내용 | 산출물 |
 |-------|------|--------|
-| 사전 질문 | 실행 모드(solo / dual) + 작업 루프(guided / ralph) 선택 | project.md 초안, 디렉토리 구조 |
+| 사전 질문 | 실행 모드(solo / dual) + control-plane 백엔드(codex / claude) + 작업 루프(guided / ralph) 선택 | project.md 초안, 디렉토리 구조 |
 | 0. 기존 작업물 | 기존 코드/레포가 있으면 철저 분석 | — |
 | 1. 큰 그림 | 프로젝트 유형, 목표, 동기 | project.md 이름·목표 |
 | 2. 기존 자원 | 코드, 데이터, 참고 자료 확인 | project.md 자원 섹션 |
@@ -412,7 +414,7 @@ python3 dashboard/dashboard.py {project} --interval 3
 검증 항목:
 - **패키지**: tmux, jq, python3, pgrep — 없으면 자동 설치 시도 (brew/apt)
 - **Claude CLI**: `claude` 명령어 존재 확인
-- **Codex CLI**: dual 모드에서만 확인. `--dangerously-bypass-approvals-and-sandbox` 지원 여부
+- **Codex CLI**: dual 모드이거나 control-plane 기본 backend가 codex일 때 확인. `--dangerously-bypass-approvals-and-sandbox` 지원 여부
 - **프로젝트 구조**: `project.md` 존재, 활성 에이전트의 `profile.md` 존재
 
 최초 통과 시 `.preflight-ok` 마커를 생성하여 이후 패키지 검사를 건너뛴다. Claude/Codex 인증은 매번 실행하고, 프로젝트 구조 검증도 기본적으로 매번 실행한다. 단, `boot-onboarding`이 새 프로젝트 bootstrap 초안을 만드는 단계에서는 내부적으로 `--skip-project-check`를 사용해 이 검사를 잠시 건너뛴다.

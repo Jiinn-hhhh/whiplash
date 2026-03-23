@@ -2,6 +2,10 @@
 projects/*
 !projects/.gitkeep
 
+# 루트 협업 문서는 항상 추적
+!/AGENTS.md
+!/CLAUDE.md
+
 # 프레임워크 외부 프로젝트
 pixel-agents/
 pixel_agent*

@@ -317,6 +317,20 @@ target_window_exists() {
     && tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null | grep -q "^${1}$"
 }
 
+process_or_child_named() {
+  local pid="$1"
+  local process_name="$2"
+  [ -n "$pid" ] || return 1
+
+  local comm=""
+  comm="$(ps -p "$pid" -o comm= 2>/dev/null | awk '{print $1}' | sed 's!.*/!!' | head -1 || true)"
+  if [ "$comm" = "$process_name" ]; then
+    return 0
+  fi
+
+  pgrep -P "$pid" "$process_name" >/dev/null 2>&1
+}
+
 target_has_live_agent() {
   local window_name="$1"
   target_window_exists "$window_name" || return 1
