@@ -2344,6 +2344,10 @@ boot_single_agent() {
     return 1
   fi
 
+  # TUI 초기화 대기: 프로세스 감지 직후 paste를 보내면 바이너리가 아직
+  # bracketed paste / raw mode를 설정하지 못해 전달 실패할 수 있다.
+  sleep 2
+
   local prompt_ok=0
   for i in 1 2 3 4 5; do
     if tmux_submit_pasted_payload "$tmux_target" "$boot_msg" "${window_name}-boot"; then
