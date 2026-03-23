@@ -303,56 +303,11 @@ submit_notification() {
   return 1
 }
 
-process_tree_named() {
-  local pid="$1"
-  local process_name="$2"
-  [ -n "$pid" ] || return 1
-
-  local comm child_pid child_cmd
-  comm="$(ps -p "$pid" -o comm= 2>/dev/null | head -1 || true)"
-  if agent_backend_command_matches "$process_name" "$comm"; then
-    return 0
-  fi
-
-  while IFS= read -r child_pid; do
-    [ -n "$child_pid" ] || continue
-    child_cmd="$(ps -o comm= -p "$child_pid" 2>/dev/null | head -1 || true)"
-    if agent_backend_command_matches "$process_name" "$child_cmd"; then
-      return 0
-    fi
-    if process_tree_named "$child_pid" "$process_name"; then
-      return 0
-    fi
-  done < <(pgrep -P "$pid" 2>/dev/null || true)
-
-  return 1
-}
-
-
-
 is_agent_alive() {
   local win_name="$1"
-  local indices backend idx pane_info pane_pid pane_cmd
-  indices="$(window_indices_by_name "$win_name")"
-  if [ -z "$indices" ]; then
-    return 1
-  fi
-
+  local backend
   backend="$(get_window_backend "$win_name")"
-  while IFS= read -r idx; do
-    [ -n "$idx" ] || continue
-    pane_info="$(tmux list-panes -t "${SESSION}:${idx}" -F '#{pane_pid}|#{pane_current_command}' 2>/dev/null | head -1)"
-    pane_pid="${pane_info%%|*}"
-    pane_cmd="${pane_info#*|}"
-    if agent_backend_command_matches "$backend" "$pane_cmd"; then
-      return 0
-    fi
-    if process_tree_named "$pane_pid" "$backend"; then
-      return 0
-    fi
-  done <<< "$indices"
-
-  return 1
+  agent_window_has_live_backend "$SESSION" "$win_name" "$backend"
 }
 
 session_epoch_marker() {

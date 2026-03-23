@@ -3556,6 +3556,9 @@ cmd_status() {
     echo ""
     cat "$sf"
   fi
+
+  echo ""
+  print_agent_health_status "$project" "$sess"
 }
 
 # ──────────────────────────────────────────────

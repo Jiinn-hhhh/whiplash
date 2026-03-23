@@ -424,6 +424,48 @@ def _agent_process_alive(pane_pid: int, pane_command: str, backend: str) -> bool
     return False
 
 
+def _capture_pane_tail(session_name: str, window_name: str, lines: int = 60) -> str:
+    try:
+        out = subprocess.check_output(
+            [
+                "tmux", "capture-pane", "-pJ", "-t", f"{session_name}:{window_name}",
+                "-S", f"-{lines}",
+            ],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return ""
+
+    stripped = [line for line in out.splitlines() if line.strip()]
+    return "\n".join(stripped[-12:])
+
+
+def _pane_requires_claude_login(pane_text: str) -> bool:
+    lowered = pane_text.lower()
+    markers = (
+        "not logged in",
+        "please run /login",
+        "run /login",
+        "claude auth login",
+        "security unlock-keychain",
+    )
+    return any(marker in lowered for marker in markers)
+
+
+def _agent_health_state(manager_state: dict[str, str], window_name: str) -> str:
+    return manager_state.get(f"agent_health_{window_name}", "")
+
+
+def _agent_has_auth_block(manager_state: dict[str, str], session_name: str,
+                          window_name: str, backend: str) -> bool:
+    if backend != "claude":
+        return False
+    if _agent_health_state(manager_state, window_name) == "AUTH_BLOCKED":
+        return True
+    return _pane_requires_claude_login(_capture_pane_tail(session_name, window_name))
+
+
 def check_monitor(project_dir: str) -> dict[str, Any]:
     """모니터 상태 확인."""
     info: dict[str, Any] = {
@@ -686,6 +728,7 @@ def collect(project_dir: str, session_name: str,
     reboot_counts = get_reboot_counts(project_dir)
     assignments = parse_assignments_md(project_dir)
     waiting_state = parse_waiting_state(project_dir)
+    manager_state = _read_tsv_map(os.path.join(project_dir, "runtime", "manager-state.tsv"))
     monitor = check_monitor(project_dir)
     boot_times = parse_boot_times(project_dir)
     system_log = parse_system_log(project_dir, 20)
@@ -713,7 +756,12 @@ def collect(project_dir: str, session_name: str,
         elif _agent_process_alive(
             pane_info["pid"], pane_info.get("command", ""), agent.get("backend", "")
         ):
-            agent["display_status"] = "ALIVE"
+            if _agent_has_auth_block(
+                manager_state, session_name, win_name, agent.get("backend", "")
+            ):
+                agent["display_status"] = "AUTH"
+            else:
+                agent["display_status"] = "ALIVE"
         else:
             agent["display_status"] = "CRASHED"
 
@@ -820,6 +868,7 @@ def collect(project_dir: str, session_name: str,
 _STATUS_STYLE = {
     "ALIVE": ("● ALIVE", "green"),
     "READY": ("○ READY", "cyan"),
+    "AUTH": ("! AUTH", "yellow"),
     "CRASHED": ("✗ CRASHED", "red"),
     "ABSENT": ("○ ABSENT", "red"),
     "CLOSED": ("— CLOSED", "dim"),

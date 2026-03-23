@@ -317,46 +317,13 @@ target_window_exists() {
     && tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null | grep -q "^${1}$"
 }
 
-process_or_child_named() {
-  local pid="$1"
-  local process_name="$2"
-  [ -n "$pid" ] || return 1
-
-  local comm child_pid child_cmd
-  comm="$(ps -p "$pid" -o comm= 2>/dev/null | head -1 || true)"
-  if agent_backend_command_matches "$process_name" "$comm"; then
-    return 0
-  fi
-
-  while IFS= read -r child_pid; do
-    [ -n "$child_pid" ] || continue
-    child_cmd="$(ps -o comm= -p "$child_pid" 2>/dev/null | head -1 || true)"
-    if agent_backend_command_matches "$process_name" "$child_cmd"; then
-      return 0
-    fi
-  done < <(pgrep -P "$pid" 2>/dev/null || true)
-
-  return 1
-}
-
 target_has_live_agent() {
   local window_name="$1"
-  local pane_pid backend window_idx
   target_window_exists "$window_name" || return 1
-  backend="$(resolve_backend "$window_name")"
-  while IFS= read -r window_idx; do
-    [ -n "$window_idx" ] || continue
-    pane_pid=$(tmux list-panes -t "${session}:${window_idx}" -F '#{pane_pid}' 2>/dev/null | head -1)
-    [ -n "$pane_pid" ] || continue
-    if process_or_child_named "$pane_pid" "$backend"; then
-      return 0
-    fi
-  done < <(
-    tmux list-windows -t "$session" -F '#I|#{window_name}' 2>/dev/null \
-      | awk -F'|' -v target="$window_name" '$2 == target { print $1 }'
-  )
 
-  return 1
+  local backend
+  backend="$(resolve_backend "$window_name")"
+  agent_window_has_live_backend "$session" "$window_name" "$backend"
 }
 
 target_delivery_state() {
