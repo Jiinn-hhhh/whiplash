@@ -44,6 +44,8 @@ source "$TOOLS_DIR/tmux-submit.sh"
 source "$TOOLS_DIR/runtime-paths.sh"
 # shellcheck source=/dev/null
 source "$TOOLS_DIR/agent-health.sh"
+# shellcheck source=/dev/null
+source "$TOOLS_DIR/assignment-state.sh"
 
 # ──────────────────────────────────────────────
 # 유틸리티 함수
@@ -1347,16 +1349,7 @@ TASKMSG
 
 # assignments.md에 태스크 할당 기록
 normalize_task_ref() {
-  local project="$1"
-  local task_ref="$2"
-  local pdir
-  pdir="$(project_dir "$project")"
-  if [[ "$task_ref" == "$pdir"/* ]]; then
-    task_ref="${task_ref#"$pdir"/}"
-  elif [[ "$task_ref" == "projects/$project/"* ]]; then
-    task_ref="${task_ref#"projects/$project/"}"
-  fi
-  echo "$task_ref"
+  normalize_assignment_task_ref "$1" "$2"
 }
 
 _task_trim() {
@@ -1468,8 +1461,25 @@ append_unique_task_target() {
   TASK_EXEC_ROLES+=("$role_label")
 }
 
+canonical_lane_target() {
+  local role="$1" target="$2" project="$3" default_backend="${4:-codex}"
+  [ -n "$target" ] || return 0
+
+  if [[ "$target" == *-claude ]] || [[ "$target" == *-codex ]]; then
+    printf '%s\n' "$target"
+    return 0
+  fi
+
+  if [ "$target" = "$role" ] && role_supports_dual "$role" && [ "$(get_exec_mode "$project")" = "dual" ]; then
+    printf '%s-%s\n' "$role" "$default_backend"
+    return 0
+  fi
+
+  printf '%s\n' "$target"
+}
+
 peer_lane_for_target() {
-  local role="$1" target="$2"
+  local role="$1" target="$2" project="${3:-}"
   if [[ "$target" == *-claude ]]; then
     printf '%s\n' "${target%-claude}-codex"
     return 0
@@ -1478,11 +1488,19 @@ peer_lane_for_target() {
     printf '%s\n' "${target%-codex}-claude"
     return 0
   fi
-  if [ "$target" = "$role" ]; then
-    printf '%s-codex\n' "$role"
+  if [ -n "$project" ] && [ "$(get_exec_mode "$project")" != "dual" ]; then
+    printf '%s\n' "$target"
     return 0
   fi
-  printf '%s-codex\n' "$role"
+  if ! role_supports_dual "$role"; then
+    printf '%s\n' "$target"
+    return 0
+  fi
+  if [ "$target" = "$role" ]; then
+    printf '%s-claude\n' "$role"
+    return 0
+  fi
+  printf '%s\n' "$target"
 }
 
 resolve_task_execution_plan() {
@@ -1506,18 +1524,23 @@ resolve_task_execution_plan() {
 
   case "$pattern" in
     single_owner)
-      append_unique_task_target "${owner_lane:-$(csv_first_value "$owner_lanes")}" "owner"
+      append_unique_task_target "$(canonical_lane_target "$role" "${owner_lane:-$(csv_first_value "$owner_lanes")}" "$project" "codex")" "owner"
       if [ "${#TASK_EXEC_TARGETS[@]}" -eq 0 ]; then
-        append_unique_task_target "$role" "owner"
+        append_unique_task_target "$(canonical_lane_target "$role" "$role" "$project" "codex")" "owner"
       fi
       ;;
     lead_verify)
       lead_target="${owner_lane:-$(csv_first_value "$owner_lanes")}"
       [ -n "$lead_target" ] || lead_target="$role"
+      lead_target="$(canonical_lane_target "$role" "$lead_target" "$project" "codex")"
       append_unique_task_target "$lead_target" "lead"
       verify_target="$review_lane"
       if [ -z "$verify_target" ] || [[ "$verify_target" == manager* ]]; then
-        verify_target="$(peer_lane_for_target "$role" "$lead_target")"
+        verify_target="$(peer_lane_for_target "$role" "$lead_target" "$project")"
+      elif [ "$verify_target" = "$role" ]; then
+        verify_target="$(peer_lane_for_target "$role" "$lead_target" "$project")"
+      else
+        verify_target="$(canonical_lane_target "$role" "$verify_target" "$project" "claude")"
       fi
       if [ -n "$verify_target" ] && [ "$verify_target" != "$lead_target" ]; then
         append_unique_task_target "$verify_target" "verify"
@@ -1652,37 +1675,12 @@ EOF
 }
 
 record_assignment() {
-  local project="$1" agent="$2" task_file="$3"
-  local pdir
-  pdir="$(project_dir "$project")"
-  local af="${pdir}/memory/manager/assignments.md"
-  mkdir -p "$(dirname "$af")"
-
-  # 절대경로 → 상대경로 정규화 (project_dir 기준)
-  task_file="$(normalize_task_ref "$project" "$task_file")"
-
-  if [ ! -f "$af" ]; then
-    cat > "$af" << 'HEADER'
-# 태스크 할당 현황
-| 에이전트 | 태스크 파일 | 할당 시각 | 상태 |
-|----------|-----------|----------|------|
-HEADER
-  fi
-  # 기존 active → superseded (재계획/교체를 completed와 구분)
-  if grep -q "| ${agent} |.*| active |" "$af" 2>/dev/null; then
-    sed_inplace "s/| ${agent} |\(.*\)| active |/| ${agent} |\1| superseded |/" "$af"
-  fi
-  echo "| ${agent} | ${task_file} | $(date '+%Y-%m-%d %H:%M') | active |" >> "$af"
+  record_assignment_for_project "$1" "$2" "$3"
 }
 
 # assignments.md에서 에이전트의 active 태스크를 completed로 변경
 complete_assignment() {
-  local project="$1" agent="$2"
-  local af="$(project_dir "$project")/memory/manager/assignments.md"
-  [ -f "$af" ] || return 0
-  if grep -q "| ${agent} |.*| active |" "$af" 2>/dev/null; then
-    sed_inplace "s/| ${agent} |\(.*\)| active |/| ${agent} |\1| completed |/" "$af"
-  fi
+  complete_assignment_for_project "$1" "$2"
 }
 
 # 명시적 complete 커맨드
@@ -1749,10 +1747,7 @@ expire_stale_assignments() {
 
 # 에이전트의 현재 active 태스크 경로 반환
 get_active_task() {
-  local project="$1" agent="$2"
-  local af="$(project_dir "$project")/memory/manager/assignments.md"
-  [ -f "$af" ] || return 0
-  { grep "| ${agent} |" "$af" 2>/dev/null || true; } | grep "| active |" | tail -1 | awk -F'|' '{print $3}' | sed 's/^ *//;s/ *$//' || true
+  get_active_task_ref_for_project "$1" "$2"
 }
 
 validate_task_report_ready() {

@@ -58,6 +58,8 @@ source "$TOOLS_DIR/tmux-submit.sh"
 # shellcheck source=/dev/null
 source "$TOOLS_DIR/runtime-paths.sh"
 # shellcheck source=/dev/null
+source "$TOOLS_DIR/assignment-state.sh"
+# shellcheck source=/dev/null
 source "$TOOLS_DIR/agent-health.sh"
 # shellcheck source=/dev/null
 source "$TOOLS_DIR/message-queue.sh"
@@ -94,7 +96,7 @@ sed_inplace() {
 }
 
 assignments_file() {
-  echo "$repo_root/projects/$project/memory/manager/assignments.md"
+  assignments_file_for_project "$project"
 }
 
 project_md_path() {
@@ -119,59 +121,19 @@ get_loop_mode() {
 }
 
 normalize_task_ref() {
-  local task_ref="$1"
-  local project_root="$repo_root/projects/$project"
-  if [[ "$task_ref" == "$project_root"/* ]]; then
-    task_ref="${task_ref#"$project_root"/}"
-  elif [[ "$task_ref" == "projects/$project/"* ]]; then
-    task_ref="${task_ref#"projects/$project/"}"
-  fi
-  echo "$task_ref"
+  normalize_assignment_task_ref "$project" "$1"
 }
 
 get_active_task_ref() {
-  local agent="$1"
-  local af
-  af="$(assignments_file)"
-  [ -f "$af" ] || return 0
-  { grep "| ${agent} |" "$af" 2>/dev/null || true; } \
-    | grep "| active |" \
-    | tail -1 \
-    | awk -F'|' '{print $3}' \
-    | sed 's/^ *//;s/ *$//' || true
+  get_active_task_ref_for_project "$project" "$1"
 }
 
 record_assignment() {
-  local agent="$1"
-  local task_ref="$2"
-  local af
-  af="$(assignments_file)"
-  mkdir -p "$(dirname "$af")"
-
-  if [ ! -f "$af" ]; then
-    cat > "$af" << 'HEADER'
-# 태스크 할당 현황
-| 에이전트 | 태스크 파일 | 할당 시각 | 상태 |
-|----------|-----------|----------|------|
-HEADER
-  fi
-
-  if grep -q "| ${agent} |.*| active |" "$af" 2>/dev/null; then
-    sed_inplace "s/| ${agent} |\(.*\)| active |/| ${agent} |\1| superseded |/" "$af"
-  fi
-
-  task_ref="$(normalize_task_ref "$task_ref")"
-  echo "| ${agent} | ${task_ref} | $(date '+%Y-%m-%d %H:%M') | active |" >> "$af"
+  record_assignment_for_project "$project" "$1" "$2"
 }
 
 complete_assignment() {
-  local agent="$1"
-  local af
-  af="$(assignments_file)"
-  [ -f "$af" ] || return 0
-  if grep -q "| ${agent} |.*| active |" "$af" 2>/dev/null; then
-    sed_inplace "s/| ${agent} |\(.*\)| active |/| ${agent} |\1| completed |/" "$af"
-  fi
+  complete_assignment_for_project "$project" "$1"
 }
 
 prepare_task_assign_report_stub() {
