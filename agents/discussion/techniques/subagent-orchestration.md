@@ -8,6 +8,7 @@
 
 - Discussion의 subagent는 `read-heavy strategist aide`다.
 - 기본 모델은 `fact/context gather -> compare -> recommend -> handoff(optional)`다.
+- 빠른/가벼운 모델과 낮은 effort는 사실 수집과 비교 초안에, 더 강한 모델과 높은 effort는 추천안 비교와 handoff 직전 판단에 우선 쓴다.
 - 최종 추천안과 handoff 승격 책임은 Discussion에게 있다.
 
 ---

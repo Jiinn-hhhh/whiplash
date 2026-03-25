@@ -8,6 +8,7 @@
 
 - Manager의 native subagent는 `worker`가 아니라 `staff aide`다.
 - `task-distributor`, `consensus-reviewer`, `report-synthesizer` 같은 보조 역할만 기본 사용한다.
+- 빠른/가벼운 모델과 낮은 effort는 분해 초안과 장문 압축에, 더 강한 모델과 높은 effort는 결과 비교와 최종 판단 보조에 우선 쓴다.
 - execution lead 아래 specialist 조합은 Manager가 아니라 해당 lead가 정한다.
 - 최종 태스크 분배, 우선순위 결정, 유저 보고 책임은 항상 Manager에게 있다.
 

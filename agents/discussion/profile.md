@@ -1,5 +1,6 @@
 <!-- agent-meta
 model: opus
+reasoning-effort: high
 allowed-tools: Read,Glob,Grep,Write,Edit,Bash,WebSearch,WebFetch,Agent
 -->
 # Agent: Discussion

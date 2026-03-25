@@ -337,6 +337,28 @@ get_model() {
   esac
 }
 
+# 역할별 reasoning effort 선택 (profile.md 메타데이터 → fallback 하드코딩)
+get_reasoning_effort() {
+  local role="$1"
+  local meta_effort
+  meta_effort=$(parse_agent_meta "$role" "reasoning-effort")
+  if [ -n "$meta_effort" ]; then
+    echo "$meta_effort"
+    return
+  fi
+  case "$role" in
+    manager|discussion|developer|researcher|systems-engineer|onboarding)
+      echo "high"
+      ;;
+    monitoring)
+      echo "low"
+      ;;
+    *)
+      echo "medium"
+      ;;
+  esac
+}
+
 # 역할별 허용 도구 (profile.md 메타데이터)
 get_allowed_tools() {
   local role="$1"
@@ -447,19 +469,19 @@ native_subagent_runtime_triage_lines() {
     researcher)
       cat <<'EOF'
     - task triage를 먼저 해라: 작고 명확한 조사는 search-specialist 또는 code-mapper 1개부터, 비사소하지만 bounded면 search-specialist + docs-researcher 또는 docs-researcher + consensus-reviewer를 기본으로 잡아라.
-    - 더 빠른/가벼운 모델은 검색, evidence 수집, 비교 초안에 먼저 쓰고, 더 강한 모델은 recommendation, contract 비교, 최종 위험 판정에 우선 배치해라.
+    - 더 빠른/가벼운 모델과 낮은 effort는 검색, evidence 수집, 비교 초안에 먼저 쓰고, 더 강한 모델과 높은 effort는 recommendation, contract 비교, 최종 위험 판정에 우선 배치해라.
 EOF
       ;;
     systems-engineer)
       cat <<'EOF'
     - task triage를 먼저 해라: 작고 명확한 감사/확인은 runtime-auditor 1개부터, 비사소하지만 bounded면 runtime-auditor + code-mapper를 기본으로 잡아라.
-    - 더 빠른/가벼운 모델은 runtime 사실 확인과 구조 맵핑에 먼저 쓰고, 더 강한 모델은 ambiguous drift, rollback gate, cross-system risk 판정에 우선 배치해라.
+    - 더 빠른/가벼운 모델과 낮은 effort는 runtime 사실 확인과 구조 맵핑에 먼저 쓰고, 더 강한 모델과 높은 effort는 ambiguous drift, rollback gate, cross-system risk 판정에 우선 배치해라.
 EOF
       ;;
     *)
       cat <<'EOF'
     - task triage를 먼저 해라: 작고 명확하면 scout 1개 또는 direct 예외, 비사소하지만 bounded면 2-way map/debug 기본, 복잡/애매/merge-risk면 stronger model + reviewer/architect 계열을 우선 고려해라.
-    - 더 빠른/가벼운 모델은 mapping, evidence 수집, 좁은 verify에 먼저 쓰고, 더 강한 모델은 구조 경계, 모호한 설계, 고위험 최종 판정에 우선 배치해라.
+    - 더 빠른/가벼운 모델과 낮은 effort는 mapping, evidence 수집, 좁은 verify에 먼저 쓰고, 더 강한 모델과 높은 effort는 구조 경계, 모호한 설계, 고위험 최종 판정에 우선 배치해라.
 EOF
       ;;
   esac
@@ -653,15 +675,18 @@ build_codex_bootstrap_prompt() {
 }
 
 build_codex_env_prefix() {
+  local model_override="${1:-${WHIPLASH_CODEX_MODEL:-}}"
+  local reasoning_effort_override="${2:-${WHIPLASH_CODEX_REASONING_EFFORT:-}}"
+  local service_tier_override="${3:-${WHIPLASH_CODEX_SERVICE_TIER:-}}"
   local env_prefix="env"
-  if [ -n "${WHIPLASH_CODEX_MODEL:-}" ]; then
-    env_prefix+=" WHIPLASH_CODEX_MODEL=$(printf '%q' "$WHIPLASH_CODEX_MODEL")"
+  if [ -n "$model_override" ]; then
+    env_prefix+=" WHIPLASH_CODEX_MODEL=$(printf '%q' "$model_override")"
   fi
-  if [ -n "${WHIPLASH_CODEX_REASONING_EFFORT:-}" ]; then
-    env_prefix+=" WHIPLASH_CODEX_REASONING_EFFORT=$(printf '%q' "$WHIPLASH_CODEX_REASONING_EFFORT")"
+  if [ -n "$reasoning_effort_override" ]; then
+    env_prefix+=" WHIPLASH_CODEX_REASONING_EFFORT=$(printf '%q' "$reasoning_effort_override")"
   fi
-  if [ -n "${WHIPLASH_CODEX_SERVICE_TIER:-}" ]; then
-    env_prefix+=" WHIPLASH_CODEX_SERVICE_TIER=$(printf '%q' "$WHIPLASH_CODEX_SERVICE_TIER")"
+  if [ -n "$service_tier_override" ]; then
+    env_prefix+=" WHIPLASH_CODEX_SERVICE_TIER=$(printf '%q' "$service_tier_override")"
   fi
   echo "$env_prefix"
 }
@@ -2182,8 +2207,10 @@ boot_codex_agent() {
   local tmux_target="${sess}:${window_name}"
   local codex_model
   codex_model="$(get_codex_model)"
+  local codex_effort
+  codex_effort="$(get_reasoning_effort "$role")"
   local codex_env
-  codex_env="$(build_codex_env_prefix)"
+  codex_env="$(build_codex_env_prefix "$codex_model" "$codex_effort")"
   local codex_env_args
   codex_env_args="${codex_env#env }"
   local agent_env_script

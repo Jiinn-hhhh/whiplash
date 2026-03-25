@@ -20,8 +20,8 @@
 | 비사소하지만 bounded | `runtime-auditor + code-mapper` 2-way 기본. repo/runtime 접점을 먼저 맞춘다 | 기본 모델 + 빠른 specialist 조합 |
 | 복잡/애매/고위험 운영 판단 | direct-only 금지. `audit + verify/review`를 먼저 깔고, rollout/security/perf 성격에 맞는 specialist를 더 붙인다 | 더 강한 모델을 drift 판정, rollback gate, cross-system risk 결론에 우선 배치 |
 
-- 빠른/가벼운 모델은 evidence 수집, 구조 맵핑, 좁은 사실 확인에 먼저 쓴다.
-- 더 강한 모델은 ambiguous runtime diagnosis, 고위험 rollout 판단, trust boundary가 얽힌 결론에 우선 쓴다.
+- 빠른/가벼운 모델과 낮은 effort는 evidence 수집, 구조 맵핑, 좁은 사실 확인에 먼저 쓴다.
+- 더 강한 모델과 높은 effort는 ambiguous runtime diagnosis, 고위험 rollout 판단, trust boundary가 얽힌 결론에 우선 쓴다.
 - execution lead는 이 triage를 기본값으로 삼되, 실제 fan-out 조합과 최종 모델 선택은 상황에 맞게 자율적으로 결정한다.
 
 ---

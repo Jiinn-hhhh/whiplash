@@ -20,8 +20,8 @@
 | 비사소하지만 bounded | 직접 구현 전에 2-way fan-out 기본. 기능/리팩터는 `code-mapper + docs-researcher`, 버그는 `debugger + code-mapper` | 기본 코딩 모델 + 빠른 specialist 조합 |
 | 복잡/애매/고위험 | direct-only 금지. `map + verify/review`를 먼저 깔고, 필요하면 `architect-reviewer`, `security-auditor`, `performance-engineer`까지 붙인다 | 더 강한 모델을 구조 경계, 애매한 설계, 최종 위험 판정에 우선 배치 |
 
-- 빠른/가벼운 모델은 mapping, evidence 수집, 좁은 verify에 먼저 쓴다.
-- 더 강한 모델은 merge-risk, 설계 경계 흔들림, cross-file refactor, ambiguous bug, release gate 판정에 우선 쓴다.
+- 빠른/가벼운 모델과 낮은 effort는 mapping, evidence 수집, 좁은 verify에 먼저 쓴다.
+- 더 강한 모델과 높은 effort는 merge-risk, 설계 경계 흔들림, cross-file refactor, ambiguous bug, release gate 판정에 우선 쓴다.
 - execution lead는 이 triage를 기본값으로 삼되, 실제 fan-out 조합과 최종 모델 선택은 task 맥락을 보고 자율적으로 결정한다.
 
 ---
@@ -35,6 +35,7 @@
 | 판단/리뷰 | 더 강한 기본값 | `reviewer`, `architect-reviewer`, `security-auditor` |
 
 - 기본 tier로 시작하고, task가 unusually simple하거나 복잡할 때만 override를 검토한다.
+- Codex 같은 effort-aware backend에서는 tier에 맞는 기본 effort도 함께 따라간다. 가벼운 탐색은 low, 일반 구현/검증은 medium, 최종 리뷰/위험 판정은 high를 기본으로 둔다.
 - 넓은 매핑이나 자료 수집이 unexpectedly deep하면 한 단계 올린다.
 - review/release gate가 사실 확인 위주로 좁으면 한 단계 내릴 수 있지만, 최종 위험 판정은 더 강한 모델을 유지한다.
 

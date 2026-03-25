@@ -1,5 +1,6 @@
 <!-- agent-meta
 model: haiku
+reasoning-effort: low
 allowed-tools: Read,Glob,Grep,Bash
 -->
 # Agent: Monitoring

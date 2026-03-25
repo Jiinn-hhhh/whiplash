@@ -21,6 +21,7 @@
 | 판단/리뷰 | 더 강한 기본값 | `reviewer`, `architect-reviewer`, `security-auditor` |
 
 - 기본 tier를 먼저 쓰고, evidence가 얕거나 깊이에 비해 과하면 그때 override를 검토한다.
+- Codex 같은 effort-aware backend에서는 tier에 맞는 기본 effort도 함께 따라간다. 탐색/수집은 low, 분석/검증은 medium, user-facing 결론이나 위험 판정은 high를 기본으로 둔다.
 - 공식 문서 검증이 단순 사실 확인을 넘어서 version contract 비교가 되면 더 강한 모델을 고려한다.
 - synthesis나 recommendation이 user-facing 결론에 가까우면 판단/리뷰 tier를 먼저 붙인다.
 

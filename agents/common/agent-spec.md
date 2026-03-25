@@ -32,6 +32,7 @@ agents/{role}/
 ```markdown
 <!-- agent-meta
 model: [모델명 — opus | sonnet | haiku]
+reasoning-effort: [추론 강도 — low | medium | high]
 allowed-tools: [허용 도구 — 쉼표 구분. 예: Read,Glob,Grep,Write,Edit,Bash,WebSearch,WebFetch]
 -->
 # Agent: [에이전트명]

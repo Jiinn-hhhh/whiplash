@@ -2711,6 +2711,7 @@ test_scenario_27() {
   assert_file_contains "Claude light-tier specialist model 분화" "$REPO_ROOT/.claude/agents/code-mapper.md" "^model: haiku$"
   assert_file_contains "Claude strong-tier reviewer model 분화" "$REPO_ROOT/.claude/agents/reviewer.md" "^model: opus$"
   assert_file_contains "Codex light-tier specialist model 분화" "$REPO_ROOT/.codex/agents/code-mapper.toml" '^model = "gpt-5.4-mini"$'
+  assert_file_contains "Codex light-tier specialist effort 분화" "$REPO_ROOT/.codex/agents/code-mapper.toml" '^model_reasoning_effort = "low"$'
   assert_file_contains "Codex strong-tier reviewer reasoning 분화" "$REPO_ROOT/.codex/agents/reviewer.toml" '^model_reasoning_effort = "high"$'
   assert_file_contains "developer orchestration triage 문구 존재" "$REPO_ROOT/agents/developer/techniques/subagent-orchestration.md" "^## Task Triage$"
   assert_file_contains "developer orchestration 모델 선택 가이드 존재" "$REPO_ROOT/agents/developer/techniques/subagent-orchestration.md" "^## 모델 선택 가이드$"
@@ -2726,6 +2727,14 @@ test_scenario_27() {
   local codex_model
   codex_model="$(invoke_cmd_function get_codex_model)"
   assert_eq "repo-local Codex model 우선 사용" "gpt-5.4" "$codex_model"
+
+  local manager_effort developer_effort monitoring_effort
+  manager_effort="$(invoke_cmd_function get_reasoning_effort manager)"
+  developer_effort="$(invoke_cmd_function get_reasoning_effort developer)"
+  monitoring_effort="$(invoke_cmd_function get_reasoning_effort monitoring)"
+  assert_eq "manager Codex effort 기본값은 high" "high" "$manager_effort"
+  assert_eq "developer Codex effort 기본값은 high" "high" "$developer_effort"
+  assert_eq "monitoring Codex effort 기본값은 low" "low" "$monitoring_effort"
 
   local manager_backend
   manager_backend="$(invoke_cmd_function get_manager_backend)"
@@ -2744,10 +2753,15 @@ PY
   assert_eq "project.md가 control-plane backend override 가능" "claude" "$manager_backend"
 
   assert_file_contains "manager profile Agent 허용" "$REPO_ROOT/agents/manager/profile.md" "^allowed-tools: .*Agent"
+  assert_file_contains "manager profile reasoning-effort 설정" "$REPO_ROOT/agents/manager/profile.md" "^reasoning-effort: high$"
   assert_file_contains "discussion profile Agent 허용" "$REPO_ROOT/agents/discussion/profile.md" "^allowed-tools: .*Agent"
+  assert_file_contains "discussion profile reasoning-effort 설정" "$REPO_ROOT/agents/discussion/profile.md" "^reasoning-effort: high$"
   assert_file_contains "developer profile Agent 허용" "$REPO_ROOT/agents/developer/profile.md" "^allowed-tools: .*Agent"
+  assert_file_contains "developer profile reasoning-effort 설정" "$REPO_ROOT/agents/developer/profile.md" "^reasoning-effort: high$"
   assert_file_contains "researcher profile Agent 허용" "$REPO_ROOT/agents/researcher/profile.md" "^allowed-tools: .*Agent"
+  assert_file_contains "researcher profile reasoning-effort 설정" "$REPO_ROOT/agents/researcher/profile.md" "^reasoning-effort: high$"
   assert_file_contains "systems-engineer profile Agent 허용" "$REPO_ROOT/agents/systems-engineer/profile.md" "^allowed-tools: .*Agent"
+  assert_file_contains "systems-engineer profile reasoning-effort 설정" "$REPO_ROOT/agents/systems-engineer/profile.md" "^reasoning-effort: high$"
 
   local developer_msg
   developer_msg="$(probe_cmd_boot_message developer "$PROJECT")"
@@ -2757,12 +2771,38 @@ PY
      echo "$developer_msg" | grep -q 'agents/developer/techniques/subagent-orchestration.md' && \
      echo "$developer_msg" | grep -q '2-way 이상 병렬 fan-out' && \
      echo "$developer_msg" | grep -q '작고 명확하면 scout 1개 또는 direct 예외' && \
-     echo "$developer_msg" | grep -q '더 빠른/가벼운 모델은 mapping, evidence 수집, 좁은 verify에 먼저 쓰고' && \
+     echo "$developer_msg" | grep -q '더 빠른/가벼운 모델과 낮은 effort는 mapping, evidence 수집, 좁은 verify에 먼저 쓰고' && \
      echo "$developer_msg" | grep -q 'execution lead라면 어떤 specialist를 부를지 네가 판단한다'; then
     echo "  PASS: developer 부팅 메시지에 native subagent kickoff 규칙 포함"
     PASS=$((PASS + 1))
   else
     echo "  FAIL: developer 부팅 메시지에 native subagent kickoff 규칙 누락"
+    FAIL=$((FAIL + 1))
+  fi
+
+  local researcher_msg
+  researcher_msg="$(probe_cmd_boot_message researcher "$PROJECT")"
+  TOTAL=$((TOTAL + 1))
+  if echo "$researcher_msg" | grep -q 'search-specialist 또는 code-mapper 1개부터' && \
+     echo "$researcher_msg" | grep -q 'search-specialist + docs-researcher' && \
+     echo "$researcher_msg" | grep -q 'recommendation, contract 비교, 최종 위험 판정'; then
+    echo "  PASS: researcher 부팅 메시지에 role-specific subagent triage 포함"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: researcher 부팅 메시지에 role-specific subagent triage 누락"
+    FAIL=$((FAIL + 1))
+  fi
+
+  local systems_msg_runtime
+  systems_msg_runtime="$(probe_cmd_boot_message systems-engineer "$PROJECT")"
+  TOTAL=$((TOTAL + 1))
+  if echo "$systems_msg_runtime" | grep -q 'runtime-auditor 1개부터' && \
+     echo "$systems_msg_runtime" | grep -q 'runtime-auditor + code-mapper' && \
+     echo "$systems_msg_runtime" | grep -q '강한 모델과 높은 effort는 ambiguous drift, rollback gate, cross-system risk 판정'; then
+    echo "  PASS: systems-engineer 부팅 메시지에 role-specific subagent triage 포함"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: systems-engineer 부팅 메시지에 role-specific subagent triage 누락"
     FAIL=$((FAIL + 1))
   fi
 
@@ -2832,7 +2872,7 @@ test_scenario_28() {
   if echo "$developer_pane_dump" | grep -q '\[kickoff reminder\]' && \
      echo "$developer_pane_dump" | grep -q 'specialist 최소 1개' && \
      echo "$developer_pane_dump" | grep -q '2-way 이상 병렬 fan-out' && \
-     echo "$developer_pane_dump" | grep -q 'specialist별 기본 모델 tier도 설정돼 있으니'; then
+     echo "$developer_pane_dump" | grep -q 'specialist별 기본 모델/effort tier도 설정돼 있으니'; then
     echo "  PASS: developer task_assign에 kickoff reminder 포함"
     PASS=$((PASS + 1))
   else

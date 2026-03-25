@@ -259,7 +259,7 @@ augment_content_with_report_context() {
   fi
 
   if [ "$kind" = "task_assign" ] && is_execution_lead_task_assign_target "$to"; then
-    content="${content} [kickoff reminder] 비사소한 작업이면 specialist 최소 1개, 복잡한 작업이면 2-way 이상 병렬 fan-out을 기본값으로 잡아라. specialist별 기본 모델 tier도 설정돼 있으니 난이도에 맞게 override를 고려해라. 어떤 specialist를 부를지는 네가 판단해라."
+    content="${content} [kickoff reminder] 비사소한 작업이면 specialist 최소 1개, 복잡한 작업이면 2-way 이상 병렬 fan-out을 기본값으로 잡아라. specialist별 기본 모델/effort tier도 설정돼 있으니 난이도에 맞게 override를 고려해라. 어떤 specialist를 부를지는 네가 판단해라."
   fi
 
   if [ "$kind" = "task_complete" ] && [ -n "$task_complete_report_rel" ] && [[ "$content" != *"$task_complete_report_rel"* ]]; then
