@@ -25,6 +25,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TOOLS_DIR="$SCRIPT_DIR"
+TASK_EXEC_PATTERN=""
+TASK_EXEC_MANAGER_STUB=""
+TASK_EXEC_TARGETS=()
+TASK_EXEC_ROLES=()
 
 tmux() {
   if [ -n "${WHIPLASH_TMUX_SOCKET:-}" ]; then
@@ -432,6 +436,30 @@ role_supports_native_subagents() {
   case "$role" in
     manager|discussion|developer|researcher|systems-engineer) return 0 ;;
     *) return 1 ;;
+  esac
+}
+
+native_subagent_runtime_triage_lines() {
+  local role="$1"
+  case "$role" in
+    researcher)
+      cat <<'EOF'
+    - task triage를 먼저 해라: 작고 명확한 조사는 search-specialist 또는 code-mapper 1개부터, 비사소하지만 bounded면 search-specialist + docs-researcher 또는 docs-researcher + consensus-reviewer를 기본으로 잡아라.
+    - 더 빠른/가벼운 모델은 검색, evidence 수집, 비교 초안에 먼저 쓰고, 더 강한 모델은 recommendation, contract 비교, 최종 위험 판정에 우선 배치해라.
+EOF
+      ;;
+    systems-engineer)
+      cat <<'EOF'
+    - task triage를 먼저 해라: 작고 명확한 감사/확인은 runtime-auditor 1개부터, 비사소하지만 bounded면 runtime-auditor + code-mapper를 기본으로 잡아라.
+    - 더 빠른/가벼운 모델은 runtime 사실 확인과 구조 맵핑에 먼저 쓰고, 더 강한 모델은 ambiguous drift, rollback gate, cross-system risk 판정에 우선 배치해라.
+EOF
+      ;;
+    *)
+      cat <<'EOF'
+    - task triage를 먼저 해라: 작고 명확하면 scout 1개 또는 direct 예외, 비사소하지만 bounded면 2-way map/debug 기본, 복잡/애매/merge-risk면 stronger model + reviewer/architect 계열을 우선 고려해라.
+    - 더 빠른/가벼운 모델은 mapping, evidence 수집, 좁은 verify에 먼저 쓰고, 더 강한 모델은 구조 경계, 모호한 설계, 고위험 최종 판정에 우선 배치해라.
+EOF
+      ;;
   esac
 }
 
@@ -1084,8 +1112,7 @@ build_boot_message() {
     - Codex CLI: ${REPO_ROOT}/.codex/agents/
     - 비사소한 작업은 agents/${role}/techniques/subagent-orchestration.md 를 초기에 읽고, 기본적으로 최소 1개 이상 specialist를 먼저 호출해라.
     - 복잡한 작업은 2-way 이상 병렬 fan-out을 기본값으로 삼아라.
-    - task triage를 먼저 해라: 작고 명확하면 scout 1개 또는 direct 예외, 비사소하지만 bounded면 2-way map/debug 기본, 복잡/애매/merge-risk면 stronger model + reviewer/architect 계열을 우선 고려해라.
-    - 더 빠른/가벼운 모델은 mapping, evidence 수집, 좁은 verify에 먼저 쓰고, 더 강한 모델은 구조 경계, 모호한 설계, 고위험 최종 판정에 우선 배치해라.
+$(native_subagent_runtime_triage_lines "$role")
     - execution lead라면 어떤 specialist를 부를지 네가 판단한다. manager는 outcome/제약을 주고, 내부 fan-out 조합은 세세히 지시하지 않는다.
     - 최종 권한과 공식 산출물 책임은 항상 너에게 있다. subagent 결과를 그대로 최종본으로 내지 마라.
 BOOTRULES
@@ -1330,6 +1357,298 @@ normalize_task_ref() {
     task_ref="${task_ref#"projects/$project/"}"
   fi
   echo "$task_ref"
+}
+
+_task_trim() {
+  printf '%s' "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+_task_line_backtick_value() {
+  printf '%s\n' "$1" | sed -n 's/.*`\([^`][^`]*\)`.*/\1/p' | head -1
+}
+
+_task_line_backtick_csv() {
+  printf '%s\n' "$1" | grep -o '`[^`][^`]*`' 2>/dev/null | tr -d '`' | paste -sd, - | sed 's/^ *//;s/ *$//'
+}
+
+resolve_task_metadata_path() {
+  local project="$1" task="$2"
+  local normalized_task pdir
+  if [ -f "$task" ]; then
+    printf '%s\n' "$task"
+    return 0
+  fi
+  pdir="$(project_dir "$project")"
+  normalized_task="$(normalize_task_ref "$project" "$task")"
+  if [ -f "$pdir/$normalized_task" ]; then
+    printf '%s\n' "$pdir/$normalized_task"
+    return 0
+  fi
+  if [[ "$task" == "projects/$project/"* ]] && [ -f "$REPO_ROOT/$task" ]; then
+    printf '%s\n' "$REPO_ROOT/$task"
+    return 0
+  fi
+  return 1
+}
+
+_task_metadata_line() {
+  local project="$1" task="$2" label="$3" task_path
+  task_path="$(resolve_task_metadata_path "$project" "$task" 2>/dev/null || true)"
+  [ -f "$task_path" ] || return 0
+  grep -m1 "^- \\*\\*${label}\\*\\*:" "$task_path" 2>/dev/null || true
+}
+
+canonicalize_task_pattern() {
+  local raw lowered
+  raw="$(_task_trim "${1:-}")"
+  lowered="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+  case "$lowered" in
+    "single owner"|"single-owner"|"single_owner")
+      printf 'single_owner\n'
+      ;;
+    "lead + verify"|"lead+verify"|"lead-verify"|"lead_verify"|"mirror + challenge"|"mirror+challenge"|"mirror-challenge"|"mirror + verify"|"split + cross-check"|"split+cross-check"|"split-cross-check")
+      printf 'lead_verify\n'
+      ;;
+    "independent compare"|"independent-compare"|"independent_compare"|"mirror + consensus"|"mirror+consensus"|"mirror-consensus"|"mirror + synth"|"mirror+synth"|"mirror-synth")
+      printf 'independent_compare\n'
+      ;;
+    *)
+      printf 'single_owner\n'
+      ;;
+  esac
+}
+
+task_pattern_from_task() {
+  local project="$1" task="$2" line value
+  line="$(_task_metadata_line "$project" "$task" "Pattern")"
+  value="$(_task_line_backtick_value "$line")"
+  canonicalize_task_pattern "$value"
+}
+
+task_owner_lane_from_task() {
+  local project="$1" task="$2" line value
+  line="$(_task_metadata_line "$project" "$task" "Owner lane")"
+  value="$(_task_line_backtick_value "$line")"
+  [ "$value" = "none" ] && value=""
+  printf '%s\n' "$value"
+}
+
+task_owner_lanes_from_task() {
+  local project="$1" task="$2" line value
+  line="$(_task_metadata_line "$project" "$task" "Owner lanes")"
+  value="$(_task_line_backtick_csv "$line")"
+  [ "$value" = "none" ] && value=""
+  printf '%s\n' "$value"
+}
+
+task_review_lane_from_task() {
+  local project="$1" task="$2" line value
+  line="$(_task_metadata_line "$project" "$task" "Review lane")"
+  value="$(_task_line_backtick_value "$line")"
+  [ "$value" = "none" ] && value=""
+  printf '%s\n' "$value"
+}
+
+csv_first_value() {
+  local csv="${1:-}" first
+  IFS=',' read -r first _ <<< "$csv"
+  _task_trim "${first:-}"
+}
+
+append_unique_task_target() {
+  local target="$1" role_label="$2" existing idx
+  [ -n "$target" ] || return 0
+  for idx in "${!TASK_EXEC_TARGETS[@]}"; do
+    existing="${TASK_EXEC_TARGETS[$idx]}"
+    if [ "$existing" = "$target" ]; then
+      return 0
+    fi
+  done
+  TASK_EXEC_TARGETS+=("$target")
+  TASK_EXEC_ROLES+=("$role_label")
+}
+
+peer_lane_for_target() {
+  local role="$1" target="$2"
+  if [[ "$target" == *-claude ]]; then
+    printf '%s\n' "${target%-claude}-codex"
+    return 0
+  fi
+  if [[ "$target" == *-codex ]]; then
+    printf '%s\n' "${target%-codex}-claude"
+    return 0
+  fi
+  if [ "$target" = "$role" ]; then
+    printf '%s-codex\n' "$role"
+    return 0
+  fi
+  printf '%s-codex\n' "$role"
+}
+
+resolve_task_execution_plan() {
+  local role="$1" task="$2" project="$3" forced_pattern="${4:-}"
+  local pattern owner_lane owner_lanes review_lane lead_target verify_target compare_csv compare_target
+  local IFS=','
+
+  TASK_EXEC_TARGETS=()
+  TASK_EXEC_ROLES=()
+  TASK_EXEC_MANAGER_STUB=""
+
+  if [ -n "${forced_pattern:-}" ]; then
+    pattern="$(canonicalize_task_pattern "$forced_pattern")"
+  else
+    pattern="$(task_pattern_from_task "$project" "$task")"
+  fi
+
+  owner_lane="$(task_owner_lane_from_task "$project" "$task")"
+  owner_lanes="$(task_owner_lanes_from_task "$project" "$task")"
+  review_lane="$(task_review_lane_from_task "$project" "$task")"
+
+  case "$pattern" in
+    single_owner)
+      append_unique_task_target "${owner_lane:-$(csv_first_value "$owner_lanes")}" "owner"
+      if [ "${#TASK_EXEC_TARGETS[@]}" -eq 0 ]; then
+        append_unique_task_target "$role" "owner"
+      fi
+      ;;
+    lead_verify)
+      lead_target="${owner_lane:-$(csv_first_value "$owner_lanes")}"
+      [ -n "$lead_target" ] || lead_target="$role"
+      append_unique_task_target "$lead_target" "lead"
+      verify_target="$review_lane"
+      if [ -z "$verify_target" ] || [[ "$verify_target" == manager* ]]; then
+        verify_target="$(peer_lane_for_target "$role" "$lead_target")"
+      fi
+      if [ -n "$verify_target" ] && [ "$verify_target" != "$lead_target" ]; then
+        append_unique_task_target "$verify_target" "verify"
+      fi
+      TASK_EXEC_MANAGER_STUB="verify"
+      ;;
+    independent_compare)
+      compare_csv="$owner_lanes"
+      if [ -z "$compare_csv" ]; then
+        compare_csv="${role}-claude,${role}-codex"
+      fi
+      for compare_target in $compare_csv; do
+        compare_target="$(_task_trim "$compare_target")"
+        append_unique_task_target "$compare_target" "compare"
+      done
+      TASK_EXEC_MANAGER_STUB="compare"
+      ;;
+  esac
+
+  TASK_EXEC_PATTERN="$pattern"
+}
+
+task_subject_and_message() {
+  local task="$1"
+  local subject_var="$2"
+  local message_var="$3"
+  local project="${4:-}"
+  local subject_value msg_value resolved_task
+  resolved_task=""
+  if [ -n "$project" ]; then
+    resolved_task="$(resolve_task_metadata_path "$project" "$task" 2>/dev/null || true)"
+  fi
+  if [ -n "$resolved_task" ] || [ -f "$task" ]; then
+    subject_value="$task"
+    if [ -n "$project" ]; then
+      msg_value="$(normalize_task_ref "$project" "$task") 파일에 새 작업 지시가 있다. 읽고 실행해라."
+    else
+      msg_value="${task} 파일에 새 작업 지시가 있다. 읽고 실행해라."
+    fi
+  else
+    subject_value="$task"
+    msg_value="$task"
+  fi
+  printf -v "$subject_var" '%s' "$subject_value"
+  printf -v "$message_var" '%s' "$msg_value"
+}
+
+pattern_dispatch_message() {
+  local task="$1" project="$2" pattern="$3" role_label="$4" lead_target="${5:-}"
+  local subject base
+  task_subject_and_message "$task" subject base "$project"
+  case "$pattern:$role_label" in
+    single_owner:owner)
+      printf '%s\n' "$base"
+      ;;
+    lead_verify:lead)
+      printf '[execution pattern: lead + verify]\n%s\nexecution lead로서 구현을 주도하고 결과 보고를 남겨라.\n' "$base"
+      ;;
+    lead_verify:verify)
+      printf '[execution pattern: lead + verify]\n%s\nreview/verify lane으로서 %s 결과를 교차검토하고 challenge/confirm 메모를 남겨라.\n' "$base" "${lead_target:-lead lane}"
+      ;;
+    independent_compare:compare)
+      printf '[execution pattern: independent compare]\n%s\npeer lane과 독립적으로 읽고 실행한 뒤 비교 가능한 보고를 남겨라.\n' "$base"
+      ;;
+    *)
+      printf '%s\n' "$base"
+      ;;
+  esac
+}
+
+write_pattern_manager_report_stub() {
+  local project="$1" task_ref="$2" pattern="$3"
+  shift 3
+  local report_path report_rel task_key pattern_label tag joined_reports report_line
+  report_path="$(runtime_task_report_path "$project" "$task_ref" "manager")"
+  report_rel="$(runtime_project_relative_path "$project" "$report_path")"
+  task_key="$(runtime_task_report_key "$task_ref")"
+  mkdir -p "$(dirname "$report_path")"
+
+  case "$pattern" in
+    lead_verify)
+      pattern_label="lead + verify"
+      tag="lead-verify"
+      ;;
+    *)
+      pattern_label="independent compare"
+      tag="independent-compare"
+      ;;
+  esac
+
+  joined_reports=""
+  for report_line in "$@"; do
+    if [ -n "$joined_reports" ]; then
+      joined_reports="${joined_reports}; "
+    fi
+    joined_reports="${joined_reports}${report_line}"
+  done
+
+  if [ ! -f "$report_path" ]; then
+    cat > "$report_path" <<EOF
+# ${task_key} 패턴 조율 보고
+
+- **Date**: $(date +%Y-%m-%d)
+- **Author**: manager
+- **For**: user
+- **Status**: draft
+- **Tags**: \`task-report\`, \`${task_key}\`, \`task-pattern\`, \`${tag}\`
+
+## 요약
+- **무엇**: ${task_ref}에 대한 ${pattern_label} 조율 보고
+- **핵심 발견**: 작성 필요
+- **시사점**: 작성 필요
+
+## 내용
+- 작업 지시: ${task_ref}
+- 보고서 경로: ${report_rel}
+- 실행 패턴: ${pattern_label}
+- lane 결과: ${joined_reports}
+- 최종 판정: 작성 필요
+- 검증 결과: 작성 필요
+- 남은 리스크: 작성 필요
+
+## 참고한 교훈
+- 해당 없으면 비워둘 수 있음
+
+## 다음 단계
+- 후속 작업이 있으면 작성
+EOF
+  fi
+
+  printf '%s\n' "$report_rel"
 }
 
 record_assignment() {
@@ -2528,28 +2847,61 @@ cmd_dispatch() {
   local role="$1"
   local task="$2"       # 태스크 파일 경로 OR 인라인 텍스트
   local project="$3"
+  local forced_pattern="${4:-}"
   validate_project_name "$project"
 
   # stale 정리
   expire_stale_assignments "$project"
 
-  # 태스크 파일이면 기존 방식 메시지, 아니면 인라인
-  local msg subject
-  if [ -f "$task" ]; then
-    subject="$task"
-    msg="${task} 파일에 새 작업 지시가 있다. 읽고 실행해라."
-  else
-    subject="$task"
-    msg="$task"
+  local subject base_msg lead_target target role_label target_msg idx
+  local normalized_task target_report_rel claude_report_rel codex_report_rel
+  local manager_report_rel="" target_csv="" role_csv="" report_refs=()
+  task_subject_and_message "$task" subject base_msg "$project"
+  normalized_task="$(normalize_task_ref "$project" "$subject")"
+
+  resolve_task_execution_plan "$role" "$task" "$project" "$forced_pattern"
+  if [ "${#TASK_EXEC_TARGETS[@]}" -eq 0 ]; then
+    echo "Error: dispatch 대상이 비어 있다." >&2
+    return 1
   fi
 
-  # message.sh로 전달 (interactive submit, 큐잉, 프로세스 체크 전부 활용)
-  # 태스크 할당 기록은 message.sh가 kind=task_assign 시 자동 처리 (INS-003)
-  bash "$TOOLS_DIR/message.sh" "$project" "manager" "$role" "task_assign" "normal" "$subject" "$msg"
+  lead_target="${TASK_EXEC_TARGETS[0]}"
+  for target in "${TASK_EXEC_TARGETS[@]}"; do
+    [ -n "$target_csv" ] && target_csv="${target_csv},"
+    target_csv="${target_csv}${target}"
+  done
+  for role_label in "${TASK_EXEC_ROLES[@]}"; do
+    [ -n "$role_csv" ] && role_csv="${role_csv},"
+    role_csv="${role_csv}${role_label}"
+  done
+
+  for idx in "${!TASK_EXEC_TARGETS[@]}"; do
+    target="${TASK_EXEC_TARGETS[$idx]}"
+    role_label="${TASK_EXEC_ROLES[$idx]}"
+    target_msg="$(pattern_dispatch_message "$task" "$project" "$TASK_EXEC_PATTERN" "$role_label" "$lead_target")"
+    bash "$TOOLS_DIR/message.sh" "$project" "manager" "$target" "task_assign" "normal" "$subject" "$target_msg"
+    target_report_rel="$(runtime_project_relative_path "$project" "$(runtime_task_report_path "$project" "$normalized_task" "$target")")"
+    report_refs+=("${target}:${target_report_rel}")
+    if [[ "$target" == *-claude ]]; then
+      claude_report_rel="$target_report_rel"
+    elif [[ "$target" == *-codex ]]; then
+      codex_report_rel="$target_report_rel"
+    fi
+  done
+
+  if [ "$TASK_EXEC_MANAGER_STUB" = "compare" ]; then
+    if [ -n "${claude_report_rel:-}" ] && [ -n "${codex_report_rel:-}" ]; then
+      manager_report_rel="$(runtime_write_dual_synthesis_report_stub "$project" "$normalized_task" "$claude_report_rel" "$codex_report_rel" >/dev/null && runtime_project_relative_path "$project" "$(runtime_task_report_path "$project" "$normalized_task" "manager")")"
+    else
+      manager_report_rel="$(write_pattern_manager_report_stub "$project" "$normalized_task" "$TASK_EXEC_PATTERN" "${report_refs[@]}")"
+    fi
+  elif [ "$TASK_EXEC_MANAGER_STUB" = "verify" ]; then
+    manager_report_rel="$(write_pattern_manager_report_stub "$project" "$normalized_task" "$TASK_EXEC_PATTERN" "${report_refs[@]}")"
+  fi
 
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator task_dispatch "$role" \
-    --detail task="$task" || true
-  echo "dispatch 완료: ${role} ← ${task}"
+    --detail task="$task" pattern="$TASK_EXEC_PATTERN" targets="$target_csv" roles="$role_csv" manager_report="${manager_report_rel:-}" || true
+  echo "dispatch 완료: ${role} [${TASK_EXEC_PATTERN}] ← ${task} (${target_csv})"
 }
 
 # ──────────────────────────────────────────────
@@ -2560,37 +2912,10 @@ cmd_dual_dispatch() {
   local role="$1"
   local task="$2"       # 태스크 파일 경로 OR 인라인 텍스트
   local project="$3"
-  validate_project_name "$project"
-
-  # stale 정리
-  expire_stale_assignments "$project"
-
-  local claude_win="${role}-claude"
-  local codex_win="${role}-codex"
-
-  local msg subject
-  if [ -f "$task" ]; then
-    subject="$task"
-    msg="${task} 파일에 새 작업 지시가 있다. 읽고 실행해라."
-  else
-    subject="$task"
-    msg="$task"
-  fi
-
-  # 양쪽 전달 (message.sh가 interactive submit/큐잉 전부 처리)
-  # 태스크 할당 기록은 message.sh가 kind=task_assign 시 자동 처리 (INS-003)
-  bash "$TOOLS_DIR/message.sh" "$project" "manager" "$claude_win" "task_assign" "normal" "$subject" "$msg"
-  bash "$TOOLS_DIR/message.sh" "$project" "manager" "$codex_win" "task_assign" "normal" "$subject" "$msg"
-
-  local normalized_task claude_report_rel codex_report_rel
-  normalized_task="$(normalize_task_ref "$project" "$subject")"
-  claude_report_rel="$(runtime_project_relative_path "$project" "$(runtime_task_report_path "$project" "$normalized_task" "$claude_win")")"
-  codex_report_rel="$(runtime_project_relative_path "$project" "$(runtime_task_report_path "$project" "$normalized_task" "$codex_win")")"
-  runtime_write_dual_synthesis_report_stub "$project" "$normalized_task" "$claude_report_rel" "$codex_report_rel" >/dev/null
-
+  cmd_dispatch "$role" "$task" "$project" "independent compare"
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator dual_dispatch "$role" \
-    --detail task="$task" || true
-  echo "dual-dispatch 완료: ${role} (claude + codex) ← ${task}"
+    --detail task="$task" pattern="independent_compare" || true
+  echo "dual-dispatch 완료: ${role} (compat → independent compare) ← ${task}"
 }
 
 # ──────────────────────────────────────────────
