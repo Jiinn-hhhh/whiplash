@@ -13,9 +13,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TOOLS_DIR="$SCRIPT_DIR"
 # shellcheck source=/dev/null
+source "$TOOLS_DIR/tmux-env.sh"
+# shellcheck source=/dev/null
 source "$TOOLS_DIR/runtime-paths.sh"
 # shellcheck source=/dev/null
 source "$TOOLS_DIR/tmux-submit.sh"
+# shellcheck source=/dev/null
+source "$TOOLS_DIR/message-queue.sh"
+# shellcheck source=/dev/null
+source "$TOOLS_DIR/notify-format.sh"
 PROJECT="_stability-test"
 SESSION="whiplash-${PROJECT}"
 PROJECT_DIR="$REPO_ROOT/projects/$PROJECT"
@@ -24,6 +30,16 @@ FAKE_CODEX_BIN=""
 PASS=0
 FAIL=0
 TOTAL=0
+TEST_TMUX_TMPDIR="$(mktemp -d "/tmp/whiplash-it.XXXXXX")"
+
+if [ -z "${TEST_TMUX_TMPDIR:-}" ] || [ ! -d "$TEST_TMUX_TMPDIR" ]; then
+  echo "ERROR: isolated tmux tmpdir 생성 실패" >&2
+  exit 1
+fi
+
+export TMUX_TMPDIR="$TEST_TMUX_TMPDIR"
+unset TMUX
+whiplash_activate_tmux_project "$PROJECT"
 
 # ──────────────────────────────────────────────
 # 테스트 유틸리티
@@ -131,9 +147,44 @@ static int enable_raw_mode(void) {
   return tcsetattr(STDIN_FILENO, TCSANOW, &raw);
 }
 
+static int env_flag_enabled(const char *name) {
+  const char *value = getenv(name);
+  if (value == NULL) {
+    return 0;
+  }
+  return strcmp(value, "1") == 0 || strcmp(value, "true") == 0 || strcmp(value, "yes") == 0;
+}
+
+static int env_int_value(const char *name) {
+  const char *value = getenv(name);
+  char *end = NULL;
+  long parsed;
+  if (value == NULL || *value == '\0') {
+    return 0;
+  }
+  parsed = strtol(value, &end, 10);
+  if (end == NULL || *end != '\0' || parsed < 0) {
+    return 0;
+  }
+  return (int) parsed;
+}
+
 static int handle_submit(char **draft, size_t *draft_len) {
+  int rich_tui = env_flag_enabled("WHIPLASH_FAKE_RICH_TUI");
+  int swallow_submit = env_flag_enabled("WHIPLASH_FAKE_SWALLOW_SUBMIT");
+  const char *prompt = rich_tui ? "\r\n> " : "\r\n>>> ";
+
   if (*draft_len == 0) {
-    if (write_all("\r\n>>> ", 6) != 0) {
+    if (write_all(prompt, strlen(prompt)) != 0) {
+      return -1;
+    }
+    return 0;
+  }
+
+  if (swallow_submit) {
+    *draft_len = 0;
+    (*draft)[0] = '\0';
+    if (write_all(prompt, strlen(prompt)) != 0) {
       return -1;
     }
     return 0;
@@ -145,7 +196,7 @@ static int handle_submit(char **draft, size_t *draft_len) {
   if (display_text(*draft, *draft_len) != 0) {
     return -1;
   }
-  if (write_all("\r\n>>> ", 6) != 0) {
+  if (write_all(prompt, strlen(prompt)) != 0) {
     return -1;
   }
 
@@ -163,6 +214,10 @@ int main(int argc, char **argv) {
   size_t draft_len = 0;
   size_t draft_cap = 0;
   int in_paste = 0;
+  int discard_warmup = 0;
+  int warmup_seconds = 0;
+  int initial_prompt_delay_ms = env_int_value("WHIPLASH_FAKE_INITIAL_PROMPT_DELAY_MS");
+  int discard_early_input = env_flag_enabled("WHIPLASH_FAKE_DISCARD_EARLY_INPUT");
 
   if (argc > 1 && strcmp(argv[1], "--help") == 0) {
     const char *help = "fake cli supports --dangerously-bypass-approvals-and-sandbox\n";
@@ -171,15 +226,48 @@ int main(int argc, char **argv) {
   }
 
   if (argc > 2 && strcmp(argv[1], "auth") == 0 && strcmp(argv[2], "status") == 0) {
+    const char *logged_in = getenv("WHIPLASH_FAKE_CLAUDE_LOGGED_IN");
     const char *json = "{\"loggedIn\":true,\"authMethod\":\"test\"}\n";
+    if (logged_in != NULL && (strcmp(logged_in, "0") == 0 || strcmp(logged_in, "false") == 0)) {
+      json = "{\"loggedIn\":false,\"authMethod\":\"test\"}\n";
+    }
     write_all(json, strlen(json));
     return 0;
   }
 
   if (argc > 1 && strcmp(argv[1], "-p") == 0) {
+    const char *prompt_log = getenv("WHIPLASH_FAKE_CLAUDE_P_LOG");
+    if (prompt_log != NULL && argc > 2) {
+      FILE *fp = fopen(prompt_log, "a");
+      if (fp != NULL) {
+        fputs(argv[2], fp);
+        fputc('\n', fp);
+        fclose(fp);
+      }
+    }
     const char *json = "{\"session_id\":\"fake-session\"}\n";
     write_all(json, strlen(json));
     return 0;
+  }
+
+  {
+    const char *warmup = getenv("WHIPLASH_FAKE_CLAUDE_WARMUP_SECONDS");
+    if (warmup != NULL && *warmup != '\0') {
+      warmup_seconds = atoi(warmup);
+      if (warmup_seconds < 0) {
+        warmup_seconds = 0;
+      }
+    }
+  }
+  {
+    const char *discard = getenv("WHIPLASH_FAKE_CLAUDE_DISCARD_EARLY_INPUT");
+    if (discard != NULL && (*discard == '1' || *discard == 'y' || *discard == 'Y' || *discard == 't' || *discard == 'T')) {
+      discard_warmup = 1;
+    }
+  }
+
+  if (warmup_seconds > 0) {
+    sleep((unsigned int) warmup_seconds);
   }
 
   if (enable_raw_mode() != 0) {
@@ -187,13 +275,49 @@ int main(int argc, char **argv) {
   }
   atexit(restore_terminal);
 
+  if (initial_prompt_delay_ms > 0) {
+    usleep((useconds_t) initial_prompt_delay_ms * 1000U);
+  }
+  if (discard_early_input) {
+    tcflush(STDIN_FILENO, TCIFLUSH);
+  }
+
   if (append_char(&draft, &draft_len, &draft_cap, '\0') != 0) {
     return 1;
   }
   draft_len = 0;
 
+  if (discard_warmup) {
+    struct termios warmup_termios;
+    if (tcgetattr(STDIN_FILENO, &warmup_termios) == 0) {
+      cc_t old_vmin = warmup_termios.c_cc[VMIN];
+      cc_t old_vtime = warmup_termios.c_cc[VTIME];
+      warmup_termios.c_cc[VMIN] = 0;
+      warmup_termios.c_cc[VTIME] = 1;
+      if (tcsetattr(STDIN_FILENO, TCSANOW, &warmup_termios) == 0) {
+        unsigned char discard_buf[256];
+        while (read(STDIN_FILENO, discard_buf, sizeof(discard_buf)) > 0) {}
+        warmup_termios.c_cc[VMIN] = old_vmin;
+        warmup_termios.c_cc[VTIME] = old_vtime;
+        tcsetattr(STDIN_FILENO, TCSANOW, &warmup_termios);
+      }
+    }
+  }
+
+  if (env_flag_enabled("WHIPLASH_FAKE_RICH_TUI")) {
+    if (write_all("OpenAI Codex\r\n", 14) != 0) {
+      free(draft);
+      return 1;
+    }
+  }
+
   write_all("\033[?2004h", 8);
-  if (write_all(">>> ", 4) != 0) {
+  if (env_flag_enabled("WHIPLASH_FAKE_RICH_TUI")) {
+    if (write_all("> ", 2) != 0) {
+      free(draft);
+      return 1;
+    }
+  } else if (write_all(">>> ", 4) != 0) {
     free(draft);
     return 1;
   }
@@ -289,11 +413,17 @@ build_fake_claude() {
 
 build_fake_codex() {
   FAKE_CODEX_BIN="$PROJECT_DIR/codex"
-  build_fake_terminal_agent "$FAKE_CODEX_BIN"
+  local fake_codex_real_bin="$PROJECT_DIR/codex-aarch64-a"
+  rm -f "$FAKE_CODEX_BIN" "$fake_codex_real_bin"
+  build_fake_terminal_agent "$fake_codex_real_bin"
+  ln -s "$fake_codex_real_bin" "$FAKE_CODEX_BIN"
 }
 
 cleanup() {
-  tmux kill-session -t "$SESSION" 2>/dev/null || true
+  whiplash_tmux_run_default kill-server 2>/dev/null || true
+  tmux kill-server 2>/dev/null || true
+  whiplash_tmux_run_for_project "_stability-peer" kill-server 2>/dev/null || true
+  whiplash_tmux_run_for_project "shared-contract" kill-server 2>/dev/null || true
   local pid
   pid="$(runtime_get_manager_state "$PROJECT" "monitor_pid" "" 2>/dev/null || true)"
   if [[ "${pid:-}" =~ ^[0-9]+$ ]] && [ "$pid" != "$$" ]; then
@@ -304,9 +434,10 @@ cleanup() {
   pkill -f "message\\.sh[[:space:]]+${PROJECT}[[:space:]]" 2>/dev/null || true
   pkill -f "cmd\\.sh[[:space:]]+refresh[[:space:]].*[[:space:]]${PROJECT}$" 2>/dev/null || true
   rm -rf "$PROJECT_DIR"
+  rm -rf "$REPO_ROOT/projects/_stability-peer"
 }
 
-trap cleanup EXIT
+trap 'cleanup; rm -rf "${TEST_TMUX_TMPDIR:-}"' EXIT
 
 assert_eq() {
   local desc="$1" expected="$2" actual="$3"
@@ -330,6 +461,18 @@ assert_true() {
     echo "  FAIL: $desc"
     FAIL=$((FAIL + 1))
   fi
+}
+
+tmux_has_window() {
+  local session_name="$1"
+  local window_name="$2"
+  tmux list-windows -t "$session_name" -F '#{window_name}' | grep -q "^${window_name}$"
+}
+
+tmux_has_session_for_socket() {
+  local socket_name="$1"
+  local session_name="$2"
+  whiplash_tmux_run_on_socket "$socket_name" has-session -t "$session_name"
 }
 
 assert_false() {
@@ -390,6 +533,34 @@ assert_file_not_contains() {
     echo "  FAIL: $desc (pattern '$pattern' should not be in $path)"
     FAIL=$((FAIL + 1))
   fi
+}
+
+build_expected_notification() {
+  local msg_from="$1"
+  local msg_to="$2"
+  local msg_kind="$3"
+  local msg_priority="$4"
+  local msg_subject="$5"
+  local msg_content="$6"
+  local prefix flat_subject flat_content
+
+  if [ "$msg_kind" = "user_notice" ] || { [ "$msg_kind" = "status_update" ] && { [ "$msg_to" = "manager" ] || [ "$msg_to" = "user" ]; }; }; then
+    msg_subject="$(whiplash_notification_subject "$msg_kind" "$msg_subject")"
+    msg_content="$(whiplash_notification_body "$msg_kind" "$msg_subject" "$msg_content")"
+  fi
+  prefix="[notify] ${msg_from} → ${msg_to} | ${msg_kind}"
+  if [ "$msg_priority" = "urgent" ]; then
+    prefix="[URGENT] ${msg_from} → ${msg_to} | ${msg_kind}"
+  fi
+
+  flat_subject="$(printf '%s' "$msg_subject" | tr '\r\n' '  ')"
+  if [ "$msg_kind" = "user_notice" ] || { [ "$msg_kind" = "status_update" ] && { [ "$msg_to" = "manager" ] || [ "$msg_to" = "user" ]; }; }; then
+    printf '%s | 제목: %s\n%s' "$prefix" "$flat_subject" "$msg_content"
+    return 0
+  fi
+
+  flat_content="$(printf '%s' "$msg_content" | tr '\r\n' '  ')"
+  printf '%s' "${prefix} | 제목: ${flat_subject} | 내용: ${flat_content}"
 }
 
 probe_cmd_boot_message() {
@@ -466,7 +637,7 @@ module = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(module)
 info = module.check_monitor(project_dir)
-print(f'{int(info["alive"])}|{info["queued"]}|{int(info["heartbeat_age"] is not None)}')
+print(f'{int(info["alive"])}|{int(info.get("stale", False))}|{info["queued"]}|{int(info["heartbeat_age"] is not None)}')
 PY
 }
 
@@ -567,14 +738,32 @@ create_fake_agent() {
   local win_name="$1"
   tmux new-window -t "$SESSION" -n "$win_name"
   tmux send-keys -t "${SESSION}:${win_name}" "'${FAKE_CLAUDE_BIN}'" Enter
-  sleep 2
+  local pane_pid
+  pane_pid="$(tmux list-panes -t "${SESSION}:${win_name}" -F '#{pane_pid}' 2>/dev/null | head -1 || true)"
+  wait_for_child_process_named "$pane_pid" claude 10 1 || true
+  wait_for_pane_prompt "${SESSION}:${win_name}" 10 1 || true
 }
 
 create_fake_codex_agent() {
   local win_name="$1"
   tmux new-window -t "$SESSION" -n "$win_name"
   tmux send-keys -t "${SESSION}:${win_name}" "'${FAKE_CODEX_BIN}'" Enter
-  sleep 2
+  local pane_pid
+  pane_pid="$(tmux list-panes -t "${SESSION}:${win_name}" -F '#{pane_pid}' 2>/dev/null | head -1 || true)"
+  wait_for_child_process_named "$pane_pid" codex 10 1 || true
+  wait_for_pane_prompt "${SESSION}:${win_name}" 10 1 || true
+}
+
+create_wrapped_fake_agent() {
+  local win_name="$1"
+  local backend_bin="$2"
+  local process_name="$3"
+  tmux new-window -t "$SESSION" -n "$win_name"
+  tmux send-keys -t "${SESSION}:${win_name}" "python3 -c 'import subprocess, sys; raise SystemExit(subprocess.run([sys.argv[1]]).returncode)' '${backend_bin}'" Enter
+  local pane_pid
+  pane_pid="$(tmux list-panes -t "${SESSION}:${win_name}" -F '#{pane_pid}' 2>/dev/null | head -1 || true)"
+  wait_for_child_process_named "$pane_pid" "$process_name" 10 1 || true
+  wait_for_pane_prompt "${SESSION}:${win_name}" 10 1 || true
 }
 
 # sessions.md에 가짜 에이전트 등록
@@ -612,6 +801,61 @@ HEADER
   echo "| ${role} | codex | codex-interactive | ${SESSION}:${win_name} | active | ${today} | test | |" >> "$sf"
 }
 
+wait_for_child_process_named() {
+  local parent_pid="$1"
+  local process_name="$2"
+  local attempts="${3:-8}"
+  local sleep_seconds="${4:-1}"
+  local attempt
+  for attempt in $(seq 1 "$attempts"); do
+    if [ -n "$(find_process_tree_pid_named "$parent_pid" "$process_name" || true)" ]; then
+      return 0
+    fi
+    sleep "$sleep_seconds"
+  done
+  return 1
+}
+
+find_process_tree_pid_named() {
+  local parent_pid="$1"
+  local process_name="$2"
+  [ -n "$parent_pid" ] || return 1
+
+  local pane_comm
+  pane_comm="$(ps -p "$parent_pid" -o comm= 2>/dev/null | head -1 || true)"
+  if [ -n "$pane_comm" ] && printf '%s' "$pane_comm" | grep -Eq "(^|/)${process_name}([^[:space:]]*)?$"; then
+    printf '%s\n' "$parent_pid"
+    return 0
+  fi
+
+  local child_pid found_pid
+  while IFS= read -r child_pid; do
+    [ -n "$child_pid" ] || continue
+    found_pid="$(find_process_tree_pid_named "$child_pid" "$process_name" || true)"
+    if [ -n "$found_pid" ]; then
+      printf '%s\n' "$found_pid"
+      return 0
+    fi
+  done < <(pgrep -P "$parent_pid" 2>/dev/null || true)
+
+  return 1
+}
+
+wait_for_pane_prompt() {
+  local tmux_target="$1"
+  local attempts="${2:-8}"
+  local sleep_seconds="${3:-1}"
+  local attempt pane_dump
+  for attempt in $(seq 1 "$attempts"); do
+    pane_dump="$(tmux capture-pane -pJ -t "$tmux_target" -S -20 2>/dev/null || true)"
+    if printf '%s\n' "$pane_dump" | grep -q '>>> '; then
+      return 0
+    fi
+    sleep "$sleep_seconds"
+  done
+  return 1
+}
+
 # ──────────────────────────────────────────────
 # 시나리오 1: 에이전트 kill → monitor 감지
 # ──────────────────────────────────────────────
@@ -630,14 +874,20 @@ test_scenario_1() {
   # 에이전트 alive 확인
   local pane_pid
   pane_pid=$(tmux list-panes -t "${SESSION}:developer" -F '#{pane_pid}' 2>/dev/null | head -1) || pane_pid=""
-  assert_true "developer alive 확인" bash -c \
-    "[ -n '$pane_pid' ] && pgrep -P '$pane_pid' claude >/dev/null 2>&1"
+  assert_true "developer alive 확인" wait_for_child_process_named "$pane_pid" claude
 
   # 에이전트 프로세스 kill (윈도우는 남겨둠 — tmux send-keys로 shell 유지)
   if [ -n "$pane_pid" ]; then
     # claude 프로세스만 kill
     local claude_pid
     claude_pid=$(pgrep -P "$pane_pid" claude 2>/dev/null | head -1) || claude_pid=""
+    if [ -z "$claude_pid" ]; then
+      local pane_comm
+      pane_comm="$(ps -p "$pane_pid" -o comm= 2>/dev/null | head -1 || true)"
+      if [ -n "$pane_comm" ] && printf '%s' "$pane_comm" | grep -Eq '(^|/)claude([^[:space:]]*)?$'; then
+        claude_pid="$pane_pid"
+      fi
+    fi
     if [ -n "$claude_pid" ]; then
       kill "$claude_pid" 2>/dev/null || true
     fi
@@ -646,7 +896,7 @@ test_scenario_1() {
 
   # 크래시 상태 확인
   assert_false "developer dead 확인" bash -c \
-    "pgrep -P '$pane_pid' claude >/dev/null 2>&1"
+    "ps -p '$pane_pid' -o comm= 2>/dev/null | grep -Eq '(^|/)claude([^[:space:]]*)?$' || pgrep -P '$pane_pid' claude >/dev/null 2>&1"
 
   # sessions.md에서 active인 developer를 찾을 수 있는지 확인
   local active_windows
@@ -764,24 +1014,30 @@ test_scenario_3() {
 
   # 수신자 윈도우 생성
   create_fake_agent "developer"
+  tmux_submit_wait_ready "${SESSION}:developer" 10 1 || true
 
   # developer 대상 큐만 수동 drain하여 결정적으로 검증한다.
   local drained=false pane_dump="" msg_from msg_to msg_kind msg_priority msg_subject msg_content notification
   if [ -f "$msg_file" ]; then
-    msg_from=$(grep '^from=' "$msg_file" | head -1 | sed 's/^from=//') || msg_from=""
-    msg_to=$(grep '^to=' "$msg_file" | head -1 | sed 's/^to=//') || msg_to=""
-    msg_kind=$(grep '^kind=' "$msg_file" | head -1 | sed 's/^kind=//') || msg_kind=""
-    msg_priority=$(grep '^priority=' "$msg_file" | head -1 | sed 's/^priority=//') || msg_priority=""
-    msg_subject=$(grep '^subject=' "$msg_file" | head -1 | sed 's/^subject=//') || msg_subject=""
-    msg_content=$(grep '^content=' "$msg_file" | head -1 | sed 's/^content=//') || msg_content=""
-    notification="[notify] ${msg_from} → ${msg_to} | ${msg_kind} | 제목: ${msg_subject} | 내용: ${msg_content}"
-    if tmux_submit_pasted_payload "${SESSION}:developer" "$notification" "scenario3-drain"; then
+    msg_from="$(whiplash_queue_read_field "$msg_file" "from")"
+    msg_to="$(whiplash_queue_read_field "$msg_file" "to")"
+    msg_kind="$(whiplash_queue_read_field "$msg_file" "kind")"
+    msg_priority="$(whiplash_queue_read_field "$msg_file" "priority")"
+    msg_subject="$(whiplash_queue_read_field "$msg_file" "subject")"
+    msg_content="$(whiplash_queue_read_content "$msg_file")"
+    notification="$(build_expected_notification "$msg_from" "$msg_to" "$msg_kind" "$msg_priority" "$msg_subject" "$msg_content")"
+    if tmux_submit__literal_submit_single_line "${SESSION}:developer" "$notification" 0.25 8 \
+      || tmux_submit_pasted_payload "${SESSION}:developer" "$notification" "scenario3-drain"; then
       rm -f "$msg_file"
-      sleep 1
-      pane_dump="$(tmux capture-pane -pJ -t "${SESSION}:developer" -S -80 2>/dev/null || true)"
-      if echo "$pane_dump" | grep -q "연구 결과 정리 완료"; then
-        drained=true
-      fi
+      local attempt
+      for attempt in $(seq 1 5); do
+        sleep 1
+        pane_dump="$(tmux capture-pane -pJ -t "${SESSION}:developer" -S -80 2>/dev/null || true)"
+        if echo "$pane_dump" | grep -q "연구 결과 정리 완료"; then
+          drained=true
+          break
+        fi
+      done
     fi
   fi
 
@@ -1219,7 +1475,7 @@ EOF
 
   local monitor_info
   monitor_info="$(probe_dashboard_monitor)"
-  assert_eq "dashboard monitor lock pid fallback 인식" "1|1|1" "$monitor_info"
+  assert_eq "dashboard monitor lock pid fallback 인식" "1|0|1|1" "$monitor_info"
 
   echo "  시나리오 9 완료"
 }
@@ -1379,8 +1635,35 @@ test_scenario_12() {
 
   local pane_pid
   pane_pid=$(tmux list-panes -t "${SESSION}:developer-codex" -F '#{pane_pid}' 2>/dev/null | head -1) || pane_pid=""
-  assert_true "developer-codex interactive alive 확인" bash -c \
-    "[ -n '$pane_pid' ] && pgrep -P '$pane_pid' codex >/dev/null 2>&1"
+  assert_true "developer-codex interactive alive 확인" wait_for_child_process_named "$pane_pid" codex
+  local pane_cmd
+  pane_cmd="$(tmux display-message -p -t "${SESSION}:developer-codex" '#{pane_current_command}' 2>/dev/null || true)"
+  assert_eq "developer-codex pane_current_command가 resolved codex 바이너리명으로 보임" "codex-aarch64-a" "$pane_cmd"
+
+  local pane_dump=""
+  local attempt
+  local direct_subject="direct-codex-alias"
+  local direct_content="codex direct alias smoke"
+  bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer-codex \
+    status_update normal "$direct_subject" "$direct_content" >/dev/null
+
+  for attempt in 1 2 3 4 5 6 7 8; do
+    pane_dump="$(tmux capture-pane -pJ -t "${SESSION}:developer-codex" -S -80 2>/dev/null || true)"
+    if echo "$pane_dump" | grep -q "$direct_content"; then
+      break
+    fi
+    sleep 1
+  done
+  TOTAL=$((TOTAL + 1))
+  if echo "$pane_dump" | grep -q "$direct_content"; then
+    echo "  PASS: message.sh direct path가 codex alias pane에 즉시 표시"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: message.sh direct path가 codex alias pane에 즉시 표시되지 않음"
+    FAIL=$((FAIL + 1))
+  fi
+  assert_file_contains "message.sh direct path가 interactive로 기록됨" \
+    "$PROJECT_DIR/logs/message.log" "manager → developer-codex status_update normal \"${direct_subject}\" reason=\"interactive\""
 
   local queue_dir
   queue_dir="$(runtime_message_queue_dir "$PROJECT")"
@@ -1397,8 +1680,6 @@ EOF
 
   bash "$TOOLS_DIR/cmd.sh" monitor-check "$PROJECT" >/dev/null 2>&1
 
-  local pane_dump=""
-  local attempt
   for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
     pane_dump="$(tmux capture-pane -pJ -t "${SESSION}:developer-codex" -S -60 2>/dev/null || true)"
     if [ ! -f "$queue_file" ] && echo "$pane_dump" | grep -q "codex interactive drain smoke"; then
@@ -1416,6 +1697,8 @@ EOF
     echo "  FAIL: codex interactive pane에 큐 메시지 미표시"
     FAIL=$((FAIL + 1))
   fi
+  assert_file_not_contains "monitor가 codex alias pane를 false-crash로 보지 않음" \
+    "$PROJECT_DIR/logs/system.log" "developer-codex 크래시 감지"
 
   echo "  시나리오 12 완료"
 }
@@ -1724,9 +2007,21 @@ EOF
   dashboard_state="$(probe_dashboard_agent developer)"
   assert_eq "dashboard가 final report 표시" "ALIVE|final|TASK-007" "$dashboard_state"
 
+  tmux send-keys -t "${SESSION}:developer" "Not logged in · Please run /login" Enter
+  sleep 1
+  dashboard_state="$(probe_dashboard_agent developer)"
+  assert_eq "dashboard가 auth-blocked Claude pane을 AUTH로 표시" "AUTH|final|TASK-007" "$dashboard_state"
+
   local pane_pid child_pid
   pane_pid="$(tmux list-panes -t "${SESSION}:developer" -F '#{pane_pid}' 2>/dev/null | head -1)"
   child_pid="$(pgrep -P "$pane_pid" claude 2>/dev/null | head -1 || true)"
+  if [ -z "$child_pid" ]; then
+    local pane_comm
+    pane_comm="$(ps -p "$pane_pid" -o comm= 2>/dev/null | head -1 || true)"
+    if [ -n "$pane_comm" ] && printf '%s' "$pane_comm" | grep -Eq '(^|/)claude([^[:space:]]*)?$'; then
+      child_pid="$pane_pid"
+    fi
+  fi
   if [ -n "$child_pid" ]; then
     kill "$child_pid" 2>/dev/null || true
   fi
@@ -1734,6 +2029,43 @@ EOF
 
   dashboard_state="$(probe_dashboard_agent developer)"
   assert_eq "dashboard가 dead process를 CRASHED로 표시" "CRASHED|final|TASK-007" "$dashboard_state"
+
+  cleanup
+  setup_test_project
+  build_fake_codex
+
+  tmux new-session -d -s "$SESSION" -n dashboard
+  create_fake_codex_agent "developer-codex"
+  register_fake_codex_agent "developer-codex" "developer"
+
+  mkdir -p "$PROJECT_DIR/workspace/tasks"
+  cat > "$PROJECT_DIR/workspace/tasks/TASK-009.md" << 'EOF'
+# TASK-009: Dashboard codex alias status test
+EOF
+
+  pane_pid="$(tmux list-panes -t "${SESSION}:developer-codex" -F '#{pane_pid}' 2>/dev/null | head -1)"
+  local dashboard_codex_match
+  dashboard_codex_match="$(python3 - "$REPO_ROOT" <<'PY'
+import importlib.util
+import pathlib
+import sys
+
+repo_root = pathlib.Path(sys.argv[1])
+module_path = repo_root / "dashboard" / "dashboard.py"
+spec = importlib.util.spec_from_file_location("whiplash_dashboard", module_path)
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+print(int(module._command_matches_backend("codex-aarch64-a", "codex")))
+PY
+)"
+  assert_eq "dashboard helper가 codex alias command를 codex backend로 인식" "1" "$dashboard_codex_match"
+
+  bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer-codex \
+    task_assign normal "workspace/tasks/TASK-009.md" "dashboard codex alias smoke" >/dev/null
+
+  dashboard_state="$(probe_dashboard_agent developer-codex)"
+  assert_eq "dashboard collect가 codex alias pane를 ALIVE로 표시" "ALIVE|draft|TASK-009" "$dashboard_state"
 
   echo "  시나리오 18 완료"
 }
@@ -1875,7 +2207,9 @@ test_scenario_21() {
 
   tmux new-session -d -s "$SESSION" -n onboarding
   tmux send-keys -t "${SESSION}:onboarding" "'${FAKE_CLAUDE_BIN}'" Enter
-  sleep 2
+  local onboarding_pane_pid
+  onboarding_pane_pid="$(tmux list-panes -t "${SESSION}:onboarding" -F '#{pane_pid}' 2>/dev/null | head -1 || true)"
+  wait_for_child_process_named "$onboarding_pane_pid" claude 10 1 || true
   register_fake_agent "onboarding" "onboarding"
   invoke_cmd_function set_project_stage "$PROJECT" onboarding >/dev/null
 
@@ -1959,6 +2293,7 @@ test_scenario_22() {
   echo "=== 시나리오 22: onboarding bootstrap for new project ==="
   cleanup
   build_fake_claude
+  build_fake_codex
 
   local project_md="$PROJECT_DIR/project.md"
   local index_md="$PROJECT_DIR/memory/knowledge/index.md"
@@ -2255,6 +2590,7 @@ test_scenario_26() {
   cleanup
   setup_test_project
   build_fake_claude
+  build_fake_codex
 
   cat > "$PROJECT_DIR/project.md" << 'EOF'
 # Project: discussion-role-test
@@ -2333,7 +2669,7 @@ PY
   assert_eq "cmd.sh boot가 discussion window 자동 부팅" "1" "$discussion_window_count"
 
   local discussion_session_count
-  discussion_session_count="$(grep -c '| discussion | claude |' "$PROJECT_DIR/memory/manager/sessions.md" || true)"
+  discussion_session_count="$(grep -c '| discussion | codex |' "$PROJECT_DIR/memory/manager/sessions.md" || true)"
   assert_eq "sessions.md에 discussion 세션 기록" "1" "$discussion_session_count"
 
   echo "  시나리오 26 완료"
@@ -2372,6 +2708,15 @@ test_scenario_27() {
     assert_file_exists "Codex subagent pack 존재: ${agent_name}" "$REPO_ROOT/.codex/agents/${agent_name}.toml"
   done
 
+  assert_file_contains "Claude light-tier specialist model 분화" "$REPO_ROOT/.claude/agents/code-mapper.md" "^model: haiku$"
+  assert_file_contains "Claude strong-tier reviewer model 분화" "$REPO_ROOT/.claude/agents/reviewer.md" "^model: opus$"
+  assert_file_contains "Codex light-tier specialist model 분화" "$REPO_ROOT/.codex/agents/code-mapper.toml" '^model = "gpt-5.4-mini"$'
+  assert_file_contains "Codex strong-tier reviewer reasoning 분화" "$REPO_ROOT/.codex/agents/reviewer.toml" '^model_reasoning_effort = "high"$'
+  assert_file_contains "developer orchestration triage 문구 존재" "$REPO_ROOT/agents/developer/techniques/subagent-orchestration.md" "^## Task Triage$"
+  assert_file_contains "developer orchestration 모델 선택 가이드 존재" "$REPO_ROOT/agents/developer/techniques/subagent-orchestration.md" "^## 모델 선택 가이드$"
+  assert_file_contains "researcher orchestration 모델 선택 가이드 존재" "$REPO_ROOT/agents/researcher/techniques/subagent-orchestration.md" "^## 모델 선택 가이드$"
+  assert_file_contains "systems orchestration triage 문구 존재" "$REPO_ROOT/agents/systems-engineer/techniques/subagent-orchestration.md" "^## Task Triage$"
+
   assert_file_exists "Codex project config 존재" "$REPO_ROOT/.codex/config.toml"
   assert_file_contains "Codex project config top-level model 설정" "$REPO_ROOT/.codex/config.toml" "^model = \"gpt-5.4\"$"
   assert_file_contains "Codex project config에 [agents] 섹션" "$REPO_ROOT/.codex/config.toml" "^\\[agents\\]$"
@@ -2381,6 +2726,22 @@ test_scenario_27() {
   local codex_model
   codex_model="$(invoke_cmd_function get_codex_model)"
   assert_eq "repo-local Codex model 우선 사용" "gpt-5.4" "$codex_model"
+
+  local manager_backend
+  manager_backend="$(invoke_cmd_function get_manager_backend)"
+  assert_eq "control-plane 기본 backend는 codex" "codex" "$manager_backend"
+
+  python3 - "$PROJECT_DIR/project.md" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+content = path.read_text(encoding="utf-8")
+content = content.replace("- 실행 모드: solo", "- 실행 모드: solo\n- control-plane 백엔드: claude", 1)
+path.write_text(content, encoding="utf-8")
+PY
+  manager_backend="$(invoke_cmd_function get_manager_backend "$PROJECT")"
+  assert_eq "project.md가 control-plane backend override 가능" "claude" "$manager_backend"
 
   assert_file_contains "manager profile Agent 허용" "$REPO_ROOT/agents/manager/profile.md" "^allowed-tools: .*Agent"
   assert_file_contains "discussion profile Agent 허용" "$REPO_ROOT/agents/discussion/profile.md" "^allowed-tools: .*Agent"
@@ -2395,6 +2756,8 @@ test_scenario_27() {
      echo "$developer_msg" | grep -q '\.codex/agents/' && \
      echo "$developer_msg" | grep -q 'agents/developer/techniques/subagent-orchestration.md' && \
      echo "$developer_msg" | grep -q '2-way 이상 병렬 fan-out' && \
+     echo "$developer_msg" | grep -q '작고 명확하면 scout 1개 또는 direct 예외' && \
+     echo "$developer_msg" | grep -q '더 빠른/가벼운 모델은 mapping, evidence 수집, 좁은 verify에 먼저 쓰고' && \
      echo "$developer_msg" | grep -q 'execution lead라면 어떤 specialist를 부를지 네가 판단한다'; then
     echo "  PASS: developer 부팅 메시지에 native subagent kickoff 규칙 포함"
     PASS=$((PASS + 1))
@@ -2468,7 +2831,8 @@ test_scenario_28() {
   TOTAL=$((TOTAL + 1))
   if echo "$developer_pane_dump" | grep -q '\[kickoff reminder\]' && \
      echo "$developer_pane_dump" | grep -q 'specialist 최소 1개' && \
-     echo "$developer_pane_dump" | grep -q '2-way 이상 병렬 fan-out'; then
+     echo "$developer_pane_dump" | grep -q '2-way 이상 병렬 fan-out' && \
+     echo "$developer_pane_dump" | grep -q 'specialist별 기본 모델 tier도 설정돼 있으니'; then
     echo "  PASS: developer task_assign에 kickoff reminder 포함"
     PASS=$((PASS + 1))
   else
@@ -2626,6 +2990,949 @@ PY
 }
 
 # ──────────────────────────────────────────────
+# 시나리오 30: auth-blocked Claude pane degrade + recovery guard
+# ──────────────────────────────────────────────
+
+test_scenario_30() {
+  echo ""
+  echo "=== 시나리오 30: auth-blocked Claude pane degrade + recovery guard ==="
+  cleanup
+  setup_test_project
+  build_fake_claude
+
+  mkdir -p "$PROJECT_DIR/workspace/tasks"
+  cat > "$PROJECT_DIR/workspace/tasks/TASK-010.md" << 'EOF'
+# TASK-010: Auth blocked runtime smoke test
+EOF
+
+  tmux new-session -d -s "$SESSION" -n dashboard
+  create_fake_agent "manager"
+  create_fake_agent "developer"
+  register_fake_agent "manager" "manager"
+  register_fake_agent "developer" "developer"
+
+  bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer \
+    task_assign normal "workspace/tasks/TASK-010.md" "auth blocked runtime setup" >/dev/null
+
+  tmux send-keys -t "${SESSION}:developer" "Not logged in · Please run /login" Enter
+  tmux send-keys -t "${SESSION}:developer" "Run in another terminal: security unlock-keychain" Enter
+  sleep 1
+
+  WHIPLASH_MONITOR_ONCE=1 bash "$TOOLS_DIR/monitor.sh" "$PROJECT" >/dev/null 2>&1
+
+  local manager_pane auth_alert_count dashboard_state status_out queue_dir queued_count
+  manager_pane="$(tmux capture-pane -pJ -t "${SESSION}:manager" -S -120 2>/dev/null || true)"
+  TOTAL=$((TOTAL + 1))
+  if echo "$manager_pane" | grep -q "developer Claude auth blocked"; then
+    echo "  PASS: manager pane에 auth-blocked actionable signal 표시"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: manager pane에 auth-blocked actionable signal 누락"
+    FAIL=$((FAIL + 1))
+  fi
+
+  assert_file_contains "message.log에 auth-blocked signal 기록" \
+    "$PROJECT_DIR/logs/message.log" \
+    'monitor → manager need_input normal "developer Claude auth blocked"'
+
+  WHIPLASH_MONITOR_ONCE=1 bash "$TOOLS_DIR/monitor.sh" "$PROJECT" >/dev/null 2>&1
+  auth_alert_count="$(grep -c 'developer Claude auth blocked' "$PROJECT_DIR/logs/message.log" 2>/dev/null || true)"
+  assert_eq "auth-blocked actionable signal은 1회만 기록" "1" "$auth_alert_count"
+
+  dashboard_state="$(probe_dashboard_agent developer)"
+  assert_eq "dashboard가 auth-blocked task/report visibility 유지" "AUTH|draft|TASK-010" "$dashboard_state"
+
+  status_out="$(bash "$TOOLS_DIR/cmd.sh" status "$PROJECT" 2>/dev/null || true)"
+  TOTAL=$((TOTAL + 1))
+  if echo "$status_out" | grep -q '\[agent-health\]' && echo "$status_out" | grep -q 'developer (developer/claude): AUTH_BLOCKED'; then
+    echo "  PASS: cmd.sh status가 auth-blocked 가시성 제공"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: cmd.sh status에 auth-blocked 가시성 누락"
+    FAIL=$((FAIL + 1))
+  fi
+
+  local direct_subject="auth-blocked-direct"
+  bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer \
+    status_update normal "$direct_subject" "auth blocked queue hold" >/dev/null
+  assert_file_contains "message.sh가 auth-blocked direct delivery를 skipped로 기록" \
+    "$PROJECT_DIR/logs/message.log" \
+    "manager → developer status_update normal \"${direct_subject}\" reason=\"queued-auth-blocked\""
+  assert_file_not_contains "message.sh가 auth-blocked direct delivery를 interactive 성공으로 기록하지 않음" \
+    "$PROJECT_DIR/logs/message.log" \
+    "\\[delivered\\] manager → developer status_update normal \"${direct_subject}\" reason=\"interactive\""
+
+  queue_dir="$(runtime_message_queue_dir "$PROJECT")"
+  queued_count="$(find "$queue_dir" -name '*.msg' 2>/dev/null | wc -l | tr -d ' ')"
+  assert_true "auth-blocked 메시지가 큐에 남아 있음" test "${queued_count:-0}" -gt 0
+
+  WHIPLASH_MONITOR_ONCE=1 bash "$TOOLS_DIR/monitor.sh" "$PROJECT" >/dev/null 2>&1
+  queued_count="$(find "$queue_dir" -name '*.msg' 2>/dev/null | wc -l | tr -d ' ')"
+  assert_true "monitor drain이 auth-blocked 큐를 그대로 유지" test "${queued_count:-0}" -gt 0
+  assert_file_not_contains "monitor가 auth-blocked pane을 crash로 오인하지 않음" \
+    "$PROJECT_DIR/logs/system.log" \
+    'developer 크래시 감지'
+  assert_file_not_contains "monitor가 auth-blocked pane에 auto reboot churn을 일으키지 않음" \
+    "$PROJECT_DIR/logs/system.log" \
+    'developer 리부팅 성공'
+
+  assert_false "auth-blocked refresh는 destructive restart 없이 중단" \
+    env PATH="$PROJECT_DIR:$PATH" WHIPLASH_FAKE_CLAUDE_LOGGED_IN=0 \
+      bash "$TOOLS_DIR/cmd.sh" refresh developer "$PROJECT"
+  assert_false "auth-blocked reboot는 destructive restart 없이 중단" \
+    env PATH="$PROJECT_DIR:$PATH" WHIPLASH_FAKE_CLAUDE_LOGGED_IN=0 \
+      bash "$TOOLS_DIR/cmd.sh" reboot developer "$PROJECT"
+
+  dashboard_state="$(probe_dashboard_agent developer)"
+  assert_eq "refresh/reboot guard 후 task/report visibility 유지" "AUTH|draft|TASK-010" "$dashboard_state"
+
+  local developer_report
+  developer_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-010.md" "developer")"
+  assert_file_exists "auth-blocked guard 후 report stub 유지" "$developer_report"
+
+  echo "  시나리오 30 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 31: Claude reboot bootstrap은 READY handshake만 사용
+# ──────────────────────────────────────────────
+
+test_scenario_31() {
+  echo ""
+  echo "=== 시나리오 31: Claude reboot bootstrap READY handshake ==="
+  cleanup
+  setup_test_project
+  build_fake_claude
+
+  mkdir -p "$PROJECT_DIR/workspace/tasks"
+  cat > "$PROJECT_DIR/workspace/tasks/TASK-011.md" << 'EOF'
+# TASK-011: Claude reboot bootstrap smoke test
+EOF
+
+  tmux new-session -d -s "$SESSION" -n dashboard
+  create_fake_agent "developer"
+  register_fake_agent "developer" "developer"
+
+  bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer \
+    task_assign normal "workspace/tasks/TASK-011.md" "bootstrap reboot setup" >/dev/null
+
+  tmux send-keys -t "${SESSION}:developer" "Not logged in · Please run /login" Enter
+  sleep 1
+  assert_false "auth blocked 상태에서는 reboot guard 유지" \
+    env PATH="$PROJECT_DIR:$PATH" WHIPLASH_FAKE_CLAUDE_LOGGED_IN=0 \
+      bash "$TOOLS_DIR/cmd.sh" reboot developer "$PROJECT"
+
+  local filler
+  for filler in $(seq 1 16); do
+    tmux send-keys -t "${SESSION}:developer" "healthy-line-${filler}" Enter
+  done
+  sleep 1
+
+  local prompt_log="$PROJECT_DIR/runtime/fake-claude-p.log"
+  rm -f "$prompt_log"
+  assert_true "auth 복구 후 reboot 성공" \
+    env PATH="$PROJECT_DIR:$PATH" WHIPLASH_FAKE_CLAUDE_P_LOG="$prompt_log" \
+      bash "$TOOLS_DIR/cmd.sh" reboot developer "$PROJECT"
+
+  assert_file_contains "claude -p는 READY bootstrap prompt만 사용" \
+    "$prompt_log" \
+    "READY만 답해라"
+  assert_file_not_contains "claude -p가 pending task를 hidden execution으로 받지 않음" \
+    "$prompt_log" \
+    "TASK-011"
+
+  local pane_dump seen_boot_prompt=false attempt
+  for attempt in $(seq 1 8); do
+    sleep 1
+    pane_dump="$(tmux capture-pane -pJ -t "${SESSION}:developer" -S -160 2>/dev/null || true)"
+    if echo "$pane_dump" | grep -q "TASK-011"; then
+      seen_boot_prompt=true
+      break
+    fi
+  done
+
+  TOTAL=$((TOTAL + 1))
+  if [ "$seen_boot_prompt" = true ]; then
+    echo "  PASS: full boot/task prompt는 visible resumed session에 전달됨"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: full boot/task prompt가 resumed session에 나타나지 않음"
+    FAIL=$((FAIL + 1))
+  fi
+
+  echo "  시나리오 31 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 32: default tmux server loss는 multi-project grace로 흡수
+# ──────────────────────────────────────────────
+
+test_scenario_32() {
+  echo ""
+  echo "=== 시나리오 32: shared vs isolated tmux contract ==="
+  cleanup
+  setup_test_project
+  build_fake_claude
+
+  local shared_socket="shared-contract"
+  local shared_primary="whiplash-shared-a"
+  local shared_peer="whiplash-shared-b"
+  whiplash_tmux_run_on_socket "$shared_socket" new-session -d -s "$shared_primary" -n manager
+  whiplash_tmux_run_on_socket "$shared_socket" new-session -d -s "$shared_peer" -n manager
+  assert_true "shared socket에서는 primary 세션 존재" \
+    tmux_has_session_for_socket "$shared_socket" "$shared_primary"
+  assert_true "shared socket에서는 peer 세션 존재" \
+    tmux_has_session_for_socket "$shared_socket" "$shared_peer"
+  whiplash_tmux_run_on_socket "$shared_socket" kill-server 2>/dev/null || true
+  assert_false "shared socket kill-server 후 primary 세션 소멸" \
+    tmux_has_session_for_socket "$shared_socket" "$shared_primary"
+  assert_false "shared socket kill-server 후 peer 세션도 함께 소멸" \
+    tmux_has_session_for_socket "$shared_socket" "$shared_peer"
+
+  tmux new-session -d -s "$SESSION" -n manager
+  create_fake_agent "developer"
+  register_fake_agent "developer" "developer"
+
+  local peer_project="_stability-peer"
+  local peer_session="whiplash-${peer_project}"
+  local peer_dir="$REPO_ROOT/projects/${peer_project}"
+  mkdir -p "$peer_dir/memory/manager" "$(runtime_root_dir "$peer_project")" "$peer_dir/logs"
+  cat > "$peer_dir/project.md" <<'EOF'
+# _stability-peer
+
+- 목표: 통합 테스트용 peer 프로젝트
+- 활성 에이전트: developer
+- 실행 모드: solo
+- 도메인: general
+EOF
+  whiplash_tmux_run_for_project "$peer_project" new-session -d -s "$peer_session" -n manager
+  whiplash_tmux_run_for_project "$peer_project" new-window -t "$peer_session" -n developer
+  whiplash_tmux_run_for_project "$peer_project" send-keys -t "${peer_session}:developer" "'${FAKE_CLAUDE_BIN}'" Enter
+
+  local peer_sf="$peer_dir/memory/manager/sessions.md"
+  cat > "$peer_sf" <<'HEADER'
+# 활성 에이전트 세션
+
+| 역할 | 백엔드 | Session ID | tmux Target | 상태 | 시작일 | 모델 | 비고 |
+|------|--------|-----------|-------------|------|--------|------|------|
+HEADER
+  echo "| developer | claude | fake-session | ${peer_session}:developer | active | $(date +%Y-%m-%d) | test | |" >> "$peer_sf"
+
+  WHIPLASH_MONITOR_ONCE=1 bash "$TOOLS_DIR/monitor.sh" "$PROJECT" >/dev/null 2>&1
+  WHIPLASH_MONITOR_ONCE=1 bash "$TOOLS_DIR/monitor.sh" "$peer_project" >/dev/null 2>&1
+
+  local before_epoch before_peer_epoch
+  before_epoch="$(runtime_get_manager_state "$PROJECT" "session_epoch" "" 2>/dev/null || true)"
+  before_peer_epoch="$(runtime_get_manager_state "$peer_project" "session_epoch" "" 2>/dev/null || true)"
+  TOTAL=$((TOTAL + 1))
+  if [[ "$before_epoch" == *"|"* ]] && [[ "$before_peer_epoch" == *"|"* ]]; then
+    echo "  PASS: 두 프로젝트 모두 초기 session epoch 저장"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: 초기 session epoch 저장 누락"
+    FAIL=$((FAIL + 1))
+  fi
+
+  tmux kill-server 2>/dev/null || true
+  tmux new-session -d -s "$SESSION" -n manager
+
+  assert_true "isolated socket에서는 peer 세션 유지" \
+    tmux_has_session_for_socket "$peer_project" "$peer_session"
+
+  WHIPLASH_MONITOR_ONCE=1 WHIPLASH_REHYDRATION_GRACE_SECONDS=5 \
+    bash "$TOOLS_DIR/monitor.sh" "$PROJECT" >/dev/null 2>&1
+  WHIPLASH_MONITOR_ONCE=1 WHIPLASH_REHYDRATION_GRACE_SECONDS=5 \
+    bash "$TOOLS_DIR/monitor.sh" "$peer_project" >/dev/null 2>&1
+  WHIPLASH_MONITOR_ONCE=1 WHIPLASH_REHYDRATION_GRACE_SECONDS=5 \
+    bash "$TOOLS_DIR/monitor.sh" "$PROJECT" >/dev/null 2>&1
+
+  assert_file_contains "primary project가 rehydration grace 기록" \
+    "$PROJECT_DIR/logs/system.log" \
+    "session_rehydration_grace ${SESSION}"
+  assert_file_not_contains "peer project는 primary server loss에 영향받지 않음" \
+    "$peer_dir/logs/system.log" \
+    "session_rehydration_grace ${peer_session}"
+
+  local primary_epoch_events peer_epoch_events
+  primary_epoch_events="$(grep -c "session_epoch_changed ${SESSION}" "$PROJECT_DIR/logs/system.log" 2>/dev/null || true)"
+  peer_epoch_events="$(grep -c "session_epoch_changed ${peer_session}" "$peer_dir/logs/system.log" 2>/dev/null || true)"
+  assert_eq "primary project는 server-loss incident 1회로 수집" "1" "$primary_epoch_events"
+  assert_eq "peer project는 isolated mode에서 incident 없음" "0" "$peer_epoch_events"
+
+  assert_file_not_contains "primary project는 stale active row crash 미감지" \
+    "$PROJECT_DIR/logs/system.log" \
+    "developer 크래시 감지"
+  assert_file_not_contains "peer project는 stale active row crash 미감지" \
+    "$peer_dir/logs/system.log" \
+    "developer 크래시 감지"
+  assert_file_contains "primary project stale row는 recovery 후 stale로 내려감" \
+    "$PROJECT_DIR/memory/manager/sessions.md" \
+    "| ${SESSION}:developer | stale |"
+
+  local after_epoch after_peer_epoch grace_until now_ts
+  after_epoch="$(runtime_get_manager_state "$PROJECT" "session_recovery_epoch" "" 2>/dev/null || true)"
+  after_peer_epoch="$(runtime_get_manager_state "$peer_project" "session_recovery_epoch" "" 2>/dev/null || true)"
+  TOTAL=$((TOTAL + 1))
+  if [[ "$after_epoch" == *"|"* ]] && [ "$after_epoch" != "$before_epoch" ] \
+    && [ "$after_peer_epoch" = "$before_peer_epoch" ]; then
+    echo "  PASS: isolated mode에서 primary만 recovery epoch 교체"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: isolated recovery epoch 동작이 기대와 다름"
+    FAIL=$((FAIL + 1))
+  fi
+
+  grace_until="$(runtime_get_manager_state "$PROJECT" "rehydration_grace_until" "" 2>/dev/null || true)"
+  now_ts="$(date +%s)"
+  TOTAL=$((TOTAL + 1))
+  if [[ "$grace_until" =~ ^[0-9]+$ ]] && [ "$grace_until" -gt "$now_ts" ]; then
+    echo "  PASS: rehydration grace가 미래 시각으로 설정됨"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: rehydration grace가 설정되지 않음 ('$grace_until')"
+    FAIL=$((FAIL + 1))
+  fi
+
+  invoke_cmd_function add_session_row "$PROJECT" "developer" "fresh-session" "${SESSION}:developer" "test" "claude"
+  local developer_rows
+  developer_rows="$(grep -c "^| developer | claude |" "$PROJECT_DIR/memory/manager/sessions.md" 2>/dev/null || true)"
+  assert_eq "same tmux target은 단일 row로 갱신" "1" "$developer_rows"
+  assert_file_contains "recovered target row가 새 session_id로 교체됨" \
+    "$PROJECT_DIR/memory/manager/sessions.md" \
+    "| developer | claude | fresh-session | ${SESSION}:developer | active |"
+  assert_file_not_contains "old stale session_id는 제거됨" \
+    "$PROJECT_DIR/memory/manager/sessions.md" \
+    "fake-session"
+
+  whiplash_tmux_run_for_project "$peer_project" kill-server 2>/dev/null || true
+  rm -rf "$peer_dir"
+
+  echo "  시나리오 32 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 33: delayed Claude warm-up 후에도 reboot prompt 전달 성공
+# ──────────────────────────────────────────────
+
+test_scenario_33() {
+  echo ""
+  echo "=== 시나리오 33: delayed Claude warm-up reboot ==="
+  cleanup
+  setup_test_project
+  build_fake_claude
+
+  tmux new-session -d -s "$SESSION" -n manager
+  create_fake_agent "developer"
+  register_fake_agent "developer" "developer"
+
+  mkdir -p "$PROJECT_DIR/workspace/tasks"
+  cat > "$PROJECT_DIR/workspace/tasks/TASK-012.md" <<'EOF'
+# TASK-012: delayed Claude warm-up reboot smoke test
+EOF
+  bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer \
+    task_assign normal "workspace/tasks/TASK-012.md" "warm-up retry" >/dev/null
+
+  assert_true "delay/discard 환경에서도 developer reboot 성공" \
+    env PATH="$PROJECT_DIR:$PATH" \
+      WHIPLASH_FAKE_CLAUDE_WARMUP_SECONDS=2 \
+      WHIPLASH_FAKE_CLAUDE_DISCARD_EARLY_INPUT=1 \
+      bash "$TOOLS_DIR/cmd.sh" reboot developer "$PROJECT"
+
+  assert_true "developer window 생성" \
+    tmux_has_window "$SESSION" "developer"
+  assert_file_contains "sessions.md에 developer session 기록" \
+    "$PROJECT_DIR/memory/manager/sessions.md" \
+    "| developer | claude |"
+
+  local pane_dump seen_ready=false attempt
+  for attempt in $(seq 1 8); do
+    sleep 1
+    pane_dump="$(tmux capture-pane -pJ -t "${SESSION}:developer" -S -160 2>/dev/null || true)"
+    if echo "$pane_dump" | grep -q 'TASK-012'; then
+      seen_ready=true
+      break
+    fi
+  done
+
+  TOTAL=$((TOTAL + 1))
+  if [ "$seen_ready" = true ]; then
+    echo "  PASS: delayed warm-up 후 full task prompt가 visible pane에 전달됨"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: delayed warm-up 후 full task prompt가 pane에 나타나지 않음"
+    FAIL=$((FAIL + 1))
+  fi
+
+  echo "  시나리오 33 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 34: cmd_boot는 stale active session row를 demote한다
+# ──────────────────────────────────────────────
+
+test_scenario_34() {
+  echo ""
+  echo "=== 시나리오 34: cmd_boot stale session row cleanup ==="
+  cleanup
+  setup_test_project
+  build_fake_claude
+  build_fake_codex
+
+  local sf="$PROJECT_DIR/memory/manager/sessions.md"
+  cat > "$sf" <<EOF
+# 활성 에이전트 세션
+
+| 역할 | 백엔드 | Session ID | tmux Target | 상태 | 시작일 | 모델 | 비고 |
+|------|--------|-----------|-------------|------|--------|------|------|
+| ghost | claude | stale-session | ${SESSION}:ghost | active | 2026-03-24 | test | stale-seed |
+EOF
+
+  local boot_log="$PROJECT_DIR/boot-stale-session.log"
+  assert_true "cmd.sh boot가 stale session row와 함께 성공" \
+    bash -c 'PATH="$1:$PATH" bash "$2/cmd.sh" boot "$3" >"$4" 2>&1' -- \
+    "$PROJECT_DIR" "$TOOLS_DIR" "$PROJECT" "$boot_log"
+
+  local stale_count active_count
+  stale_count="$(awk -F'|' -v target="${SESSION}:ghost" '
+    function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+    trim($2) == "ghost" && trim($5) == target && trim($6) == "stale" { c++ }
+    END { print c + 0 }
+  ' "$sf")"
+  active_count="$(awk -F'|' -v target="${SESSION}:ghost" '
+    function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+    trim($2) == "ghost" && trim($5) == target && trim($6) == "active" { c++ }
+    END { print c + 0 }
+  ' "$sf")"
+
+  assert_eq "missing target active row가 stale로 강등됨" "1" "$stale_count"
+  assert_eq "ghost active row는 boot 이후 남지 않음" "0" "$active_count"
+
+  echo "  시나리오 34 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 35: cmd_boot는 stale runtime state를 초기화한다
+# ──────────────────────────────────────────────
+
+test_scenario_35() {
+  echo ""
+  echo "=== 시나리오 35: cmd_boot stale runtime reset ==="
+  cleanup
+  setup_test_project
+  build_fake_claude
+  build_fake_codex
+
+  local reboot_state idle_state boot_log
+  reboot_state="$(runtime_reboot_state_file "$PROJECT")"
+  idle_state="$(runtime_idle_state_file "$PROJECT")"
+  mkdir -p "$(dirname "$reboot_state")"
+
+  cat > "$reboot_state" <<'EOF'
+developer	2	123456	123999
+EOF
+  cat > "$idle_state" <<'EOF'
+developer	123456
+EOF
+
+  assert_file_exists "stale reboot-state seed 생성" "$reboot_state"
+  assert_file_exists "stale idle-state seed 생성" "$idle_state"
+
+  boot_log="$PROJECT_DIR/boot-runtime-reset.log"
+  assert_true "cmd.sh boot가 stale runtime state와 함께 성공" \
+    bash -c 'PATH="$1:$PATH" bash "$2/cmd.sh" boot "$3" >"$4" 2>&1' -- \
+    "$PROJECT_DIR" "$TOOLS_DIR" "$PROJECT" "$boot_log"
+
+  assert_file_not_exists "cmd_boot가 reboot-state.tsv 초기화" "$reboot_state"
+  assert_file_not_exists "cmd_boot가 idle-state.tsv 초기화" "$idle_state"
+
+  echo "  시나리오 35 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 36: wrapped live agent는 false-crash reboot되지 않는다
+# ──────────────────────────────────────────────
+
+test_scenario_36() {
+  echo ""
+  echo "=== 시나리오 36: wrapped live agent false-crash guard ==="
+  cleanup
+  setup_test_project
+  build_fake_claude
+
+  tmux new-session -d -s "$SESSION" -n manager
+  create_wrapped_fake_agent "developer" "$FAKE_CLAUDE_BIN" "claude"
+  register_fake_agent "developer" "developer"
+
+  local pane_pid
+  pane_pid="$(tmux list-panes -t "${SESSION}:developer" -F '#{pane_pid}' 2>/dev/null | head -1 || true)"
+  assert_true "wrapped developer alive 확인" wait_for_child_process_named "$pane_pid" claude
+
+  bash "$TOOLS_DIR/cmd.sh" monitor-check "$PROJECT" >/dev/null 2>&1
+
+  assert_file_not_contains "wrapped live agent는 false-crash로 기록되지 않음" \
+    "$PROJECT_DIR/logs/system.log" "developer 크래시 감지"
+
+  echo "  시나리오 36 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 37: add_session_row는 same role/backend active truth를 단일 row로 유지한다
+# ──────────────────────────────────────────────
+
+test_scenario_37() {
+  echo ""
+  echo "=== 시나리오 37: session active truth dedupe ==="
+  cleanup
+  setup_test_project
+
+  local sf="$PROJECT_DIR/memory/manager/sessions.md"
+  cat > "$sf" <<EOF
+# 활성 에이전트 세션
+
+| 역할 | 백엔드 | Session ID | tmux Target | 상태 | 시작일 | 모델 | 비고 |
+|------|--------|-----------|-------------|------|--------|------|------|
+| developer | claude | old-session | ${SESSION}:developer-old | active | 2026-03-24 | test | stale-active |
+| developer | codex | codex-session | ${SESSION}:developer-codex | active | 2026-03-24 | test | keep |
+EOF
+
+  invoke_cmd_function add_session_row "$PROJECT" "developer" "fresh-session" "${SESSION}:developer" "test" "claude"
+
+  local developer_claude_active developer_codex_active old_target_rows
+  developer_claude_active="$(awk -F'|' '
+    function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+    trim($2) == "developer" && trim($3) == "claude" && trim($6) == "active" { c++ }
+    END { print c + 0 }
+  ' "$sf")"
+  developer_codex_active="$(awk -F'|' '
+    function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+    trim($2) == "developer" && trim($3) == "codex" && trim($6) == "active" { c++ }
+    END { print c + 0 }
+  ' "$sf")"
+  old_target_rows="$(grep -c "developer-old" "$sf" 2>/dev/null || true)"
+
+  assert_eq "same role/backend active row는 단일 claude row로 수렴" "1" "$developer_claude_active"
+  assert_eq "다른 backend active row는 유지" "1" "$developer_codex_active"
+  assert_eq "old claude active target row는 제거" "0" "$old_target_rows"
+  assert_file_contains "새 claude session row가 active로 기록" \
+    "$sf" \
+    "| developer | claude | fresh-session | ${SESSION}:developer | active |"
+
+  echo "  시나리오 37 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 38: manager boot failure는 stale active row를 남기지 않는다
+# ──────────────────────────────────────────────
+
+test_scenario_38() {
+  echo ""
+  echo "=== 시나리오 38: manager boot failure cleanup ==="
+  cleanup
+  setup_test_project
+  build_fake_claude
+
+  python3 - "$PROJECT_DIR/project.md" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+content = path.read_text(encoding="utf-8")
+content = content.replace("- 실행 모드: solo", "- 실행 모드: solo\n- control-plane 백엔드: claude", 1)
+path.write_text(content, encoding="utf-8")
+PY
+
+  tmux new-session -d -s "$SESSION" -n dashboard
+
+  assert_false "manager boot prompt failure는 성공으로 남지 않음" \
+    env PATH="$PROJECT_DIR:$PATH" TOOLS_DIR="$TOOLS_DIR" PROJECT="$PROJECT" bash -lc '
+      export WHIPLASH_SOURCE_ONLY=1
+      source "'"$TOOLS_DIR"'/cmd.sh"
+      submit_tmux_prompt_when_ready() { return 1; }
+      boot_manager_window "'"$PROJECT"'"
+    '
+
+  local manager_active manager_boot_failed
+  manager_active="$(awk -F'|' '
+    function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+    trim($2) == "manager" && trim($6) == "active" { c++ }
+    END { print c + 0 }
+  ' "$PROJECT_DIR/memory/manager/sessions.md")"
+  manager_boot_failed="$(awk -F'|' '
+    function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+    trim($2) == "manager" && trim($6) == "boot-failed" { c++ }
+    END { print c + 0 }
+  ' "$PROJECT_DIR/memory/manager/sessions.md")"
+
+  assert_eq "manager active row는 남지 않음" "0" "$manager_active"
+  assert_eq "manager row는 boot-failed로 정리됨" "1" "$manager_boot_failed"
+
+  echo "  시나리오 38 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 39: Rich TUI submit success는 처리 신호가 있어야 한다
+# ──────────────────────────────────────────────
+
+test_scenario_39() {
+  echo ""
+  echo "=== 시나리오 39: rich TUI submit success gate ==="
+  cleanup
+  setup_test_project
+  build_fake_claude
+
+  tmux new-session -d -s "$SESSION" -n rich-ok
+  tmux send-keys -t "${SESSION}:rich-ok" "env WHIPLASH_FAKE_RICH_TUI=1 '${FAKE_CLAUDE_BIN}'" Enter
+  tmux_submit_wait_ready "${SESSION}:rich-ok" 10 1 || true
+
+  assert_true "rich TUI 처리 신호가 있으면 submit 성공" \
+    tmux_submit_pasted_payload "${SESSION}:rich-ok" "print-rich-ok" "rich-ok"
+
+  local pane_dump
+  pane_dump="$(tmux capture-pane -p -t "${SESSION}:rich-ok" -S -80 2>/dev/null || true)"
+  TOTAL=$((TOTAL + 1))
+  if echo "$pane_dump" | grep -q "\\[submitted\\]" && echo "$pane_dump" | grep -q "print-rich-ok"; then
+    echo "  PASS: rich TUI submit이 실제 처리 흔적을 남김"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: rich TUI submit 처리 흔적이 없음"
+    FAIL=$((FAIL + 1))
+  fi
+
+  tmux new-window -t "$SESSION" -n rich-drop
+  tmux send-keys -t "${SESSION}:rich-drop" "env WHIPLASH_FAKE_RICH_TUI=1 WHIPLASH_FAKE_SWALLOW_SUBMIT=1 '${FAKE_CLAUDE_BIN}'" Enter
+  tmux_submit_wait_ready "${SESSION}:rich-drop" 10 1 || true
+
+  assert_false "rich TUI에서 미처리 입력은 성공 처리되지 않음" \
+    tmux_submit_pasted_payload "${SESSION}:rich-drop" "print-rich-drop" "rich-drop"
+
+  pane_dump="$(tmux capture-pane -p -t "${SESSION}:rich-drop" -S -80 2>/dev/null || true)"
+  TOTAL=$((TOTAL + 1))
+  if ! echo "$pane_dump" | grep -q "\\[submitted\\]"; then
+    echo "  PASS: swallowed submit은 처리 ack 없이 실패로 남음"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: swallowed submit이 처리 ack를 남김"
+    FAIL=$((FAIL + 1))
+  fi
+
+  echo "  시나리오 39 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 40: dashboard monitor zombie heartbeat는 healthy로 보이지 않는다
+# ──────────────────────────────────────────────
+
+test_scenario_40() {
+  echo ""
+  echo "=== 시나리오 40: dashboard monitor zombie heartbeat 표시 ==="
+  cleanup
+  setup_test_project
+
+  runtime_set_manager_state "$PROJECT" "monitor_pid" "$$"
+  runtime_set_manager_state "$PROJECT" "monitor_heartbeat" "$(( $(date +%s) - 120 ))"
+
+  local monitor_info
+  monitor_info="$(probe_dashboard_monitor)"
+  assert_eq "dashboard monitor가 stale heartbeat를 zombie로 인식" "1|1|0|1" "$monitor_info"
+
+  echo "  시나리오 40 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 41: assigned idle agent row는 ALIVE 대신 IDLE로 보인다
+# ──────────────────────────────────────────────
+
+test_scenario_41() {
+  echo ""
+  echo "=== 시나리오 41: dashboard assigned idle row 표시 ==="
+  cleanup
+  setup_test_project
+  build_fake_claude
+
+  mkdir -p "$PROJECT_DIR/workspace/tasks"
+  cat > "$PROJECT_DIR/workspace/tasks/TASK-010.md" << 'EOF'
+# TASK-010: Dashboard idle row test
+EOF
+
+  tmux new-session -d -s "$SESSION" -n dashboard
+  create_fake_agent "developer"
+  register_fake_agent "developer" "developer"
+
+  bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer \
+    task_assign normal "workspace/tasks/TASK-010.md" "dashboard idle row smoke" >/dev/null
+
+  local dashboard_state
+  dashboard_state="$(probe_dashboard_agent developer)"
+  assert_eq "healthy assigned agent는 여전히 ALIVE" "ALIVE|draft|TASK-010" "$dashboard_state"
+
+  runtime_set_idle_check_ts "$PROJECT" "developer" "$(( $(date +%s) - 60 ))"
+  dashboard_state="$(probe_dashboard_agent developer)"
+  assert_eq "idle-state가 있으면 assigned row를 IDLE로 표시" "IDLE|draft|TASK-010" "$dashboard_state"
+
+  echo "  시나리오 41 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 42: runtime auth-blocked truth는 backend 메타보다 우선한다
+# ──────────────────────────────────────────────
+
+test_scenario_42() {
+  echo ""
+  echo "=== 시나리오 42: dashboard runtime auth truth 우선 ==="
+  cleanup
+  setup_test_project
+  build_fake_codex
+
+  mkdir -p "$PROJECT_DIR/workspace/tasks"
+  cat > "$PROJECT_DIR/workspace/tasks/TASK-011.md" << 'EOF'
+# TASK-011: Dashboard runtime auth truth test
+EOF
+
+  tmux new-session -d -s "$SESSION" -n dashboard
+  create_fake_codex_agent "developer-codex"
+  register_fake_codex_agent "developer-codex" "developer"
+
+  bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer-codex \
+    task_assign normal "workspace/tasks/TASK-011.md" "dashboard runtime auth smoke" >/dev/null
+
+  local dashboard_state
+  dashboard_state="$(probe_dashboard_agent developer-codex)"
+  assert_eq "healthy codex assigned row는 ALIVE 유지" "ALIVE|draft|TASK-011" "$dashboard_state"
+
+  runtime_set_manager_state "$PROJECT" "agent_health_developer-codex" "AUTH_BLOCKED"
+  dashboard_state="$(probe_dashboard_agent developer-codex)"
+  assert_eq "runtime auth-blocked truth가 있으면 AUTH로 표시" "AUTH|draft|TASK-011" "$dashboard_state"
+
+  echo "  시나리오 42 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 43: single owner 패턴은 dual에서도 고정 미러링하지 않는다
+# ──────────────────────────────────────────────
+
+test_scenario_43() {
+  echo ""
+  echo "=== 시나리오 43: single owner task-pattern dispatch ==="
+  cleanup
+  setup_test_project
+  build_fake_claude
+  build_fake_codex
+
+  python3 - "$PROJECT_DIR/project.md" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+content = path.read_text(encoding="utf-8")
+content = content.replace("- 실행 모드: solo", "- 실행 모드: dual", 1)
+path.write_text(content, encoding="utf-8")
+PY
+
+  mkdir -p "$PROJECT_DIR/workspace/tasks"
+  cat > "$PROJECT_DIR/workspace/tasks/TASK-012.md" <<'EOF'
+# TASK-012: Single owner dispatch test
+
+- **Pattern**: `single owner`
+- **Owner lane**: `developer-codex`
+EOF
+
+  tmux new-session -d -s "$SESSION" -n manager
+  create_fake_agent "developer-claude"
+  create_fake_codex_agent "developer-codex"
+  register_fake_agent "developer-claude" "developer"
+  register_fake_codex_agent "developer-codex" "developer"
+
+  bash "$TOOLS_DIR/cmd.sh" dispatch developer \
+    "workspace/tasks/TASK-012.md" "$PROJECT" >/dev/null
+
+  local sf codex_active claude_active codex_report claude_report manager_report
+  sf="$PROJECT_DIR/memory/manager/assignments.md"
+  codex_active="$(grep -Ec "\\| developer-codex \\| workspace/tasks/TASK-012.md \\| .*\\| active \\|" "$sf" 2>/dev/null || true)"
+  claude_active="$(grep -Ec "\\| developer-claude \\| workspace/tasks/TASK-012.md \\| .*\\| active \\|" "$sf" 2>/dev/null || true)"
+  assert_eq "single owner는 codex lane만 active" "1" "$codex_active"
+  assert_eq "single owner는 claude mirror를 만들지 않음" "0" "$claude_active"
+
+  codex_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-012.md" "developer-codex")"
+  claude_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-012.md" "developer-claude")"
+  manager_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-012.md" "manager")"
+  assert_file_exists "single owner codex 보고서 stub 생성" "$codex_report"
+  assert_file_not_exists "single owner claude 보고서 stub 미생성" "$claude_report"
+  assert_file_not_exists "single owner manager compare stub 미생성" "$manager_report"
+
+  echo "  시나리오 43 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 44: lead + verify 패턴은 lead/review lane을 분리 기록한다
+# ──────────────────────────────────────────────
+
+test_scenario_44() {
+  echo ""
+  echo "=== 시나리오 44: lead + verify task-pattern dispatch ==="
+  cleanup
+  setup_test_project
+  build_fake_claude
+  build_fake_codex
+
+  mkdir -p "$PROJECT_DIR/workspace/tasks"
+  cat > "$PROJECT_DIR/workspace/tasks/TASK-013.md" <<'EOF'
+# TASK-013: Lead verify dispatch test
+
+- **Pattern**: `lead + verify`
+- **Owner lane**: `developer-codex`
+- **Review lane**: `developer-claude`
+EOF
+
+  tmux new-session -d -s "$SESSION" -n manager
+  create_fake_agent "developer-claude"
+  create_fake_codex_agent "developer-codex"
+  register_fake_agent "developer-claude" "developer"
+  register_fake_codex_agent "developer-codex" "developer"
+
+  bash "$TOOLS_DIR/cmd.sh" dispatch developer \
+    "workspace/tasks/TASK-013.md" "$PROJECT" >/dev/null
+
+  local sf codex_active claude_active manager_report claude_pane codex_pane
+  sf="$PROJECT_DIR/memory/manager/assignments.md"
+  codex_active="$(grep -Ec "\\| developer-codex \\| workspace/tasks/TASK-013.md \\| .*\\| active \\|" "$sf" 2>/dev/null || true)"
+  claude_active="$(grep -Ec "\\| developer-claude \\| workspace/tasks/TASK-013.md \\| .*\\| active \\|" "$sf" 2>/dev/null || true)"
+  assert_eq "lead lane assignment 기록" "1" "$codex_active"
+  assert_eq "review lane assignment 기록" "1" "$claude_active"
+
+  manager_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-013.md" "manager")"
+  assert_file_exists "lead + verify manager 조율 stub 생성" "$manager_report"
+
+  codex_pane="$(tmux capture-pane -p -t "${SESSION}:developer-codex" -S -80 2>/dev/null || true)"
+  claude_pane="$(tmux capture-pane -p -t "${SESSION}:developer-claude" -S -80 2>/dev/null || true)"
+  TOTAL=$((TOTAL + 1))
+  if echo "$codex_pane" | grep -q 'execution lead' && echo "$claude_pane" | grep -q 'review/verify lane'; then
+    echo "  PASS: lead와 review lane 메시지가 구분됨"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: lead/review lane 메시지 구분이 없음"
+    FAIL=$((FAIL + 1))
+  fi
+
+  echo "  시나리오 44 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 45: independent compare 패턴은 plain dispatch에서도 비교 구조를 만든다
+# ──────────────────────────────────────────────
+
+test_scenario_45() {
+  echo ""
+  echo "=== 시나리오 45: independent compare task-pattern dispatch ==="
+  cleanup
+  setup_test_project
+  build_fake_claude
+  build_fake_codex
+
+  mkdir -p "$PROJECT_DIR/workspace/tasks"
+  cat > "$PROJECT_DIR/workspace/tasks/TASK-014.md" <<'EOF'
+# TASK-014: Independent compare dispatch test
+
+- **Pattern**: `independent compare`
+- **Owner lanes**: `developer-claude`, `developer-codex`
+EOF
+
+  tmux new-session -d -s "$SESSION" -n manager
+  create_fake_agent "developer-claude"
+  create_fake_codex_agent "developer-codex"
+  register_fake_agent "developer-claude" "developer"
+  register_fake_codex_agent "developer-codex" "developer"
+
+  bash "$TOOLS_DIR/cmd.sh" dispatch developer \
+    "workspace/tasks/TASK-014.md" "$PROJECT" >/dev/null
+
+  local sf claude_active codex_active claude_report codex_report manager_report
+  sf="$PROJECT_DIR/memory/manager/assignments.md"
+  claude_active="$(grep -Ec "\\| developer-claude \\| workspace/tasks/TASK-014.md \\| .*\\| active \\|" "$sf" 2>/dev/null || true)"
+  codex_active="$(grep -Ec "\\| developer-codex \\| workspace/tasks/TASK-014.md \\| .*\\| active \\|" "$sf" 2>/dev/null || true)"
+  assert_eq "independent compare claude lane assignment 기록" "1" "$claude_active"
+  assert_eq "independent compare codex lane assignment 기록" "1" "$codex_active"
+
+  claude_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-014.md" "developer-claude")"
+  codex_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-014.md" "developer-codex")"
+  manager_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-014.md" "manager")"
+  assert_file_exists "independent compare claude 보고서 stub 생성" "$claude_report"
+  assert_file_exists "independent compare codex 보고서 stub 생성" "$codex_report"
+  assert_file_exists "independent compare manager 비교 stub 생성" "$manager_report"
+
+  echo "  시나리오 45 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 46: codex reboot/refresh도 active task를 bootstrap에 다시 싣는다
+# ──────────────────────────────────────────────
+
+test_scenario_46() {
+  echo ""
+  echo "=== 시나리오 46: codex active task resume seam ==="
+  cleanup
+  setup_test_project
+  build_fake_codex
+
+  python3 - "$PROJECT_DIR/project.md" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+content = path.read_text(encoding="utf-8")
+content = content.replace("- 실행 모드: solo", "- 실행 모드: dual", 1)
+path.write_text(content, encoding="utf-8")
+PY
+
+  mkdir -p "$PROJECT_DIR/workspace/tasks"
+  cat > "$PROJECT_DIR/workspace/tasks/TASK-015.md" <<'EOF'
+# TASK-015: Codex reboot resume smoke test
+EOF
+  cat > "$PROJECT_DIR/workspace/tasks/TASK-016.md" <<'EOF'
+# TASK-016: Codex refresh resume smoke test
+EOF
+
+  tmux new-session -d -s "$SESSION" -n manager
+  create_fake_codex_agent "developer-codex"
+  register_fake_codex_agent "developer-codex" "developer"
+
+  bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer-codex \
+    task_assign normal "workspace/tasks/TASK-015.md" "codex reboot resume" >/dev/null
+
+  local bootstrap_path
+  bootstrap_path="$PROJECT_DIR/runtime/bootstrap/developer-codex.md"
+  rm -f "$bootstrap_path"
+
+  assert_true "codex reboot 성공" \
+    env PATH="$PROJECT_DIR:$PATH" \
+      bash "$TOOLS_DIR/cmd.sh" reboot developer-codex "$PROJECT"
+
+  assert_file_contains "codex reboot bootstrap에 active task 포함" \
+    "$bootstrap_path" \
+    "workspace/tasks/TASK-015.md"
+  assert_file_contains "codex reboot bootstrap에 task resume 블록 포함" \
+    "$bootstrap_path" \
+    "\\[재부팅 후 태스크 복구\\]"
+
+  bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer-codex \
+    task_assign normal "workspace/tasks/TASK-016.md" "codex refresh resume" >/dev/null
+
+  rm -f "$bootstrap_path"
+  assert_true "codex refresh 성공" \
+    env PATH="$PROJECT_DIR:$PATH" \
+      WHIPLASH_REFRESH_SKIP_HANDOFF_REQUEST=1 \
+      WHIPLASH_REFRESH_HANDOFF_WAIT_SECONDS=0 \
+      bash "$TOOLS_DIR/cmd.sh" refresh developer-codex "$PROJECT"
+
+  assert_file_contains "codex refresh bootstrap에 active task 포함" \
+    "$bootstrap_path" \
+    "workspace/tasks/TASK-016.md"
+  assert_file_contains "codex refresh bootstrap에 task resume 블록 포함" \
+    "$bootstrap_path" \
+    "\\[재부팅 후 태스크 복구\\]"
+
+  echo "  시나리오 46 완료"
+}
+
+# ──────────────────────────────────────────────
 # 메인
 # ──────────────────────────────────────────────
 
@@ -2668,6 +3975,23 @@ test_scenario_26
 test_scenario_27
 test_scenario_28
 test_scenario_29
+test_scenario_30
+test_scenario_31
+test_scenario_32
+test_scenario_33
+test_scenario_34
+test_scenario_35
+test_scenario_36
+test_scenario_37
+test_scenario_38
+test_scenario_39
+test_scenario_40
+test_scenario_41
+test_scenario_42
+test_scenario_43
+test_scenario_44
+test_scenario_45
+test_scenario_46
 
 echo ""
 echo "============================================"

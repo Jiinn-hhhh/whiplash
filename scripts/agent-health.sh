@@ -159,7 +159,7 @@ agent_classify_live_window_health() {
   local session_name="$1"
   local window_name="$2"
   local backend="$3"
-  local pane_dump
+  local pane_dump auth_state
 
   if [ "$backend" != "claude" ]; then
     printf 'healthy|\n'
@@ -169,6 +169,12 @@ agent_classify_live_window_health() {
   pane_dump="$(agent_capture_pane_tail "$session_name" "$window_name" 60 | tail -n 12 || true)"
   if [ -n "$pane_dump" ] && printf '%s\n' "$pane_dump" | agent_pane_requires_claude_login; then
     printf 'AUTH_BLOCKED|pane-login-required\n'
+    return 0
+  fi
+
+  auth_state="$(claude_cli_auth_state)"
+  if [ "$auth_state" = "blocked" ]; then
+    printf 'AUTH_BLOCKED|claude-auth-status\n'
     return 0
   fi
 

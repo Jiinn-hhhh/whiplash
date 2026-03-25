@@ -30,15 +30,25 @@ TOOLS_DIR="$SCRIPT_DIR"
 SESSION="whiplash-${PROJECT}"
 MONITOR_ONCE="${WHIPLASH_MONITOR_ONCE:-0}"
 # shellcheck source=/dev/null
+source "$TOOLS_DIR/tmux-env.sh"
+# shellcheck source=/dev/null
 source "$TOOLS_DIR/tmux-submit.sh"
 # shellcheck source=/dev/null
 source "$TOOLS_DIR/runtime-paths.sh"
+# shellcheck source=/dev/null
+source "$TOOLS_DIR/agent-health.sh"
+# shellcheck source=/dev/null
+source "$TOOLS_DIR/message-queue.sh"
+# shellcheck source=/dev/null
+source "$TOOLS_DIR/notify-format.sh"
+whiplash_activate_tmux_project "$PROJECT"
 HEALTH_CHECK_INTERVAL=30
 MAX_REBOOT=5
 HUNG_THRESHOLD=600  # 10분 (초)
 QUEUE_TTL=86400  # 24시간
 ensure_manager_runtime_layout "$PROJECT"
 SESSION_ABSENT_COUNT=0
+REHYDRATION_GRACE_SECONDS="${WHIPLASH_REHYDRATION_GRACE_SECONDS:-180}"
 
 # ──────────────────────────────────────────────
 # PID lock — 동일 프로젝트에 대한 중복 monitor 방지
@@ -109,6 +119,12 @@ get_active_session_entries() {
       }
     }
   ' "$sessions_file"
+}
+
+window_indices_by_name() {
+  local win_name="$1"
+  tmux list-windows -t "$SESSION" -F '#I|#{window_name}' 2>/dev/null \
+    | awk -F'|' -v target="$win_name" '$2 == target { print $1 }'
 }
 
 # ──────────────────────────────────────────────
@@ -203,8 +219,34 @@ build_notification() {
     prefix="[URGENT] ${msg_from} → ${msg_to} | ${msg_kind}"
   fi
   flat_subject="$(printf '%s' "$msg_subject" | tr '\r\n' '  ')"
+  if [ "$msg_kind" = "user_notice" ] || { [ "$msg_kind" = "status_update" ] && { [ "$msg_to" = "manager" ] || [ "$msg_to" = "user" ]; }; }; then
+    printf '%s | 제목: %s\n%s' "$prefix" "$flat_subject" "$msg_content"
+    return 0
+  fi
   flat_content="$(printf '%s' "$msg_content" | tr '\r\n' '  ')"
   printf '%s' "${prefix} | 제목: ${flat_subject} | 내용: ${flat_content}"
+}
+
+mark_active_session_rows_stale() {
+  local sessions_file
+  sessions_file="$REPO_ROOT/projects/$PROJECT/memory/manager/sessions.md"
+  [ -f "$sessions_file" ] || return 0
+  grep -q '| active |' "$sessions_file" 2>/dev/null || return 0
+
+  awk '
+    BEGIN { FS = OFS = "|" }
+    function trim(s) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+      return s
+    }
+    NR <= 2 { print; next }
+    {
+      if (trim($6) == "active") {
+        $6 = " stale "
+      }
+      print
+    }
+  ' "$sessions_file" > "${sessions_file}.tmp" && mv "${sessions_file}.tmp" "$sessions_file"
 }
 
 maybe_refresh_target() {
@@ -231,7 +273,7 @@ submit_notification() {
   local target="$1"
   local notification="$2"
   local tmux_target="${SESSION}:${target}"
-  local attempt
+  local attempt backend delivery_state
 
   for attempt in 1 2; do
     if tmux_submit_pasted_payload "$tmux_target" "$notification" "drain"; then
@@ -241,7 +283,13 @@ submit_notification() {
     sleep 1
   done
 
-  if maybe_refresh_target "$target" && is_agent_alive "$target"; then
+  backend="$(get_window_backend "$target")"
+  delivery_state="$(agent_delivery_state "$PROJECT" "$SESSION" "$target" "$backend")"
+  if [ "${delivery_state%%|*}" = "healthy" ] && maybe_refresh_target "$target"; then
+    delivery_state="$(agent_delivery_state "$PROJECT" "$SESSION" "$target" "$backend")"
+    if [ "${delivery_state%%|*}" != "healthy" ]; then
+      return 1
+    fi
     if tmux_submit_pasted_payload "$tmux_target" "$notification" "drain-refresh"; then
       runtime_clear_message_refresh_ts "$PROJECT" "$target" || true
       return 0
@@ -251,33 +299,114 @@ submit_notification() {
   return 1
 }
 
-# ──────────────────────────────────────────────
-# 프로세스 레벨 생존 체크
-# ──────────────────────────────────────────────
+process_tree_named() {
+  local pid="$1"
+  local process_name="$2"
+  [ -n "$pid" ] || return 1
+
+  local comm child_pid child_cmd
+  comm="$(ps -p "$pid" -o comm= 2>/dev/null | head -1 || true)"
+  if agent_backend_command_matches "$process_name" "$comm"; then
+    return 0
+  fi
+
+  while IFS= read -r child_pid; do
+    [ -n "$child_pid" ] || continue
+    child_cmd="$(ps -o comm= -p "$child_pid" 2>/dev/null | head -1 || true)"
+    if agent_backend_command_matches "$process_name" "$child_cmd"; then
+      return 0
+    fi
+    if process_tree_named "$child_pid" "$process_name"; then
+      return 0
+    fi
+  done < <(pgrep -P "$pid" 2>/dev/null || true)
+
+  return 1
+}
 
 is_agent_alive() {
   local win_name="$1"
-  local tmux_target="${SESSION}:${win_name}"
-  # 윈도우 존재 + 에이전트 프로세스 생존 둘 다 확인
-  if ! tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -q "^${win_name}$"; then
+  local indices backend idx pane_info pane_pid pane_cmd
+  indices="$(window_indices_by_name "$win_name")"
+  if [ -z "$indices" ]; then
     return 1
   fi
-  local pane_info pane_pid pane_cmd
-  pane_info=$(tmux list-panes -t "$tmux_target" -F '#{pane_pid}|#{pane_current_command}' 2>/dev/null | head -1)
-  pane_pid="${pane_info%%|*}"
-  pane_cmd="${pane_info#*|}"
-  local backend
+
   backend="$(get_window_backend "$win_name")"
-  if [ "$backend" = "codex" ]; then
-    if [ "$pane_cmd" = "codex" ]; then
+  while IFS= read -r idx; do
+    [ -n "$idx" ] || continue
+    pane_info="$(tmux list-panes -t "${SESSION}:${idx}" -F '#{pane_pid}|#{pane_current_command}' 2>/dev/null | head -1)"
+    pane_pid="${pane_info%%|*}"
+    pane_cmd="${pane_info#*|}"
+    if agent_backend_command_matches "$backend" "$pane_cmd"; then
       return 0
     fi
-    [ -n "$pane_pid" ] && pgrep -P "$pane_pid" "codex" >/dev/null 2>&1
-  else
-    if [ "$pane_cmd" = "claude" ]; then
+    if process_tree_named "$pane_pid" "$backend"; then
       return 0
     fi
-    [ -n "$pane_pid" ] && pgrep -P "$pane_pid" "claude" >/dev/null 2>&1
+  done <<< "$indices"
+
+  return 1
+}
+
+session_epoch_marker() {
+  tmux display-message -p -t "$SESSION" '#{session_id}|#{session_created}' 2>/dev/null || true
+}
+
+begin_rehydration_grace() {
+  local reason="$1"
+  local epoch="$2"
+  local now_ts grace_until existing_until
+
+  now_ts=$(date +%s)
+  grace_until=$((now_ts + REHYDRATION_GRACE_SECONDS))
+  existing_until="$(runtime_get_manager_state "$PROJECT" "rehydration_grace_until" "" 2>/dev/null || true)"
+  if [[ "${existing_until:-}" =~ ^[0-9]+$ ]] && [ "$existing_until" -gt "$grace_until" ]; then
+    grace_until="$existing_until"
+  fi
+
+  runtime_set_manager_state "$PROJECT" "rehydration_grace_until" "$grace_until"
+  [ -n "$epoch" ] && runtime_set_manager_state "$PROJECT" "session_recovery_epoch" "$epoch"
+  [ -n "$epoch" ] && runtime_set_manager_state "$PROJECT" "session_epoch" "$epoch"
+  python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor session_rehydration_grace "$SESSION" \
+    --detail reason="$reason" epoch="${epoch:-unknown}" until="$grace_until" || true
+}
+
+rehydration_grace_active() {
+  local grace_until now_ts
+  grace_until="$(runtime_get_manager_state "$PROJECT" "rehydration_grace_until" "" 2>/dev/null || true)"
+  if ! [[ "${grace_until:-}" =~ ^[0-9]+$ ]]; then
+    return 1
+  fi
+
+  now_ts=$(date +%s)
+  if [ "$now_ts" -ge "$grace_until" ]; then
+    if [ -n "$(runtime_get_manager_state "$PROJECT" "project_booting" "" 2>/dev/null || true)" ]; then
+      return 0
+    fi
+    runtime_clear_manager_state "$PROJECT" "rehydration_grace_until" || true
+    return 1
+  fi
+
+  return 0
+}
+
+handle_session_epoch_transition() {
+  local current_epoch="$1"
+  local previous_epoch
+
+  [ -n "$current_epoch" ] || return 0
+  previous_epoch="$(runtime_get_manager_state "$PROJECT" "session_epoch" "" 2>/dev/null || true)"
+  if [ -z "$previous_epoch" ]; then
+    runtime_set_manager_state "$PROJECT" "session_epoch" "$current_epoch"
+    return 0
+  fi
+
+  if [ "$previous_epoch" != "$current_epoch" ]; then
+    python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor session_epoch_changed "$SESSION" \
+      --detail previous="$previous_epoch" current="$current_epoch" || true
+    mark_active_session_rows_stale
+    begin_rehydration_grace "session-epoch-changed" "$current_epoch"
   fi
 }
 
@@ -341,11 +470,54 @@ check_claude_plan_mode() {
   done < <(get_active_session_entries)
 }
 
+check_claude_auth_blocked() {
+  if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+    return
+  fi
+
+  while IFS='|' read -r win_name backend session_id role; do
+    [ -n "$win_name" ] || continue
+    if [ "$win_name" = "manager" ] || [ "$win_name" = "dashboard" ]; then
+      continue
+    fi
+
+    local previous_state previous_alert classification current_state detail
+    previous_state="$(runtime_get_agent_health_state "$PROJECT" "$win_name" "" 2>/dev/null || true)"
+    previous_alert="$(runtime_get_agent_health_alert_ts "$PROJECT" "$win_name" "" 2>/dev/null || true)"
+    classification="$(agent_classify_window_health "$PROJECT" "$SESSION" "$win_name" "$backend")"
+    current_state="${classification%%|*}"
+    detail="${classification#*|}"
+
+    if [ "$current_state" = "AUTH_BLOCKED" ]; then
+      if [ "$previous_state" != "AUTH_BLOCKED" ]; then
+        python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor auth_blocked_detected "$win_name" \
+          --detail backend="$backend" role="$role" session="$session_id" reason="${detail:-pane-login-required}" || true
+      fi
+      if ! [[ "${previous_alert:-}" =~ ^[0-9]+$ ]]; then
+        runtime_set_agent_health_alert_ts "$PROJECT" "$win_name" "$(date +%s)" || true
+        bash "$TOOLS_DIR/message.sh" "$PROJECT" monitor manager \
+          need_input normal "${win_name} Claude auth blocked" \
+          "${SESSION}:${win_name} pane이 로그인 필요 상태다. direct delivery와 reboot/refresh를 중단했다. Claude 인증 복구 후 다시 진행해라." || true
+      fi
+      continue
+    fi
+
+    if [ "$previous_state" = "AUTH_BLOCKED" ]; then
+      python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor auth_blocked_cleared "$win_name" \
+        --detail backend="$backend" role="$role" session="$session_id" || true
+    fi
+    if [[ "${previous_alert:-}" =~ ^[0-9]+$ ]]; then
+      runtime_clear_agent_health_alert_ts "$PROJECT" "$win_name" || true
+    fi
+  done < <(get_active_session_entries)
+}
+
 # ──────────────────────────────────────────────
 # 크래시 감지 + 자동 reboot
 # ──────────────────────────────────────────────
 
 check_agent_windows() {
+  local active_window_names window_name
   if ! tmux has-session -t "$SESSION" 2>/dev/null; then
     SESSION_ABSENT_COUNT=$((SESSION_ABSENT_COUNT + 1))
     if [ "$SESSION_ABSENT_COUNT" -ge 3 ]; then
@@ -356,7 +528,11 @@ check_agent_windows() {
         runtime_set_manager_state "$PROJECT" "monitor_heartbeat" "$(date +%s)" || true  # 좀비 오판 방지
       done
       # 세션 복귀 감지
-      python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor session_recovered "$SESSION" || true
+      local recovered_epoch
+      recovered_epoch="$(session_epoch_marker)"
+      python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor session_recovered "$SESSION" --detail epoch="${recovered_epoch:-unknown}" || true
+      mark_active_session_rows_stale
+      begin_rehydration_grace "session-recovered" "$recovered_epoch"
       SESSION_ABSENT_COUNT=0
       return
     fi
@@ -365,11 +541,17 @@ check_agent_windows() {
   fi
   SESSION_ABSENT_COUNT=0
 
-  local active_windows
-  active_windows=$(tmux list-windows -t "$SESSION" -F '#{window_name}')
-
-  local active_window_names
   active_window_names=$(get_active_roles)
+  handle_session_epoch_transition "$(session_epoch_marker)"
+
+  if rehydration_grace_active; then
+    for window_name in $active_window_names; do
+      if is_agent_alive "$window_name"; then
+        reset_reboot_count "$window_name"
+      fi
+    done
+    return
+  fi
 
   for window_name in $active_window_names; do
     if is_agent_alive "$window_name"; then
@@ -454,11 +636,17 @@ check_agent_health() {
       if [ "$idle_sec" -gt "$HUNG_THRESHOLD" ]; then
         # 10분간 output 없음 — 프로세스 확인
         if is_agent_alive "$win_name"; then
+          local health_state
+          health_state="$(runtime_get_agent_health_state "$PROJECT" "$win_name" "" 2>/dev/null || true)"
           # 살아있음 → 작업중. 체크 파일만 기록 (dashboard용)
           if ! [[ "${idle_check_ts:-}" =~ ^[0-9]+$ ]]; then
             runtime_set_idle_check_ts "$PROJECT" "$win_name" "$now"
             local idle_min=$((idle_sec / 60))
-            python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor idle_detected "$win_name" --detail idle_min="$idle_min" status="alive" || true
+            local idle_status="alive"
+            if [ "$health_state" = "AUTH_BLOCKED" ]; then
+              idle_status="auth-blocked"
+            fi
+            python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor idle_detected "$win_name" --detail idle_min="$idle_min" status="$idle_status" || true
           fi
           # 10분 후 다시 확인됨 (30초 루프 + HUNG_THRESHOLD 조건)
         else
@@ -508,14 +696,19 @@ drain_message_queue() {
 
     # 메시지 파싱
     local msg_from msg_to msg_kind msg_priority msg_subject msg_content
-    msg_from=$(grep '^from=' "$msg_file" | head -1 | sed 's/^from=//')
-    msg_to=$(grep '^to=' "$msg_file" | head -1 | sed 's/^to=//')
-    msg_kind=$(grep '^kind=' "$msg_file" | head -1 | sed 's/^kind=//')
-    msg_priority=$(grep '^priority=' "$msg_file" | head -1 | sed 's/^priority=//')
-    msg_subject=$(grep '^subject=' "$msg_file" | head -1 | sed 's/^subject=//')
-    msg_content=$(grep '^content=' "$msg_file" | head -1 | sed 's/^content=//')
+    msg_from="$(whiplash_queue_read_field "$msg_file" "from")"
+    msg_to="$(whiplash_queue_read_field "$msg_file" "to")"
+    msg_kind="$(whiplash_queue_read_field "$msg_file" "kind")"
+    msg_priority="$(whiplash_queue_read_field "$msg_file" "priority")"
+    msg_subject="$(whiplash_queue_read_field "$msg_file" "subject")"
+    msg_content="$(whiplash_queue_read_content "$msg_file")"
 
     [ -z "$msg_to" ] && { rm -f "$msg_file"; continue; }
+
+    if [ "$msg_kind" = "user_notice" ] || { [ "$msg_kind" = "status_update" ] && { [ "$msg_to" = "manager" ] || [ "$msg_to" = "user" ]; }; }; then
+      msg_subject="$(whiplash_notification_subject "$msg_kind" "$msg_subject")"
+      msg_content="$(whiplash_notification_body "$msg_kind" "$msg_subject" "$msg_content")"
+    fi
 
     if [ "$msg_to" = "user" ]; then
       rm -f "$msg_file"
@@ -529,7 +722,10 @@ drain_message_queue() {
 
     notification="$(build_notification "$msg_from" "$msg_to" "$msg_kind" "$msg_priority" "$msg_subject" "$msg_content")"
 
-    if ! is_agent_alive "$msg_to"; then
+    local backend delivery_state
+    backend="$(get_window_backend "$msg_to")"
+    delivery_state="$(agent_delivery_state "$PROJECT" "$SESSION" "$msg_to" "$backend")"
+    if [ "${delivery_state%%|*}" != "healthy" ]; then
       runtime_release_message_target_lock "$PROJECT" "$msg_to" || true
       continue  # 아직 죽어 있으면 다음 주기에 재시도
     fi
@@ -547,7 +743,10 @@ drain_message_queue() {
 # ──────────────────────────────────────────────
 
 if [ "$MONITOR_ONCE" = "1" ]; then
+  check_agent_windows
+  check_agent_health
   check_claude_plan_mode
+  check_claude_auth_blocked
   drain_message_queue
   cleanup_manager_runtime_transients "$PROJECT"
   runtime_set_manager_state "$PROJECT" "monitor_heartbeat" "$(date +%s)" || true
@@ -560,6 +759,7 @@ while true; do
   check_agent_windows
   check_agent_health
   check_claude_plan_mode
+  check_claude_auth_blocked
   drain_message_queue
   cleanup_manager_runtime_transients "$PROJECT"
   runtime_set_manager_state "$PROJECT" "monitor_heartbeat" "$(date +%s)" || true

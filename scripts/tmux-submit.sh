@@ -8,6 +8,11 @@
 #   4. draft가 그대로 남아 있으면 잠시 기다렸다가 Enter를 다시 보낸다.
 #   5. tmux target이 사라지지 않는 한, 제출될 때까지 반복한다.
 
+TMUX_SUBMIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "$TMUX_SUBMIT_SCRIPT_DIR/tmux-env.sh"
+whiplash_tmux_maybe_activate_from_env
+
 tmux_submit__trim_trailing_ws() {
   local text="$1"
   while :; do
@@ -128,6 +133,56 @@ tmux_submit__is_rich_tui_capture() {
   printf '%s\n' "$capture" | grep -Eq '(Claude Code v|OpenAI Codex|gpt-5\.|bypass permissions on|ctrl\+g to edit in Vim|Update available! Run: brew upgrade c)'
 }
 
+tmux_submit__capture_has_prompt_ready() {
+  local capture="$1"
+  local recent
+  recent="$(printf '%s\n' "$capture" | tail -n 12)"
+
+  if tmux_submit__is_rich_tui_capture "$capture"; then
+    printf '%s\n' "$recent" | grep -Eiq '(^❯ ?$|^> ?$|esc to interrupt|shift\+tab to cycle|bypass permissions on|ctrl\+t to hide tasks)'
+    return
+  fi
+
+  printf '%s\n' "$recent" | grep -Eq '(>>> |^> ?$)'
+}
+
+tmux_submit__submission_confirmed() {
+  local capture="$1"
+  if tmux_submit__is_rich_tui_capture "$capture"; then
+    tmux_submit__capture_has_submission_progress "$capture"
+    return
+  fi
+  if tmux_submit__capture_has_submission_progress "$capture"; then
+    return 0
+  fi
+  tmux_submit__capture_has_prompt_ready "$capture"
+}
+
+tmux_submit_wait_ready() {
+  local tmux_target="$1"
+  local attempts="${2:-20}"
+  local delay="${3:-1}"
+  local attempt capture
+
+  for attempt in $(seq 1 "$attempts"); do
+    if ! tmux_submit__target_exists "$tmux_target"; then
+      return 1
+    fi
+    capture="$(tmux_submit__capture_recent "$tmux_target" 120)"
+    TMUX_SUBMIT_LAST_CAPTURE="$capture"
+    if tmux_submit__capture_has_prompt_ready "$capture"; then
+      return 0
+    fi
+    sleep "$delay"
+  done
+
+  return 1
+}
+
+tmux_submit_wait_for_prompt_ready() {
+  tmux_submit_wait_ready "$@"
+}
+
 tmux_submit__tail_has_payload_at_end() {
   local capture="$1"
   local payload="$2"
@@ -194,10 +249,12 @@ tmux_submit__literal_submit_single_line() {
     sleep "$repeat_delay"
     capture="$(tmux_submit__capture_recent "$tmux_target" 100)"
     TMUX_SUBMIT_LAST_CAPTURE="$capture"
-    if tmux_submit__capture_has_submission_progress "$capture"; then
+    if tmux_submit__submission_confirmed "$capture"; then
       return 0
     fi
-    if ! tmux_submit__capture_has_payload_anywhere "$capture" "$payload"; then
+    if ! tmux_submit__capture_has_payload_anywhere "$capture" "$payload" && \
+       ! tmux_submit__is_rich_tui_capture "$capture" && \
+       tmux_submit__capture_has_prompt_ready "$capture"; then
       return 0
     fi
     if ! tmux send-keys -t "$tmux_target" Enter 2>/dev/null; then
@@ -208,7 +265,7 @@ tmux_submit__literal_submit_single_line() {
 
   capture="$(tmux_submit__capture_recent "$tmux_target" 100)"
   TMUX_SUBMIT_LAST_CAPTURE="$capture"
-  tmux_submit__capture_has_submission_progress "$capture"
+  tmux_submit__submission_confirmed "$capture"
 }
 
 tmux_submit__wait_for_payload_state() {
@@ -264,7 +321,9 @@ tmux_submit__enter_until_cleared() {
       done
       if [ "$confirm_attempts" -eq 0 ]; then
         TMUX_SUBMIT_LAST_CAPTURE="$confirm_capture"
-        return 0
+        if tmux_submit__submission_confirmed "$confirm_capture"; then
+          return 0
+        fi
       fi
     fi
 

@@ -25,10 +25,21 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TOOLS_DIR="$SCRIPT_DIR"
+
+tmux() {
+  if [ -n "${WHIPLASH_TMUX_SOCKET:-}" ]; then
+    command tmux -L "$WHIPLASH_TMUX_SOCKET" "$@"
+  else
+    command tmux "$@"
+  fi
+}
+
 # shellcheck source=/dev/null
 source "$TOOLS_DIR/tmux-submit.sh"
 # shellcheck source=/dev/null
 source "$TOOLS_DIR/runtime-paths.sh"
+# shellcheck source=/dev/null
+source "$TOOLS_DIR/agent-health.sh"
 
 # ──────────────────────────────────────────────
 # 유틸리티 함수
@@ -215,6 +226,7 @@ write_onboarding_bootstrap_project_md() {
 
 ## 운영 방식
 - **실행 모드**: pending
+- **control-plane 백엔드**: pending
 - **작업 루프**: pending
 - **랄프 완료 기준**: 미정
 - **랄프 종료 방식**: 미정
@@ -341,6 +353,72 @@ role_uses_dual_worktree() {
   esac
 }
 
+get_active_session_entries() {
+  local project="$1"
+  local sessions_path
+  sessions_path="$(sessions_file "$project")"
+  [ -f "$sessions_path" ] || return 0
+
+  awk -F'|' '
+    function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+    /\| active \|/ {
+      role = trim($2)
+      backend = trim($3)
+      tmux_target = trim($5)
+      status = trim($6)
+      if (status != "active") {
+        next
+      }
+      count = split(tmux_target, parts, ":")
+      win_name = parts[count]
+      if (win_name != "") {
+        print win_name "|" backend "|" role
+      }
+    }
+  ' "$sessions_path"
+}
+
+guard_claude_recovery() {
+  local action="$1"
+  local project="$2"
+  local sess="$3"
+  local window_name="$4"
+
+  if ! claude_recovery_blocked "$project" "$sess" "$window_name"; then
+    return 0
+  fi
+
+  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator auth_blocked_recovery_skip "$window_name" \
+    --detail action="$action" reason="$(runtime_get_agent_health_detail "$project" "$window_name" "auth-blocked" 2>/dev/null || echo "auth-blocked")" || true
+  echo "Warning: ${window_name} Claude auth blocked. ${action} 중단; 기존 pane/task/report 가시성 유지." >&2
+  return 1
+}
+
+print_agent_health_status() {
+  local project="$1"
+  local sess="$2"
+  local emitted=0
+
+  while IFS='|' read -r win_name backend role; do
+    [ -n "$win_name" ] || continue
+    local health_state health_detail
+    health_state="$(agent_classify_window_health "$project" "$sess" "$win_name" "$backend" 2>/dev/null || true)"
+    health_detail="${health_state#*|}"
+    health_state="${health_state%%|*}"
+    if [ "$health_state" = "AUTH_BLOCKED" ]; then
+      if [ "$emitted" -eq 0 ]; then
+        echo "[agent-health]"
+        emitted=1
+      fi
+      echo "  ${win_name} (${role}/${backend}): AUTH_BLOCKED ${health_detail:+(${health_detail})}"
+    fi
+  done < <(get_active_session_entries "$project")
+
+  if [ "$emitted" -eq 0 ]; then
+    echo "[agent-health] 이상 없음"
+  fi
+}
+
 role_uses_ralph_worktree() {
   local role="$1"
   case "$role" in
@@ -364,16 +442,28 @@ agent_env_script_path() {
 
 write_agent_env_script() {
   local project="$1" role="$2" agent_id="$3"
-  local script_path base_path
+  local script_path base_path tmux_socket_name
   script_path="$(agent_env_script_path "$project" "$agent_id")"
   base_path="$PATH"
+  tmux_socket_name="$project"
 
   mkdir -p "$(dirname "$script_path")"
   {
     printf 'export PATH=%q\n' "$base_path"
     printf 'export WHIPLASH_REPO_ROOT=%q\n' "$REPO_ROOT"
+    printf 'export WHIPLASH_TMUX_PROJECT=%q\n' "$project"
+    printf 'export WHIPLASH_TMUX_SOCKET_NAME=%q\n' "$tmux_socket_name"
     printf 'export WHIPLASH_NATIVE_CLAUDE_AGENTS=%q\n' "${REPO_ROOT}/.claude/agents"
     printf 'export WHIPLASH_NATIVE_CODEX_AGENTS=%q\n' "${REPO_ROOT}/.codex/agents"
+    env | awk -F= '
+      /^(WHIPLASH_FAKE_CLAUDE_|WHIPLASH_FAKE_CODEX_)/ {
+        key=$1
+        sub(/^[^=]+=*/, "", $0)
+        value=$0
+        gsub(/\047/, "\047\\\047\047", value)
+        printf("export %s=\047%s\047\n", key, value)
+      }
+    '
   } > "$script_path"
   chmod 600 "$script_path"
 
@@ -395,12 +485,98 @@ run_with_agent_env() {
   )
 }
 
+build_claude_session_bootstrap_prompt() {
+  cat <<'BOOTSTRAP'
+너는 Whiplash bootstrap 단계다.
+지금은 session_id만 만들기 위한 초기 호출이다.
+도구를 사용하지 말고, 파일도 읽지 말고, 명령도 실행하지 말고, 한 줄로 READY만 답해라.
+BOOTSTRAP
+}
+
+process_or_child_named() {
+  local pid="$1"
+  local process_name="$2"
+  [ -n "$pid" ] || return 1
+
+  local comm child_pid child_cmd
+  comm="$(ps -p "$pid" -o comm= 2>/dev/null | head -1 || true)"
+  if agent_backend_command_matches "$process_name" "$comm"; then
+    return 0
+  fi
+
+  while IFS= read -r child_pid; do
+    [ -n "$child_pid" ] || continue
+    child_cmd="$(ps -o comm= -p "$child_pid" 2>/dev/null | head -1 || true)"
+    if agent_backend_command_matches "$process_name" "$child_cmd"; then
+      return 0
+    fi
+  done < <(pgrep -P "$pid" 2>/dev/null || true)
+
+  return 1
+}
+
+window_indices_by_name() {
+  local sess="$1"
+  local window_name="$2"
+  tmux list-windows -t "$sess" -F '#I|#{window_name}' 2>/dev/null \
+    | awk -F'|' -v target="$window_name" '$2 == target { print $1 }'
+}
+
+kill_windows_by_name() {
+  local sess="$1"
+  local window_name="$2"
+  local send_exit="${3:-0}"
+  local indices
+  indices="$(window_indices_by_name "$sess" "$window_name" | sort -rn)"
+  [ -n "$indices" ] || return 0
+
+  local idx
+  if [ "$send_exit" = "1" ]; then
+    while IFS= read -r idx; do
+      [ -n "$idx" ] || continue
+      tmux send-keys -t "${sess}:${idx}" "/exit" Enter 2>/dev/null || true
+    done <<< "$indices"
+    sleep 2
+  fi
+
+  while IFS= read -r idx; do
+    [ -n "$idx" ] || continue
+    tmux kill-window -t "${sess}:${idx}" 2>/dev/null || true
+  done <<< "$indices"
+}
+
 get_manager_backend() {
-  local backend="${WHIPLASH_MANAGER_BACKEND:-claude}"
-  case "$backend" in
-    claude|codex) echo "$backend" ;;
-    *)            echo "claude" ;;
-  esac
+  local project="${1:-}"
+  local backend="${WHIPLASH_MANAGER_BACKEND:-}"
+
+  if [ -n "$backend" ]; then
+    case "$backend" in
+      claude|codex)
+        echo "$backend"
+        return
+        ;;
+    esac
+  fi
+
+  if [ -n "$project" ]; then
+    local project_md parsed
+    project_md="$(project_dir "$project")/project.md"
+    parsed=$({ grep -i "control-plane backend\|control-plane 백엔드" "$project_md" 2>/dev/null || true; } \
+      | head -1 \
+      | sed 's/.*: *//' \
+      | sed 's/ *(.*)//' \
+      | tr -d '[:space:]' \
+      | tr -d '*|' \
+      | tr '[:upper:]' '[:lower:]')
+    case "$parsed" in
+      claude|codex)
+        echo "$parsed"
+        return
+        ;;
+    esac
+  fi
+
+  echo "codex"
 }
 
 get_codex_model() {
@@ -908,6 +1084,8 @@ build_boot_message() {
     - Codex CLI: ${REPO_ROOT}/.codex/agents/
     - 비사소한 작업은 agents/${role}/techniques/subagent-orchestration.md 를 초기에 읽고, 기본적으로 최소 1개 이상 specialist를 먼저 호출해라.
     - 복잡한 작업은 2-way 이상 병렬 fan-out을 기본값으로 삼아라.
+    - task triage를 먼저 해라: 작고 명확하면 scout 1개 또는 direct 예외, 비사소하지만 bounded면 2-way map/debug 기본, 복잡/애매/merge-risk면 stronger model + reviewer/architect 계열을 우선 고려해라.
+    - 더 빠른/가벼운 모델은 mapping, evidence 수집, 좁은 verify에 먼저 쓰고, 더 강한 모델은 구조 경계, 모호한 설계, 고위험 최종 판정에 우선 배치해라.
     - execution lead라면 어떤 specialist를 부를지 네가 판단한다. manager는 outcome/제약을 주고, 내부 fan-out 조합은 세세히 지시하지 않는다.
     - 최종 권한과 공식 산출물 책임은 항상 너에게 있다. subagent 결과를 그대로 최종본으로 내지 마라.
 BOOTRULES
@@ -1370,6 +1548,72 @@ configure_tmux_session_visuals() {
   tmux set-option -t "$sess" window-status-current-style "bg=blue,fg=white,bold"
 }
 
+tmux_debug_enabled() {
+  case "${WHIPLASH_TMUX_DEBUG:-1}" in
+    0|false|FALSE|off|OFF|no|NO)
+      return 1
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+tmux_debug_log_dir() {
+  local project="$1"
+  printf '%s/tmux-debug\n' "$(project_dir "$project")/logs"
+}
+
+tmux_write_debug_meta() {
+  local project="$1"
+  local sess="$2"
+  local before_file="$3"
+  local meta_file log_dir log_file found=0
+  log_dir="$(tmux_debug_log_dir "$project")"
+  meta_file="${log_dir}/latest-${sess}.meta"
+
+  {
+    printf 'timestamp=%s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    printf 'session=%s\n' "$sess"
+    printf 'cwd=%s\n' "$log_dir"
+    printf 'socket_hint=/private/tmp/tmux-%s/%s\n' "$(id -u)" "$sess"
+    printf 'logs=\n'
+    for log_file in "$log_dir"/tmux-*.log; do
+      [ -f "$log_file" ] || continue
+      if ! grep -Fqx "$(basename "$log_file")" "$before_file" 2>/dev/null; then
+        printf '%s\n' "$log_file"
+        found=1
+      fi
+    done
+    if [ "$found" -eq 0 ]; then
+      printf '(no-new-log-files-detected)\n'
+    fi
+  } > "$meta_file"
+}
+
+tmux_new_session_detached() {
+  local project="$1"
+  local sess="$2"
+  local window_name="$3"
+
+  if ! tmux_debug_enabled; then
+    tmux new-session -d -s "$sess" -n "$window_name"
+    return
+  fi
+
+  local log_dir before_file
+  log_dir="$(tmux_debug_log_dir "$project")"
+  mkdir -p "$log_dir"
+  before_file="$(mktemp)"
+  (
+    cd "$log_dir"
+    ls tmux-*.log 2>/dev/null | sort > "$before_file" || true
+    tmux -vv new-session -d -s "$sess" -n "$window_name"
+  )
+  tmux_write_debug_meta "$project" "$sess" "$before_file"
+  rm -f "$before_file"
+}
+
 ensure_dashboard_window() {
   local project="$1"
   local sess
@@ -1392,7 +1636,7 @@ ensure_tmux_session_with_dashboard() {
   init_sessions_file "$project"
 
   if ! tmux has-session -t "$sess" 2>/dev/null; then
-    tmux new-session -d -s "$sess" -n "dashboard"
+    tmux_new_session_detached "$project" "$sess" "dashboard"
   fi
 
   configure_tmux_session_visuals "$sess"
@@ -1462,6 +1706,35 @@ close_onboarding_analysis_windows() {
   done < <(tmux list-windows -t "$sess" -F '#{window_name}' 2>/dev/null || true)
 }
 
+resolve_reboot_or_refresh_target() {
+  local target="$1"
+  local project="$2"
+  local resolved_role resolved_backend resolved_window
+
+  if [[ "$target" == *-claude ]]; then
+    resolved_role="${target%-claude}"
+    resolved_backend="claude"
+    resolved_window="$target"
+  elif [[ "$target" == *-codex ]]; then
+    resolved_role="${target%-codex}"
+    resolved_backend="codex"
+    resolved_window="$target"
+  else
+    resolved_role="$target"
+    resolved_window="$target"
+    case "$resolved_role" in
+      onboarding|manager|discussion)
+        resolved_backend="$(get_manager_backend "$project")"
+        ;;
+      *)
+        resolved_backend="claude"
+        ;;
+    esac
+  fi
+
+  printf '%s|%s|%s\n' "$resolved_role" "$resolved_backend" "$resolved_window"
+}
+
 # 단일 에이전트 부팅 (reboot/refresh에서 재사용)
 boot_single_agent() {
   local role="$1"
@@ -1474,16 +1747,25 @@ boot_single_agent() {
   sess="$(session_name "$project")"
 
   # 멱등성 가드: 윈도우 존재 + claude 프로세스 alive 확인
-  if tmux list-windows -t "${sess}" -F '#{window_name}' 2>/dev/null | grep -q "^${window_name}$"; then
-    local existing_pane_pid
-    existing_pane_pid=$(tmux list-panes -t "${sess}:${window_name}" -F '#{pane_pid}' 2>/dev/null | head -1)
-    if [ -n "$existing_pane_pid" ] && pgrep -P "$existing_pane_pid" claude >/dev/null 2>&1; then
-      echo "Info: ${window_name} 윈도우 + claude 프로세스 활성. 부팅 건너뜀." >&2
-      return 0
+  local existing_idx existing_pane_pid existing_alive=0
+  while IFS= read -r existing_idx; do
+    [ -n "$existing_idx" ] || continue
+    existing_pane_pid=$(tmux list-panes -t "${sess}:${existing_idx}" -F '#{pane_pid}' 2>/dev/null | head -1)
+    if process_or_child_named "$existing_pane_pid" claude; then
+      existing_alive=1
+      break
     fi
-    # 윈도우는 있지만 프로세스가 없음 → 윈도우 kill 후 재부팅 진행
-    echo "Info: ${window_name} 윈도우 존재하나 claude 프로세스 없음. 윈도우 제거 후 재부팅." >&2
-    tmux kill-window -t "${sess}:${window_name}" 2>/dev/null || true
+  done < <(window_indices_by_name "$sess" "$window_name")
+
+  if [ "$existing_alive" -eq 1 ]; then
+    echo "Info: ${window_name} 윈도우 + claude 프로세스 활성. 부팅 건너뜀." >&2
+    return 0
+  fi
+
+  if window_indices_by_name "$sess" "$window_name" | grep -q .; then
+    # 실패한 부팅이 남긴 동명 창을 모두 정리한다.
+    echo "Info: ${window_name} 동명 윈도우 존재하나 claude 프로세스 없음. 모두 제거 후 재부팅." >&2
+    kill_windows_by_name "$sess" "$window_name"
   fi
 
   local model
@@ -1493,6 +1775,8 @@ boot_single_agent() {
   local agent_id="$window_name"
   local boot_msg
   boot_msg="$(build_boot_message "$role" "$project" "$extra_boot_msg" "$agent_id" "$pending_task" "$ready_target_override")"
+  local bootstrap_msg
+  bootstrap_msg="$(build_claude_session_bootstrap_prompt)"
   local tmux_target="${sess}:${window_name}"
   local agent_env_script
   agent_env_script="$(write_agent_env_script "$project" "$role" "$agent_id")"
@@ -1504,7 +1788,7 @@ boot_single_agent() {
   local tools_flag=""
   [ -n "$tools" ] && tools_flag="--allowedTools $tools"
   local result
-  result=$(run_with_agent_env "$project" "$role" "$agent_id" env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude -p "$boot_msg" \
+  result=$(run_with_agent_env "$project" "$role" "$agent_id" env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude -p "$bootstrap_msg" \
     --model "$model" \
     --output-format json \
     --dangerously-skip-permissions $tools_flag) || {
@@ -1535,10 +1819,10 @@ boot_single_agent() {
   if [ -n "$boot_pane_pid" ]; then
     local i
     for i in $(seq 1 10); do
-      pgrep -P "$boot_pane_pid" claude >/dev/null 2>&1 && break
+      process_or_child_named "$boot_pane_pid" claude && break
       sleep 1
     done
-    if ! pgrep -P "$boot_pane_pid" claude >/dev/null 2>&1; then
+    if ! process_or_child_named "$boot_pane_pid" claude; then
       echo "Warning: ${window_name} claude 프로세스 10초 내 미시작." >&2
       python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot_fail "$window_name" --detail reason="claude 프로세스 미시작" || true
       return 1
@@ -1547,6 +1831,23 @@ boot_single_agent() {
 
   # sessions.md에 기록
   add_session_row "$project" "$role" "$session_id" "$tmux_target" "$model" "claude"
+
+  local prompt_ok=0
+  local attempt
+  for attempt in 1 2 3 4 5; do
+    if tmux_submit_pasted_payload "$tmux_target" "$boot_msg" "${window_name}-boot"; then
+      prompt_ok=1
+      break
+    fi
+    sleep 2
+  done
+  if [ "$prompt_ok" -ne 1 ]; then
+    echo "Warning: ${window_name} 온보딩 프롬프트 전달 실패." >&2
+    mark_window_status "$project" "$window_name" "active" "crashed"
+    kill_windows_by_name "$sess" "$window_name"
+    python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot_fail "$window_name" --detail reason="온보딩 프롬프트 전달 실패" || true
+    return 1
+  fi
 
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot "$window_name" --detail session="$session_id" || true
   echo "${window_name} 부팅 완료: session=${session_id}, tmux=${tmux_target}"
@@ -1559,7 +1860,8 @@ boot_codex_agent() {
   local project="$2"
   local window_name="$3"
   local extra_boot_msg="${4:-}"
-  local ready_target_override="${5:-}"
+  local pending_task="${5:-}"
+  local ready_target_override="${6:-}"
   local sess
   sess="$(session_name "$project")"
   local agent_id="$window_name"
@@ -1578,10 +1880,38 @@ boot_codex_agent() {
     return 1
   fi
 
+  local existing_idx pane_info pane_pid pane_cmd existing_alive=0
+  while IFS= read -r existing_idx; do
+    [ -n "$existing_idx" ] || continue
+    pane_info=$(tmux list-panes -t "${sess}:${existing_idx}" -F '#{pane_pid}|#{pane_current_command}' 2>/dev/null | head -1)
+    pane_pid="${pane_info%%|*}"
+    pane_cmd="${pane_info#*|}"
+    case "$pane_cmd" in
+      codex|codex-*)
+        existing_alive=1
+        break
+        ;;
+    esac
+    if process_or_child_named "$pane_pid" "codex"; then
+      existing_alive=1
+      break
+    fi
+  done < <(window_indices_by_name "$sess" "$window_name")
+
+  if [ "$existing_alive" -eq 1 ]; then
+    echo "Info: ${window_name} 윈도우 + codex 프로세스 활성. 부팅 건너뜀." >&2
+    return 0
+  fi
+
+  if window_indices_by_name "$sess" "$window_name" | grep -q .; then
+    echo "Info: ${window_name} 동명 윈도우 존재하나 codex 프로세스 없음. 모두 제거 후 재부팅." >&2
+    kill_windows_by_name "$sess" "$window_name"
+  fi
+
   echo "--- ${window_name} (codex interactive mode) 부팅 중 ---"
 
   local boot_msg bootstrap_path bootstrap_prompt
-  boot_msg="$(build_boot_message "$role" "$project" "$extra_boot_msg" "$agent_id" "" "$ready_target_override")"
+  boot_msg="$(build_boot_message "$role" "$project" "$extra_boot_msg" "$agent_id" "$pending_task" "$ready_target_override")"
   bootstrap_path="$(prepare_codex_bootstrap_file "$project" "$agent_id" "$boot_msg")"
   bootstrap_prompt="$(build_codex_bootstrap_prompt "$bootstrap_path")"
 
@@ -1592,7 +1922,7 @@ boot_codex_agent() {
   local prompt_ok=0
   local attempt
   for attempt in 1 2 3 4 5; do
-    if send_codex_prompt_tmux "$tmux_target" "$bootstrap_prompt"; then
+    if tmux_submit_wait_ready "$tmux_target" 10 1 && send_codex_prompt_tmux "$tmux_target" "$bootstrap_prompt"; then
       prompt_ok=1
       break
     fi
@@ -1619,7 +1949,7 @@ boot_agent_with_backend() {
   local ready_target_override="${7:-}"
 
   if [ "$backend" = "codex" ]; then
-    boot_codex_agent "$role" "$project" "$window_name" "$extra_boot_msg" "$ready_target_override"
+    boot_codex_agent "$role" "$project" "$window_name" "$extra_boot_msg" "$pending_task" "$ready_target_override"
   else
     boot_single_agent "$role" "$project" "$extra_boot_msg" "$window_name" "$pending_task" "$ready_target_override"
   fi
@@ -1660,7 +1990,7 @@ boot_manager_window() {
   local project="$1"
   local extra_boot_msg="${2:-}"
   local manager_backend
-  manager_backend="$(get_manager_backend)"
+  manager_backend="$(get_manager_backend "$project")"
 
   if [ "$manager_backend" = "codex" ]; then
     boot_agent_with_backend "manager" "$project" "manager" "codex" "$extra_boot_msg" "" "user" || {
@@ -1705,11 +2035,11 @@ boot_manager_window() {
     boot_pane_pid=$(tmux list-panes -t "$tmux_target" -F '#{pane_pid}' 2>/dev/null | head -1)
     if [ -n "$boot_pane_pid" ]; then
       for attempt in $(seq 1 10); do
-        pgrep -P "$boot_pane_pid" claude >/dev/null 2>&1 && break
+        process_or_child_named "$boot_pane_pid" claude && break
         sleep 1
       done
     fi
-    if [ -z "$boot_pane_pid" ] || ! pgrep -P "$boot_pane_pid" claude >/dev/null 2>&1; then
+    if [ -z "$boot_pane_pid" ] || ! process_or_child_named "$boot_pane_pid" claude; then
       echo "Error: Manager claude --resume 프로세스 시작 실패." >&2
       return 1
     fi
@@ -1738,7 +2068,7 @@ boot_onboarding_window() {
   local project="$1"
   local extra_boot_msg="${2:-}"
   local backend
-  backend="$(get_manager_backend)"
+  backend="$(get_manager_backend "$project")"
   boot_agent_with_backend "onboarding" "$project" "onboarding" "$backend" "$extra_boot_msg" "" "user" || {
     echo "Error: Onboarding 부팅 실패." >&2
     return 1
@@ -1912,7 +2242,7 @@ cmd_boot_onboarding() {
   echo ""
   echo "╔══════════════════════════════════════════════╗"
   echo "║  Onboarding 세션 준비 완료                  ║"
-  echo "║  tmux attach -t $sess 로 분석 과정을 볼 수 있음 ║"
+  echo "║  tmux -L $sess attach -t $sess 로 분석 과정을 볼 수 있음 ║"
   echo "╚══════════════════════════════════════════════╝"
   echo ""
 
@@ -1996,7 +2326,7 @@ cmd_handoff() {
     2>/dev/null || true
 
   echo "=== handoff 완료 ==="
-  echo "tmux attach -t $sess 로 접속하라."
+  echo "tmux -L $sess attach -t $sess 로 접속하라."
 }
 
 cmd_boot_manager() {
@@ -2033,7 +2363,7 @@ cmd_boot_manager() {
   echo ""
   echo "╔══════════════════════════════════════════════╗"
   echo "║  Dashboard 준비 완료                        ║"
-  echo "║  tmux attach -t $sess 로 실시간 모니터링    ║"
+  echo "║  tmux -L $sess attach -t $sess 로 실시간 모니터링    ║"
   echo "╚══════════════════════════════════════════════╝"
   echo ""
   echo "Manager 세션 생성 중..."
@@ -2064,7 +2394,7 @@ cmd_boot_manager() {
     2>/dev/null || true
 
   echo "=== 전체 부팅 완료 ==="
-  echo "tmux attach -t $sess 로 접속하라."
+  echo "tmux -L $sess attach -t $sess 로 접속하라."
 }
 
 # ──────────────────────────────────────────────
@@ -2119,7 +2449,7 @@ cmd_boot() {
   fi
 
   local discussion_backend
-  discussion_backend="$(get_manager_backend)"
+  discussion_backend="$(get_manager_backend "$project")"
   boot_agent_with_backend "discussion" "$project" "discussion" "$discussion_backend" "" "" "user" || {
     echo "Warning: discussion 부팅 실패. 건너뜀." >&2
   }
@@ -2131,12 +2461,16 @@ cmd_boot() {
     fi
 
     if [ "$exec_mode" = "dual" ] && role_supports_dual "$role"; then
+      local pending_task_claude=""
+      local pending_task_codex=""
       # dual 모드: worktree 생성 + claude + codex 양쪽 부팅
       create_worktrees "$project" "$role"
-      boot_single_agent "$role" "$project" "" "${role}-claude" || {
+      pending_task_claude="$(get_active_task "$project" "${role}-claude")" || pending_task_claude=""
+      pending_task_codex="$(get_active_task "$project" "${role}-codex")" || pending_task_codex=""
+      boot_single_agent "$role" "$project" "" "${role}-claude" "$pending_task_claude" || {
         echo "Warning: ${role}-claude 부팅 실패. 건너뜀." >&2
       }
-      boot_codex_agent "$role" "$project" "${role}-codex" || {
+      boot_codex_agent "$role" "$project" "${role}-codex" "" "$pending_task_codex" || {
         echo "Warning: ${role}-codex 부팅 실패. 건너뜀." >&2
       }
     else
@@ -2183,7 +2517,7 @@ cmd_boot() {
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator project_boot_end "$project" || true
   set_project_stage "$project" "active"
   echo "=== 부팅 완료 ==="
-  echo "tmux attach -t $sess 로 세션에 접속하라."
+  echo "tmux -L $sess attach -t $sess 로 세션에 접속하라."
 }
 
 # ──────────────────────────────────────────────
@@ -2274,22 +2608,19 @@ cmd_reboot() {
   # "researcher-claude" → role=researcher, backend=claude, window=researcher-claude
   # "researcher-codex"  → role=researcher, backend=codex, window=researcher-codex
   # "researcher"        → role=researcher, backend=claude, window=researcher (solo 호환)
-  local role backend window_name
-  if [[ "$target" == *-claude ]]; then
-    role="${target%-claude}"
-    backend="claude"
-    window_name="$target"
-  elif [[ "$target" == *-codex ]]; then
-    role="${target%-codex}"
-    backend="codex"
-    window_name="$target"
-  else
-    role="$target"
-    backend="claude"
-    window_name="$target"
-  fi
+  local role backend window_name resolved_target
+  resolved_target="$(resolve_reboot_or_refresh_target "$target" "$project")"
+  role="${resolved_target%%|*}"
+  resolved_target="${resolved_target#*|}"
+  backend="${resolved_target%%|*}"
+  window_name="${resolved_target#*|}"
 
   echo "=== ${window_name} 에이전트 리부팅 ==="
+
+  if [ "$backend" = "claude" ] && ! guard_claude_recovery "reboot" "$project" "$sess" "$window_name"; then
+    runtime_clear_reboot_lock_ts "$project" "$window_name" || true
+    return 1
+  fi
 
   # reboot lock 획득 (경합 방지)
   ensure_manager_runtime_layout "$project"
@@ -2313,15 +2644,13 @@ cmd_reboot() {
   fi
 
   # 1. 기존 윈도우 있으면 kill
-  if tmux list-windows -t "$sess" -F '#{window_name}' 2>/dev/null | grep -q "^${window_name}$"; then
+  if window_indices_by_name "$sess" "$window_name" | grep -q .; then
     echo "기존 ${window_name} 윈도우 종료 중..."
-    tmux send-keys -t "${sess}:${window_name}" "/exit" Enter 2>/dev/null || true
-    sleep 2
-    tmux kill-window -t "${sess}:${window_name}" 2>/dev/null || true
+    kill_windows_by_name "$sess" "$window_name" "1"
   fi
 
   # 2. sessions.md에서 이전 행을 crashed로 표시
-  mark_session_status "$project" "$role" "active" "crashed" "$backend"
+  mark_window_status "$project" "$window_name" "active" "crashed"
 
   # 3. 중단된 태스크 조회
   local pending_task
@@ -2329,7 +2658,7 @@ cmd_reboot() {
 
   # 4. backend에 따라 적절한 부팅 함수 호출
   if [ "$backend" = "codex" ]; then
-    boot_codex_agent "$role" "$project" "$window_name" || {
+    boot_codex_agent "$role" "$project" "$window_name" "" "$pending_task" || {
       echo "Error: ${window_name} 리부팅 실패." >&2
       runtime_clear_reboot_lock_ts "$project" "$window_name"
       exit 1
@@ -2363,20 +2692,12 @@ cmd_refresh() {
   local skip_handoff_request="${WHIPLASH_REFRESH_SKIP_HANDOFF_REQUEST:-0}"
 
   # target에서 role과 backend 분리 (reboot과 동일한 파싱)
-  local role backend window_name
-  if [[ "$target" == *-claude ]]; then
-    role="${target%-claude}"
-    backend="claude"
-    window_name="$target"
-  elif [[ "$target" == *-codex ]]; then
-    role="${target%-codex}"
-    backend="codex"
-    window_name="$target"
-  else
-    role="$target"
-    backend="claude"
-    window_name="$target"
-  fi
+  local role backend window_name resolved_target
+  resolved_target="$(resolve_reboot_or_refresh_target "$target" "$project")"
+  role="${resolved_target%%|*}"
+  resolved_target="${resolved_target#*|}"
+  backend="${resolved_target%%|*}"
+  window_name="${resolved_target#*|}"
 
   echo "=== ${window_name} 에이전트 리프레시 ==="
 
@@ -2390,6 +2711,10 @@ cmd_refresh() {
   if ! tmux list-windows -t "$sess" -F '#{window_name}' 2>/dev/null | grep -q "^${window_name}$"; then
     echo "Error: ${window_name} 윈도우가 없다." >&2
     exit 1
+  fi
+
+  if [ "$backend" = "claude" ] && ! guard_claude_recovery "refresh" "$project" "$sess" "$window_name"; then
+    return 1
   fi
 
   # handoff 파일 경로는 role 기준 (backend별로 분리하지 않음)
@@ -2428,21 +2753,23 @@ cmd_refresh() {
   tmux kill-window -t "${sess}:${window_name}" 2>/dev/null || true
 
   # 4. sessions.md에서 이전 행을 refreshed로 표시
-  mark_session_status "$project" "$role" "active" "refreshed" "$backend"
+  mark_window_status "$project" "$window_name" "active" "refreshed"
 
-  # 5. 새 세션 부팅 (온보딩 + handoff.md 읽기 지시 추가)
+  # 5. active 태스크 조회 + 새 세션 부팅 (온보딩 + handoff.md 읽기 지시 추가)
+  local pending_task=""
+  pending_task="$(get_active_task "$project" "$window_name")" || pending_task=""
   local extra_msg=""
   if [ -f "$handoff_file" ]; then
     extra_msg="10. memory/${role}/handoff.md를 읽어라. 이전 세션에서 인수인계한 맥락이다."
   fi
 
   if [ "$backend" = "codex" ]; then
-    boot_codex_agent "$role" "$project" "$window_name" "$extra_msg" || {
+    boot_codex_agent "$role" "$project" "$window_name" "$extra_msg" "$pending_task" || {
       echo "Error: ${window_name} 리프레시 후 부팅 실패." >&2
       exit 1
     }
   else
-    boot_single_agent "$role" "$project" "$extra_msg" "$window_name" || {
+    boot_single_agent "$role" "$project" "$extra_msg" "$window_name" "$pending_task" || {
       echo "Error: ${window_name} 리프레시 후 부팅 실패." >&2
       exit 1
     }
@@ -2657,6 +2984,7 @@ cmd_status() {
         echo "  ${win_name} (idle: 알 수 없음)"
       fi
     done < <(tmux list-windows -t "$sess" -F '#{window_name}|#{window_activity}')
+    print_agent_health_status "$project" "$sess"
   else
     echo "[tmux] 세션 없음"
   fi
@@ -2794,70 +3122,87 @@ shift
 case "$command" in
   boot-onboarding)
     [ $# -lt 1 ] && { echo "Usage: cmd.sh boot-onboarding {project}" >&2; exit 1; }
+    export WHIPLASH_TMUX_SOCKET="$(session_name "$1")"
     cmd_boot_onboarding "$1"
     ;;
   handoff)
     [ $# -lt 1 ] && { echo "Usage: cmd.sh handoff {project}" >&2; exit 1; }
+    export WHIPLASH_TMUX_SOCKET="$(session_name "$1")"
     cmd_handoff "$1"
     ;;
   boot-manager)
     [ $# -lt 1 ] && { echo "Usage: cmd.sh boot-manager {project}" >&2; exit 1; }
+    export WHIPLASH_TMUX_SOCKET="$(session_name "$1")"
     cmd_boot_manager "$1"
     ;;
   boot)
     [ $# -lt 1 ] && { echo "Usage: cmd.sh boot {project}" >&2; exit 1; }
+    export WHIPLASH_TMUX_SOCKET="$(session_name "$1")"
     cmd_boot "$1"
     ;;
   dispatch)
     [ $# -lt 3 ] && { echo "Usage: cmd.sh dispatch {role} {task-file} {project}" >&2; exit 1; }
+    export WHIPLASH_TMUX_SOCKET="$(session_name "$3")"
     cmd_dispatch "$1" "$2" "$3"
     ;;
   dual-dispatch)
     [ $# -lt 3 ] && { echo "Usage: cmd.sh dual-dispatch {role} {task-file} {project}" >&2; exit 1; }
+    export WHIPLASH_TMUX_SOCKET="$(session_name "$3")"
     cmd_dual_dispatch "$1" "$2" "$3"
     ;;
   spawn)
     [ $# -lt 3 ] && { echo "Usage: cmd.sh spawn {role} {window-name} {project} [extra-msg]" >&2; exit 1; }
+    export WHIPLASH_TMUX_SOCKET="$(session_name "$3")"
     cmd_spawn "$1" "$2" "$3" "${4:-}"
     ;;
   kill-agent)
     [ $# -lt 2 ] && { echo "Usage: cmd.sh kill-agent {window-name} {project}" >&2; exit 1; }
+    export WHIPLASH_TMUX_SOCKET="$(session_name "$2")"
     cmd_kill_agent "$1" "$2"
     ;;
   shutdown)
     [ $# -lt 1 ] && { echo "Usage: cmd.sh shutdown {project}" >&2; exit 1; }
+    export WHIPLASH_TMUX_SOCKET="$(session_name "$1")"
     cmd_shutdown "$1"
     ;;
   status)
     [ $# -lt 1 ] && { echo "Usage: cmd.sh status {project}" >&2; exit 1; }
+    export WHIPLASH_TMUX_SOCKET="$(session_name "$1")"
     cmd_status "$1"
     ;;
   reboot)
     [ $# -lt 2 ] && { echo "Usage: cmd.sh reboot {target} {project}" >&2; exit 1; }
+    export WHIPLASH_TMUX_SOCKET="$(session_name "$2")"
     cmd_reboot "$1" "$2"
     ;;
   refresh)
     [ $# -lt 2 ] && { echo "Usage: cmd.sh refresh {target} {project}" >&2; exit 1; }
+    export WHIPLASH_TMUX_SOCKET="$(session_name "$2")"
     cmd_refresh "$1" "$2"
     ;;
   merge-worktree)
     [ $# -lt 3 ] && { echo "Usage: cmd.sh merge-worktree {role} {winner} {project}" >&2; exit 1; }
+    export WHIPLASH_TMUX_SOCKET="$(session_name "$3")"
     cmd_merge_worktree "$1" "$2" "$3"
     ;;
   monitor-check)
     [ $# -lt 1 ] && { echo "Usage: cmd.sh monitor-check {project}" >&2; exit 1; }
+    export WHIPLASH_TMUX_SOCKET="$(session_name "$1")"
     cmd_monitor_check "$1"
     ;;
   complete)
     [ $# -lt 2 ] && { echo "Usage: cmd.sh complete {agent} {project}" >&2; exit 1; }
+    export WHIPLASH_TMUX_SOCKET="$(session_name "$2")"
     cmd_complete "$1" "$2"
     ;;
   expire-stale)
     [ $# -lt 1 ] && { echo "Usage: cmd.sh expire-stale {project} [max-hours]" >&2; exit 1; }
+    export WHIPLASH_TMUX_SOCKET="$(session_name "$1")"
     expire_stale_assignments "$1" "${2:-4}"
     ;;
   assign)
     [ $# -lt 3 ] && { echo "Usage: cmd.sh assign {agent} {task} {project}" >&2; exit 1; }
+    export WHIPLASH_TMUX_SOCKET="$(session_name "$3")"
     cmd_assign "$1" "$2" "$3"
     ;;
   *)
