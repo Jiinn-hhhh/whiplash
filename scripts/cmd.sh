@@ -1837,6 +1837,7 @@ HEADER
 add_session_row() {
   local project="$1" role="$2" session_id="$3" tmux_target="$4" model="$5" backend="${6:-claude}"
   local sf
+  init_sessions_file "$project"
   sf="$(sessions_file "$project")"
   prune_active_session_rows "$project" "$role" "$backend" "$tmux_target"
 
@@ -1925,7 +1926,7 @@ stale_missing_active_session_rows() {
     BEGIN { FS=OFS="|" }
     function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
     {
-      if ($6 == " active ") {
+      if (trim($6) == "active") {
         target = trim($5)
         if (index(target, sess ":") == 1) {
           if (has_session == 0) {
@@ -1941,6 +1942,12 @@ stale_missing_active_session_rows() {
       print
     }
   ' "$sf" > "$tmp" && mv "$tmp" "$sf"
+}
+
+clear_recovered_agent_runtime_state() {
+  local project="$1" window_name="$2"
+  runtime_clear_agent_health_state "$project" "$window_name"
+  runtime_clear_agent_health_alert_ts "$project" "$window_name"
 }
 
 reset_stale_boot_runtime_state() {
@@ -2265,6 +2272,7 @@ boot_single_agent() {
     return 1
   fi
 
+  clear_recovered_agent_runtime_state "$project" "$window_name"
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot "$window_name" --detail session="$session_id" || true
   echo "${window_name} 부팅 완료: session=${session_id}, tmux=${tmux_target}"
   return 0
