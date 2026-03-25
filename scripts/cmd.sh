@@ -1775,6 +1775,22 @@ get_active_task() {
   get_active_task_ref_for_project "$1" "$2"
 }
 
+resume_pending_task_for_window() {
+  local project="$1" role="$2" window_name="$3"
+  local pending_task=""
+  pending_task="$(get_active_task "$project" "$window_name")" || pending_task=""
+  if [ -n "$pending_task" ]; then
+    printf '%s\n' "$pending_task"
+    return 0
+  fi
+
+  if [ -n "$role" ] && [ "$window_name" != "$role" ]; then
+    pending_task="$(get_active_task "$project" "$role")" || pending_task=""
+  fi
+
+  printf '%s\n' "$pending_task"
+}
+
 validate_task_report_ready() {
   local project="$1" agent="$2" task_ref="$3"
   local report_path report_rel
@@ -2806,8 +2822,8 @@ cmd_boot() {
       local pending_task_codex=""
       # dual 모드: worktree 생성 + claude + codex 양쪽 부팅
       create_worktrees "$project" "$role"
-      pending_task_claude="$(get_active_task "$project" "${role}-claude")" || pending_task_claude=""
-      pending_task_codex="$(get_active_task "$project" "${role}-codex")" || pending_task_codex=""
+      pending_task_claude="$(resume_pending_task_for_window "$project" "$role" "${role}-claude")" || pending_task_claude=""
+      pending_task_codex="$(resume_pending_task_for_window "$project" "$role" "${role}-codex")" || pending_task_codex=""
       boot_single_agent "$role" "$project" "" "${role}-claude" "$pending_task_claude" || {
         echo "Warning: ${role}-claude 부팅 실패. 건너뜀." >&2
       }
@@ -3001,7 +3017,7 @@ cmd_reboot() {
 
   # 3. 중단된 태스크 조회
   local pending_task
-  pending_task="$(get_active_task "$project" "$window_name")" || pending_task=""
+  pending_task="$(resume_pending_task_for_window "$project" "$role" "$window_name")" || pending_task=""
 
   # 4. backend에 따라 적절한 부팅 함수 호출
   if [ "$backend" = "codex" ]; then
@@ -3104,7 +3120,7 @@ cmd_refresh() {
 
   # 5. active 태스크 조회 + 새 세션 부팅 (온보딩 + handoff.md 읽기 지시 추가)
   local pending_task=""
-  pending_task="$(get_active_task "$project" "$window_name")" || pending_task=""
+  pending_task="$(resume_pending_task_for_window "$project" "$role" "$window_name")" || pending_task=""
   local extra_msg=""
   if [ -f "$handoff_file" ]; then
     extra_msg="10. memory/${role}/handoff.md를 읽어라. 이전 세션에서 인수인계한 맥락이다."
