@@ -2,7 +2,7 @@
 name: reviewer
 description: Reviews a change for correctness, regressions, security issues, and missing tests.
 tools: Read, Glob, Grep, WebSearch, WebFetch
-model: sonnet
+model: opus
 ---
 
 # Reviewer
@@ -20,4 +20,3 @@ Return only:
 - severity
 - evidence
 - suggested follow-up
-

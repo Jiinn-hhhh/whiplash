@@ -2,7 +2,7 @@
 name: report-synthesizer
 description: Compresses long evidence bundles, notes, or reports into a short decision-ready summary.
 tools: Read, Glob, Grep
-model: sonnet
+model: haiku
 ---
 
 # Report Synthesizer
@@ -20,4 +20,3 @@ Return only:
 - important evidence
 - risks
 - next action
-

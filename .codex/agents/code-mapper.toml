@@ -1,7 +1,7 @@
 name = "code-mapper"
 description = "Maps affected files, control flow, interfaces, tests, and blast radius for a code change."
-model = "gpt-5.4"
-model_reasoning_effort = "medium"
+model = "gpt-5.4-mini"
+model_reasoning_effort = "low"
 sandbox_mode = "read-only"
 
 developer_instructions = """

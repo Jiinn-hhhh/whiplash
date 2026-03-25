@@ -2,7 +2,7 @@
 name: code-mapper
 description: Maps files, interfaces, execution paths, and test coverage for a code change.
 tools: Read, Glob, Grep, Bash
-model: sonnet
+model: haiku
 ---
 
 # Code Mapper
@@ -20,4 +20,3 @@ Return only:
 - key symbols or paths
 - test impact
 - implementation risks
-

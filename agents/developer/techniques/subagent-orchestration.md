@@ -12,6 +12,34 @@
 
 ---
 
+## Task Triage
+
+| 작업 성격 | 기본 선택 | 권장 모델 강도 |
+|------|------|------|
+| 작고 명확함 | direct 예외 가능. 그래도 불확실하면 scout 1개(`code-mapper` 또는 `debugger`)부터 | 빠른/가벼운 모델 우선 |
+| 비사소하지만 bounded | 직접 구현 전에 2-way fan-out 기본. 기능/리팩터는 `code-mapper + docs-researcher`, 버그는 `debugger + code-mapper` | 기본 코딩 모델 + 빠른 specialist 조합 |
+| 복잡/애매/고위험 | direct-only 금지. `map + verify/review`를 먼저 깔고, 필요하면 `architect-reviewer`, `security-auditor`, `performance-engineer`까지 붙인다 | 더 강한 모델을 구조 경계, 애매한 설계, 최종 위험 판정에 우선 배치 |
+
+- 빠른/가벼운 모델은 mapping, evidence 수집, 좁은 verify에 먼저 쓴다.
+- 더 강한 모델은 merge-risk, 설계 경계 흔들림, cross-file refactor, ambiguous bug, release gate 판정에 우선 쓴다.
+- execution lead는 이 triage를 기본값으로 삼되, 실제 fan-out 조합과 최종 모델 선택은 task 맥락을 보고 자율적으로 결정한다.
+
+---
+
+## 모델 선택 가이드
+
+| specialist tier | 기본 모델 강도 | 대상 |
+|------|------|------|
+| 탐색/수집 | 빠른/가벼운 기본값 | `code-mapper`, `search-specialist`, `report-synthesizer` |
+| 분석/구현 | 기본 코딩 모델 강도 | `debugger`, `test-automator`, `refactoring-specialist`, `docs-researcher`, `performance-engineer`, `runtime-auditor`, `deployment-engineer`, `consensus-reviewer`, `task-distributor` |
+| 판단/리뷰 | 더 강한 기본값 | `reviewer`, `architect-reviewer`, `security-auditor` |
+
+- 기본 tier로 시작하고, task가 unusually simple하거나 복잡할 때만 override를 검토한다.
+- 넓은 매핑이나 자료 수집이 unexpectedly deep하면 한 단계 올린다.
+- review/release gate가 사실 확인 위주로 좁으면 한 단계 내릴 수 있지만, 최종 위험 판정은 더 강한 모델을 유지한다.
+
+---
+
 ## 기본 fan-out 패턴
 
 ### 1. 기능 구현 / 리팩터
@@ -107,6 +135,13 @@
 - 문서/API 사실 확인 없이 추정 구현
 - `reviewer` 없이 끝내고 release-ready라고 주장
 - subagent 출력을 그대로 최종 보고로 내보내기
+
+## trivial 예외 기준
+
+- 변경 파일 1개
+- 대략 20줄 안팎의 기계적 수정
+- 사이드이펙트가 좁고 다른 파일 인터페이스에 영향 없음
+- 위 조건 중 하나라도 애매하면 direct-only 대신 scout 1개 이상 먼저 호출
 
 ---
 

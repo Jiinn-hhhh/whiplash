@@ -1,7 +1,7 @@
 name = "security-auditor"
 description = "Audits security, trust boundaries, secrets handling, and unsafe assumptions."
 model = "gpt-5.4"
-model_reasoning_effort = "medium"
+model_reasoning_effort = "high"
 sandbox_mode = "read-only"
 
 developer_instructions = """

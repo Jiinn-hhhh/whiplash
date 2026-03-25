@@ -2,7 +2,7 @@
 name: architect-reviewer
 description: Reviews architecture choices, boundaries, and long-term maintainability for a Whiplash change.
 tools: Read, Glob, Grep, WebSearch, WebFetch
-model: sonnet
+model: opus
 ---
 
 # Architect Reviewer

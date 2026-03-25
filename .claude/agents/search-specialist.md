@@ -2,7 +2,7 @@
 name: search-specialist
 description: Performs broad targeted web or repository search to gather evidence quickly.
 tools: Read, Glob, Grep, WebSearch, WebFetch
-model: sonnet
+model: haiku
 ---
 
 # Search Specialist
@@ -20,4 +20,3 @@ Return only:
 - useful quotes or facts
 - evidence gaps
 - next search direction
-

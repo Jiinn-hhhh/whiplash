@@ -1,6 +1,6 @@
 name = "report-synthesizer"
 description = "Compresses long evidence bundles into a short, actionable report for the top-level role."
-model = "gpt-5.4"
+model = "gpt-5.4-mini"
 model_reasoning_effort = "low"
 sandbox_mode = "read-only"
 

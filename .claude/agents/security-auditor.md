@@ -2,7 +2,7 @@
 name: security-auditor
 description: Audits a change for secrets exposure, unsafe command execution, permission drift, and trust boundary issues.
 tools: Read, Glob, Grep, WebSearch, WebFetch
-model: sonnet
+model: opus
 ---
 
 # Security Auditor

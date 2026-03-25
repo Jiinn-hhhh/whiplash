@@ -1,6 +1,6 @@
 name = "search-specialist"
 description = "Performs broad, targeted search across repo docs, notes, and external references."
-model = "gpt-5.4"
+model = "gpt-5.4-mini"
 model_reasoning_effort = "low"
 sandbox_mode = "read-only"
 

@@ -12,6 +12,20 @@
 
 ---
 
+## 모델 선택 가이드
+
+| specialist tier | 기본 모델 강도 | 대상 |
+|------|------|------|
+| 탐색/수집 | 빠른/가벼운 기본값 | `search-specialist`, `code-mapper`, `report-synthesizer` |
+| 분석/검증 | 기본 연구 모델 강도 | `docs-researcher`, `consensus-reviewer`, `task-distributor` |
+| 판단/리뷰 | 더 강한 기본값 | `reviewer`, `architect-reviewer`, `security-auditor` |
+
+- 기본 tier를 먼저 쓰고, evidence가 얕거나 깊이에 비해 과하면 그때 override를 검토한다.
+- 공식 문서 검증이 단순 사실 확인을 넘어서 version contract 비교가 되면 더 강한 모델을 고려한다.
+- synthesis나 recommendation이 user-facing 결론에 가까우면 판단/리뷰 tier를 먼저 붙인다.
+
+---
+
 ## 기본 fan-out 패턴
 
 ### 1. 일반 조사 / 비교 분석
