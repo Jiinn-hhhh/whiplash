@@ -1838,12 +1838,7 @@ add_session_row() {
   local project="$1" role="$2" session_id="$3" tmux_target="$4" model="$5" backend="${6:-claude}"
   local sf
   sf="$(sessions_file "$project")"
-
-  # 중복 등록 방지: 이미 같은 tmux_target이 active면 건너뜀
-  if grep -q "| ${tmux_target} | active |" "$sf" 2>/dev/null; then
-    echo "Warning: ${tmux_target}가 이미 active 상태. 중복 등록 건너뜀." >&2
-    return 0
-  fi
+  prune_active_session_rows "$project" "$role" "$backend" "$tmux_target"
 
   local today
   today="$(date +%Y-%m-%d)"
@@ -1890,6 +1885,81 @@ close_all_sessions() {
   if [ -f "$sf" ]; then
     sed_inplace 's/| active |/| closed |/g' "$sf"
   fi
+}
+
+prune_active_session_rows() {
+  local project="$1" role="$2" backend="$3" tmux_target="$4"
+  local sf tmp
+  sf="$(sessions_file "$project")"
+  [ -f "$sf" ] || return 0
+  tmp="${sf}.tmp"
+
+  awk -v role="$role" -v backend="$backend" -v target="$tmux_target" '
+    BEGIN { FS=OFS="|" }
+    function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+    {
+      drop = 0
+      if (trim($6) == "active") {
+        if (trim($5) == target) {
+          drop = 1
+        } else if (trim($2) == role && trim($3) == backend) {
+          drop = 1
+        }
+      }
+      if (!drop) {
+        print
+      }
+    }
+  ' "$sf" > "$tmp" && mv "$tmp" "$sf"
+}
+
+stale_missing_active_session_rows() {
+  local project="$1" sess="$2"
+  local sf tmp has_session=0
+  sf="$(sessions_file "$project")"
+  [ -f "$sf" ] || return 0
+  tmux has-session -t "$sess" 2>/dev/null && has_session=1
+  tmp="${sf}.tmp"
+
+  awk -v sess="$sess" -v has_session="$has_session" '
+    BEGIN { FS=OFS="|" }
+    function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+    {
+      if ($6 == " active ") {
+        target = trim($5)
+        if (index(target, sess ":") == 1) {
+          if (has_session == 0) {
+            $6 = " stale "
+          } else {
+            cmd = "tmux list-panes -t \"" target "\" >/dev/null 2>&1"
+            if (system(cmd) != 0) {
+              $6 = " stale "
+            }
+          }
+        }
+      }
+      print
+    }
+  ' "$sf" > "$tmp" && mv "$tmp" "$sf"
+}
+
+reset_stale_boot_runtime_state() {
+  local project="$1"
+  rm -f "$(runtime_reboot_state_file "$project")"
+  rm -f "$(runtime_idle_state_file "$project")"
+}
+
+submit_tmux_prompt_when_ready() {
+  local tmux_target="$1" prompt="$2" label="$3"
+  local submit_attempts="${4:-8}" ready_attempts="${5:-20}" ready_delay="${6:-1}" attempt
+  for attempt in $(seq 1 "$submit_attempts"); do
+    tmux_submit_wait_ready "$tmux_target" "$ready_attempts" "$ready_delay" || true
+    if tmux_submit_pasted_payload "$tmux_target" "$prompt" "$label"; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
 }
 
 configure_tmux_session_visuals() {
@@ -2187,16 +2257,7 @@ boot_single_agent() {
   # sessions.md에 기록
   add_session_row "$project" "$role" "$session_id" "$tmux_target" "$model" "claude"
 
-  local prompt_ok=0
-  local attempt
-  for attempt in 1 2 3 4 5; do
-    if tmux_submit_pasted_payload "$tmux_target" "$boot_msg" "${window_name}-boot"; then
-      prompt_ok=1
-      break
-    fi
-    sleep 2
-  done
-  if [ "$prompt_ok" -ne 1 ]; then
+  if ! submit_tmux_prompt_when_ready "$tmux_target" "$boot_msg" "${window_name}-boot"; then
     echo "Warning: ${window_name} 온보딩 프롬프트 전달 실패." >&2
     mark_window_status "$project" "$window_name" "active" "crashed"
     kill_windows_by_name "$sess" "$window_name"
@@ -2365,7 +2426,7 @@ boot_manager_window() {
     bootstrap_msg=$'너는 Whiplash manager 세션의 bootstrap 단계다.\n지금은 session_id만 만들기 위한 초기 호출이다.\n도구를 사용하지 말고, 파일도 읽지 말고, 명령도 실행하지 말고, 한 줄로 READY만 답해라.'
     local boot_msg
     boot_msg="$(build_boot_message "manager" "$project" "$extra_boot_msg" "manager" "" "user")"
-    local model_flag result session_id tmux_target mgr_resume_flag boot_pane_pid prompt_ok attempt
+    local model_flag result session_id tmux_target mgr_resume_flag boot_pane_pid attempt
 
     model_flag=""
     [ -n "$mgr_tools" ] && model_flag="--allowedTools $mgr_tools"
@@ -2404,16 +2465,10 @@ boot_manager_window() {
     add_session_row "$project" "manager" "$session_id" "$tmux_target" "$model"
     python3 "$TOOLS_DIR/log.py" system "$project" orchestrator manager_boot manager --detail session="$session_id" || true
 
-    prompt_ok=0
-    for attempt in 1 2 3 4 5; do
-      if tmux_submit_pasted_payload "$tmux_target" "$boot_msg" "manager-boot"; then
-        prompt_ok=1
-        break
-      fi
-      sleep 2
-    done
-    if [ "$prompt_ok" -ne 1 ]; then
+    if ! submit_tmux_prompt_when_ready "$tmux_target" "$boot_msg" "manager-boot"; then
       echo "Error: Manager 온보딩 프롬프트 전달 실패." >&2
+      mark_window_status "$project" "manager" "active" "boot-failed"
+      kill_windows_by_name "$(session_name "$project")" "manager"
       return 1
     fi
   fi
@@ -2784,6 +2839,8 @@ cmd_boot() {
 
   # 1. sessions.md 초기화 (멱등 — boot-manager에서 이미 생성했으면 건너뜀)
   init_sessions_file "$project"
+  stale_missing_active_session_rows "$project" "$sess"
+  reset_stale_boot_runtime_state "$project"
 
   # 2. tmux 세션 생성 또는 기존 재사용
   if tmux has-session -t "$sess" 2>/dev/null; then
