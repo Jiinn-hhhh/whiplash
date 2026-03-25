@@ -31,6 +31,7 @@ _WARN_EVENTS = frozenset({
     "crash_detected", "idle_detected", "idle_recheck", "agent_kill",
     "monitor_restart", "session_absent", "notify_delivery_fail",
     "session_absent_confirmed", "reboot_count_reset", "plan_mode_detected",
+    "auth_blocked_detected", "auth_blocked_recovery_skip",
 })
 
 
@@ -74,6 +75,9 @@ _EVENT_TEMPLATES: dict[str, str] = {
     "monitor_zombie": "모니터 좀비 감지",
     "plan_mode_detected": "{target} plan mode 감지",
     "plan_mode_cleared": "{target} plan mode 해제",
+    "auth_blocked_detected": "{target} auth blocked 감지",
+    "auth_blocked_cleared": "{target} auth blocked 해제",
+    "auth_blocked_recovery_skip": "{target} auth blocked로 복구 중단",
     "session_absent": "{target} 세션 부재",
     "manager_crash_alert": "{target} 매니저 크래시",
     "notify_delivery_fail": "{target} 알림 전달 실패",

@@ -46,13 +46,25 @@ esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$repo_root"
+export REPO_ROOT
 TOOLS_DIR="$SCRIPT_DIR"
 session="whiplash-${project}"
 
 # shellcheck source=/dev/null
+source "$TOOLS_DIR/tmux-env.sh"
+# shellcheck source=/dev/null
 source "$TOOLS_DIR/tmux-submit.sh"
 # shellcheck source=/dev/null
 source "$TOOLS_DIR/runtime-paths.sh"
+# shellcheck source=/dev/null
+source "$TOOLS_DIR/agent-health.sh"
+# shellcheck source=/dev/null
+source "$TOOLS_DIR/message-queue.sh"
+# shellcheck source=/dev/null
+source "$TOOLS_DIR/notify-format.sh"
+
+whiplash_activate_tmux_project "$project"
 
 lock_held=0
 lock_target=""
@@ -285,7 +297,7 @@ augment_content_with_report_context() {
   fi
 
   if [ "$kind" = "task_assign" ] && is_execution_lead_task_assign_target "$to"; then
-    content="${content} [kickoff reminder] 비사소한 작업이면 specialist 최소 1개, 복잡한 작업이면 2-way 이상 병렬 fan-out을 기본값으로 잡아라. 어떤 specialist를 부를지는 네가 판단해라."
+    content="${content} [kickoff reminder] 비사소한 작업이면 specialist 최소 1개, 복잡한 작업이면 2-way 이상 병렬 fan-out을 기본값으로 잡아라. specialist별 기본 모델 tier도 설정돼 있으니 난이도에 맞게 override를 고려해라. 어떤 specialist를 부를지는 네가 판단해라."
   fi
 
   if [ "$kind" = "task_complete" ] && [ -n "$task_complete_report_rel" ] && [[ "$content" != *"$task_complete_report_rel"* ]]; then
@@ -343,20 +355,53 @@ target_window_exists() {
     && tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null | grep -q "^${1}$"
 }
 
+process_or_child_named() {
+  local pid="$1"
+  local process_name="$2"
+  [ -n "$pid" ] || return 1
+
+  local comm child_pid child_cmd
+  comm="$(ps -p "$pid" -o comm= 2>/dev/null | head -1 || true)"
+  if agent_backend_command_matches "$process_name" "$comm"; then
+    return 0
+  fi
+
+  while IFS= read -r child_pid; do
+    [ -n "$child_pid" ] || continue
+    child_cmd="$(ps -o comm= -p "$child_pid" 2>/dev/null | head -1 || true)"
+    if agent_backend_command_matches "$process_name" "$child_cmd"; then
+      return 0
+    fi
+  done < <(pgrep -P "$pid" 2>/dev/null || true)
+
+  return 1
+}
+
 target_has_live_agent() {
   local window_name="$1"
-  local tmux_target="${session}:${window_name}"
+  local pane_pid backend window_idx
   target_window_exists "$window_name" || return 1
-
-  local pane_pid backend
-  pane_pid=$(tmux list-panes -t "$tmux_target" -F '#{pane_pid}' 2>/dev/null | head -1)
-  [ -n "$pane_pid" ] || return 1
   backend="$(resolve_backend "$window_name")"
-  if [ "$backend" = "codex" ]; then
-    pgrep -P "$pane_pid" codex >/dev/null 2>&1
-  else
-    pgrep -P "$pane_pid" claude >/dev/null 2>&1
-  fi
+  while IFS= read -r window_idx; do
+    [ -n "$window_idx" ] || continue
+    pane_pid=$(tmux list-panes -t "${session}:${window_idx}" -F '#{pane_pid}' 2>/dev/null | head -1)
+    [ -n "$pane_pid" ] || continue
+    if process_or_child_named "$pane_pid" "$backend"; then
+      return 0
+    fi
+  done < <(
+    tmux list-windows -t "$session" -F '#I|#{window_name}' 2>/dev/null \
+      | awk -F'|' -v target="$window_name" '$2 == target { print $1 }'
+  )
+
+  return 1
+}
+
+target_delivery_state() {
+  local window_name="$1"
+  local backend
+  backend="$(resolve_backend "$window_name")"
+  agent_delivery_state "$project" "$session" "$window_name" "$backend"
 }
 
 build_notification() {
@@ -372,6 +417,10 @@ build_notification() {
     prefix="[URGENT] ${msg_from} → ${msg_to} | ${msg_kind}"
   fi
   flat_subject="$(printf '%s' "$msg_subject" | tr '\r\n' '  ')"
+  if [ "$msg_kind" = "user_notice" ] || { [ "$msg_kind" = "status_update" ] && { [ "$msg_to" = "manager" ] || [ "$msg_to" = "user" ]; }; }; then
+    printf '%s | 제목: %s\n%s' "$prefix" "$flat_subject" "$msg_content"
+    return 0
+  fi
   flat_content="$(printf '%s' "$msg_content" | tr '\r\n' '  ')"
   printf '%s' "${prefix} | 제목: ${flat_subject} | 내용: ${flat_content}"
 }
@@ -429,6 +478,7 @@ validate_routing() {
 }
 
 queue_message() {
+  local queue_reason="${1:-queued}"
   ensure_manager_runtime_layout "$project"
   local queue_dir
   queue_dir="$(runtime_message_queue_dir "$project")"
@@ -438,16 +488,9 @@ queue_message() {
   suffix="${from}-${to}-${RANDOM}"
   tmp_file="${queue_dir}/.${ts}-${suffix}.msg.tmp"
   queue_file="${queue_dir}/${ts}-${suffix}.msg"
-  cat > "${tmp_file}" << MSGEOF
-from=${from}
-to=${to}
-kind=${kind}
-priority=${priority}
-subject=${subject}
-content=${content}
-MSGEOF
+  whiplash_queue_write_file "$tmp_file" "$from" "$to" "$kind" "$priority" "$subject" "$content"
   mv "$tmp_file" "$queue_file"
-  python3 "$TOOLS_DIR/log.py" message "$project" "$from" "$to" "$kind" "$priority" "$subject" skipped --reason "queued" || true
+  python3 "$TOOLS_DIR/log.py" message "$project" "$from" "$to" "$kind" "$priority" "$subject" skipped --reason "$queue_reason" || true
   nudge_monitor_for_queue
   echo "메시지 큐 저장: ${queue_file}" >&2
 }
@@ -511,7 +554,7 @@ submit_notification() {
   local target="$1"
   local notification="$2"
   local tmux_target="${session}:${target}"
-  local attempt
+  local attempt delivery_state
 
   for attempt in 1 2; do
     if tmux_submit_pasted_payload "$tmux_target" "$notification" "notify"; then
@@ -521,7 +564,12 @@ submit_notification() {
     sleep 1
   done
 
-  if maybe_refresh_target "$target" && target_has_live_agent "$target"; then
+  delivery_state="$(target_delivery_state "$target")"
+  if [ "${delivery_state%%|*}" = "healthy" ] && maybe_refresh_target "$target"; then
+    delivery_state="$(target_delivery_state "$target")"
+    if [ "${delivery_state%%|*}" != "healthy" ]; then
+      return 1
+    fi
     if tmux_submit_pasted_payload "$tmux_target" "$notification" "notify-refresh"; then
       runtime_clear_message_refresh_ts "$project" "$target" || true
       return 0
@@ -558,9 +606,10 @@ mirror_peer_message_to_manager() {
 }
 
 queue_with_optional_mirror() {
-  queue_message
+  local queue_reason="${1:-queued}"
+  queue_message "$queue_reason"
   mirror_peer_message_to_manager
-  echo "전달 보류: ${from} → ${to} | ${kind} (queued)"
+  echo "전달 보류: ${from} → ${to} | ${kind} (${queue_reason})"
 }
 
 apply_bookkeeping() {
@@ -588,6 +637,10 @@ validate_discussion_handoff_contract
 validate_task_complete_report
 apply_bookkeeping
 augment_content_with_report_context
+if [ "$kind" = "user_notice" ] || { [ "$kind" = "status_update" ] && { [ "$to" = "manager" ] || [ "$to" = "user" ]; }; }; then
+  subject="$(whiplash_notification_subject "$kind" "$subject")"
+  content="$(whiplash_notification_body "$kind" "$subject" "$content")"
+fi
 
 if [[ "$to" == "user" ]]; then
   python3 "$TOOLS_DIR/log.py" message "$project" "$from" "$to" "$kind" "$priority" "$subject" delivered --reason "user-alert" || true
@@ -608,6 +661,20 @@ lock_held=1
 lock_target="$to"
 
 notification="$(build_notification "$from" "$to" "$kind" "$priority" "$subject" "$content")"
+
+delivery_state="$(target_delivery_state "$to")"
+case "${delivery_state%%|*}" in
+  healthy)
+    ;;
+  auth-blocked)
+    queue_with_optional_mirror "queued-auth-blocked"
+    exit 0
+    ;;
+  *)
+    queue_with_optional_mirror
+    exit 0
+    ;;
+esac
 
 if ! target_has_live_agent "$to"; then
   queue_with_optional_mirror

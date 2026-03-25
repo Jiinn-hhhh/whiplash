@@ -62,6 +62,7 @@ _ERROR_EVENTS = frozenset({
 })
 
 _RECENT_ACTIVITY_WINDOW_SEC = 180
+_TMUX_SOCKET_NAME = ""
 
 # ──────────────────────────────────────────────
 # 유틸리티
@@ -72,6 +73,32 @@ def _repo_root() -> str:
         ["git", "rev-parse", "--show-toplevel"],
         text=True,
     ).strip()
+
+
+def _tmux_socket_name(session_name: str | None = None) -> str:
+    if _TMUX_SOCKET_NAME:
+        return _TMUX_SOCKET_NAME
+    if session_name and session_name.startswith("whiplash-"):
+        return session_name.removeprefix("whiplash-")
+    return ""
+
+
+def _resolve_tmux_socket_name(project: str) -> str:
+    try:
+        return subprocess.check_output(
+            ["bash", os.path.join(_repo_root(), "scripts", "tmux-env.sh"), "socket-name", project],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        return project
+
+
+def _tmux_base_cmd(session_name: str | None = None) -> list[str]:
+    socket_name = _tmux_socket_name(session_name)
+    if socket_name:
+        return ["tmux", "-L", socket_name]
+    return ["tmux"]
 
 
 def _now_kst() -> datetime:
@@ -343,7 +370,7 @@ def get_tmux_activity(session_name: str) -> dict[str, int]:
     """tmux 윈도우별 마지막 활동 시각(epoch) 반환."""
     try:
         out = subprocess.check_output(
-            ["tmux", "list-windows", "-t", session_name,
+            [*_tmux_base_cmd(session_name), "list-windows", "-t", session_name,
              "-F", "#{window_name}|#{window_activity}"],
             text=True, stderr=subprocess.DEVNULL,
         )
@@ -357,45 +384,133 @@ def get_tmux_activity(session_name: str) -> dict[str, int]:
     return result
 
 
-def get_tmux_panes(session_name: str) -> dict[str, int]:
-    """tmux 세션의 모든 윈도우별 첫 pane pid 반환."""
+def get_tmux_panes(session_name: str) -> dict[str, dict[str, Any]]:
+    """tmux 세션의 모든 윈도우별 첫 pane pid/current_command 반환."""
     try:
         out = subprocess.check_output(
             [
-                "tmux", "list-panes", "-a", "-t", session_name,
-                "-F", "#{window_name}|#{pane_pid}",
+                *_tmux_base_cmd(session_name), "list-panes", "-s", "-t", session_name,
+                "-F", "#{session_name}|#{window_name}|#{pane_pid}|#{pane_current_command}",
             ],
             text=True, stderr=subprocess.DEVNULL,
         )
     except (subprocess.CalledProcessError, FileNotFoundError):
         return {}
 
-    panes: dict[str, int] = {}
+    panes: dict[str, dict[str, Any]] = {}
     for line in out.strip().splitlines():
-        parts = line.split("|", 1)
-        if len(parts) != 2 or not parts[1].isdigit():
+        parts = line.split("|", 3)
+        if len(parts) != 4 or parts[0] != session_name or not parts[2].isdigit():
             continue
-        panes.setdefault(parts[0], int(parts[1]))
+        panes.setdefault(parts[1], {"pid": int(parts[2]), "command": parts[3]})
     return panes
 
 
-def _agent_process_alive(pane_pid: int, backend: str) -> bool:
-    expected = "codex" if backend == "codex" else "claude"
-    try:
-        return subprocess.run(
-            ["pgrep", "-P", str(pane_pid), expected],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        ).returncode == 0
-    except FileNotFoundError:
+def _normalize_command_name(command: str) -> str:
+    return os.path.basename(command.strip())
+
+
+def _command_matches_backend(command: str, backend: str) -> bool:
+    normalized = _normalize_command_name(command)
+    if not normalized:
         return False
+    expected = "codex" if backend == "codex" else "claude"
+    return normalized.startswith(expected)
+
+
+def _child_commands(parent_pid: int) -> list[str]:
+    """parent pid의 직계 자식 command 목록 반환."""
+    try:
+        out = subprocess.check_output(
+            ["ps", "-axo", "ppid=,comm="],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return []
+
+    commands: list[str] = []
+    for raw in out.splitlines():
+        parts = raw.strip().split(None, 1)
+        if len(parts) != 2 or not parts[0].isdigit():
+            continue
+        if int(parts[0]) != parent_pid:
+            continue
+        command = parts[1].strip()
+        if command:
+            commands.append(command)
+    return commands
+
+
+def _agent_process_alive(pane_pid: int, pane_command: str, backend: str) -> bool:
+    if _command_matches_backend(pane_command, backend):
+        return True
+
+    try:
+        pane_command_ps = subprocess.check_output(
+            ["ps", "-o", "comm=", "-p", str(pane_pid)],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pane_command_ps = ""
+
+    if _command_matches_backend(pane_command_ps, backend):
+        return True
+
+    for child_command in _child_commands(pane_pid):
+        if _command_matches_backend(child_command, backend):
+            return True
+
+    return False
+
+
+def _capture_pane_tail(session_name: str, window_name: str, lines: int = 60) -> str:
+    try:
+        out = subprocess.check_output(
+            [
+                *_tmux_base_cmd(session_name), "capture-pane", "-pJ", "-t", f"{session_name}:{window_name}",
+                "-S", f"-{lines}",
+            ],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return ""
+
+    stripped = [line for line in out.splitlines() if line.strip()]
+    return "\n".join(stripped[-12:])
+
+
+def _pane_requires_claude_login(pane_text: str) -> bool:
+    lowered = pane_text.lower()
+    markers = (
+        "not logged in",
+        "please run /login",
+        "run /login",
+        "claude auth login",
+        "security unlock-keychain",
+    )
+    return any(marker in lowered for marker in markers)
+
+
+def _agent_health_state(manager_state: dict[str, str], window_name: str) -> str:
+    return manager_state.get(f"agent_health_{window_name}", "")
+
+
+def _agent_has_auth_block(manager_state: dict[str, str], session_name: str,
+                          window_name: str, backend: str) -> bool:
+    if _agent_health_state(manager_state, window_name) == "AUTH_BLOCKED":
+        return True
+    if backend != "claude":
+        return False
+    return _pane_requires_claude_login(_capture_pane_tail(session_name, window_name))
 
 
 def check_monitor(project_dir: str) -> dict[str, Any]:
     """모니터 상태 확인."""
     info: dict[str, Any] = {
-        "pid": None, "alive": False, "heartbeat_age": None, "queued": 0,
+        "pid": None, "alive": False, "stale": False, "heartbeat_age": None, "queued": 0,
     }
     runtime_root_dir = os.path.join(project_dir, "runtime")
     manager_state = _read_tsv_map(
@@ -421,6 +536,8 @@ def check_monitor(project_dir: str) -> dict[str, Any]:
     if hb_str:
         if hb_str.isdigit():
             info["heartbeat_age"] = int(time.time()) - int(hb_str)
+            if info["alive"] and info["heartbeat_age"] >= 90:
+                info["stale"] = True
 
     queue_dir = os.path.join(runtime_root_dir, "message-queue")
     if os.path.isdir(queue_dir):
@@ -548,6 +665,19 @@ def parse_waiting_state(project_dir: str) -> dict[str, dict[str, Any]]:
     return result
 
 
+def parse_idle_state(project_dir: str) -> set[str]:
+    """idle-state.tsv에서 runtime이 idle/hung 후보로 본 agent key를 읽는다."""
+    rows = _read_tsv_rows(os.path.join(project_dir, "runtime", "idle-state.tsv"))
+    result: set[str] = set()
+    for cols in rows:
+        if len(cols) < 2:
+            continue
+        agent, ts_raw = cols[:2]
+        if agent and ts_raw.isdigit():
+            result.add(agent)
+    return result
+
+
 def _read_task_title(project_dir: str, task_path: str) -> str:
     """태스크 파일 첫 줄에서 제목 추출. '# TASK-013: 설명' → '설명'."""
     # 절대경로면 그대로, repo-root 상대경로는 repo_root 기준,
@@ -653,7 +783,9 @@ def collect(project_dir: str, session_name: str,
     tmux_panes = get_tmux_panes(session_name)
     reboot_counts = get_reboot_counts(project_dir)
     assignments = parse_assignments_md(project_dir)
+    idle_state = parse_idle_state(project_dir)
     waiting_state = parse_waiting_state(project_dir)
+    manager_state = _read_tsv_map(os.path.join(project_dir, "runtime", "manager-state.tsv"))
     monitor = check_monitor(project_dir)
     boot_times = parse_boot_times(project_dir)
     system_log = parse_system_log(project_dir, 20)
@@ -675,11 +807,18 @@ def collect(project_dir: str, session_name: str,
         if agent["status"] != "active":
             agent["display_status"] = "CLOSED"
             continue
-        pane_pid = tmux_panes.get(win_name)
-        if pane_pid is None:
+        pane_info = tmux_panes.get(win_name)
+        if pane_info is None:
             agent["display_status"] = "ABSENT"
-        elif _agent_process_alive(pane_pid, agent.get("backend", "")):
-            agent["display_status"] = "ALIVE"
+        elif _agent_process_alive(
+            pane_info["pid"], pane_info.get("command", ""), agent.get("backend", "")
+        ):
+            if _agent_has_auth_block(
+                manager_state, session_name, win_name, agent.get("backend", "")
+            ):
+                agent["display_status"] = "AUTH"
+            else:
+                agent["display_status"] = "ALIVE"
         else:
             agent["display_status"] = "CRASHED"
 
@@ -696,6 +835,8 @@ def collect(project_dir: str, session_name: str,
             )
             agent["report_path"] = report_info["path"]
             agent["report_status"] = report_info["status"]
+            if agent["display_status"] == "ALIVE" and (win_name in idle_state or role in idle_state):
+                agent["display_status"] = "IDLE"
         else:
             agent["task_id"] = ""
             agent["task_title"] = ""
@@ -785,7 +926,9 @@ def collect(project_dir: str, session_name: str,
 
 _STATUS_STYLE = {
     "ALIVE": ("● ALIVE", "green"),
+    "IDLE": ("◌ IDLE", "yellow"),
     "READY": ("○ READY", "cyan"),
+    "AUTH": ("! AUTH", "yellow"),
     "CRASHED": ("✗ CRASHED", "red"),
     "ABSENT": ("○ ABSENT", "red"),
     "CLOSED": ("— CLOSED", "dim"),
@@ -878,7 +1021,7 @@ def _render_agents(state: dict) -> Table:
 
         # 태스크 작업 시간: ALIVE + 태스크 있으면 할당 시각부터 경과, 아니면 "--"
         task_started = agent.get("task_started")
-        if ds in ("ALIVE",) and task_started:
+        if ds in ("ALIVE", "IDLE") and task_started:
             elapsed = int((state["now"] - task_started).total_seconds())
             h, rem = divmod(elapsed, 3600)
             m = rem // 60
@@ -1044,7 +1187,9 @@ def _render_health_check(state: dict) -> Panel:
     line = Text("  ")
     sep = "  │  "
     if mon["pid"]:
-        if mon["alive"]:
+        if mon.get("stale"):
+            line.append("⚠ Zombie", style="yellow")
+        elif mon["alive"]:
             line.append("● Running", style="green")
         else:
             line.append("✗ Down", style="red")
@@ -1305,6 +1450,8 @@ def main() -> None:
     root = _repo_root()
     project_dir = os.path.join(root, "projects", project)
     session_name = f"whiplash-{project}"
+    global _TMUX_SOCKET_NAME
+    _TMUX_SOCKET_NAME = _resolve_tmux_socket_name(project)
 
     if not os.path.isdir(project_dir):
         print(f"프로젝트 디렉토리 없음: {project_dir}", file=sys.stderr)
