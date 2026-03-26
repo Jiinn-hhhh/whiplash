@@ -139,7 +139,7 @@ tmux_submit__capture_has_prompt_ready() {
   recent="$(printf '%s\n' "$capture" | tail -n 12)"
 
   if tmux_submit__is_rich_tui_capture "$capture"; then
-    printf '%s\n' "$recent" | grep -Eiq '(^❯ ?$|^> ?$|esc to interrupt|shift\+tab to cycle|bypass permissions on|ctrl\+t to hide tasks)'
+    printf '%s\n' "$recent" | grep -Eiq '(^[❯›] |^> ?$|esc to interrupt|shift\+tab to cycle|bypass permissions on|ctrl\+t to hide tasks|% left ·)'
     return
   fi
 
@@ -173,6 +173,48 @@ tmux_submit_wait_ready() {
     if tmux_submit__capture_has_prompt_ready "$capture"; then
       return 0
     fi
+    sleep "$delay"
+  done
+
+  return 1
+}
+
+tmux_submit_wait_app_ready() {
+  local tmux_target="$1"
+  local attempts="${2:-12}"
+  local delay="${3:-1}"
+  local probe_attempts="${4:-6}"
+  local attempt probe_try baseline capture
+
+  for attempt in $(seq 1 "$attempts"); do
+    if ! tmux_submit_wait_ready "$tmux_target" 1 0; then
+      sleep "$delay"
+      continue
+    fi
+
+    # Codex --no-alt-screen ignores empty Enter, so skip the Enter probe
+    # and trust the prompt-ready check above.
+    baseline="${TMUX_SUBMIT_LAST_CAPTURE:-$(tmux_submit__capture_recent "$tmux_target" 120)}"
+    if printf '%s\n' "$baseline" | grep -q 'OpenAI Codex'; then
+      return 0
+    fi
+
+    if ! tmux send-keys -t "$tmux_target" Enter 2>/dev/null; then
+      return 1
+    fi
+
+    for probe_try in $(seq 1 "$probe_attempts"); do
+      sleep 0.2
+      capture="$(tmux_submit__capture_recent "$tmux_target" 120)"
+      TMUX_SUBMIT_LAST_CAPTURE="$capture"
+      if tmux_submit__capture_has_submission_progress "$capture"; then
+        return 0
+      fi
+      if [ "$capture" != "$baseline" ] && tmux_submit__capture_has_prompt_ready "$capture"; then
+        return 0
+      fi
+    done
+
     sleep "$delay"
   done
 
@@ -350,12 +392,8 @@ tmux_submit_pasted_payload() {
   local tmpfile buf_name
 
   if [[ "$payload" != *$'\n'* ]]; then
-    local recent_capture
-    recent_capture="$(tmux_submit__capture_recent "$tmux_target" 80)"
-    if tmux_submit__is_rich_tui_capture "$recent_capture"; then
-      tmux_submit__literal_submit_single_line "$tmux_target" "$payload" 2.0 8
-      return
-    fi
+    tmux_submit__literal_submit_single_line "$tmux_target" "$payload" 2.0 8
+    return
   fi
 
   tmpfile="$(mktemp)"

@@ -2397,6 +2397,9 @@ tmux_new_session_detached() {
 
   if ! tmux_debug_enabled; then
     tmux new-session -d -s "$sess" -n "$window_name"
+    tmux set-option -t "$sess" window-status-current-style "bg=red,fg=white,bold"
+    tmux set-option -t "$sess" window-status-current-format " #I:#W "
+    tmux set-option -t "$sess" window-status-format " #I:#W "
     return
   fi
 
@@ -2409,6 +2412,9 @@ tmux_new_session_detached() {
     ls tmux-*.log 2>/dev/null | sort > "$before_file" || true
     command tmux -vv new-session -d -s "$sess" -n "$window_name"
   )
+  tmux set-option -t "$sess" window-status-current-style "bg=red,fg=white,bold"
+  tmux set-option -t "$sess" window-status-current-format " #I:#W "
+  tmux set-option -t "$sess" window-status-format " #I:#W "
   tmux_write_debug_meta "$project" "$sess" "$before_file"
   rm -f "$before_file"
 }
