@@ -49,6 +49,7 @@ QUEUE_TTL=86400  # 24시간
 ensure_manager_runtime_layout "$PROJECT"
 SESSION_ABSENT_COUNT=0
 REHYDRATION_GRACE_SECONDS="${WHIPLASH_REHYDRATION_GRACE_SECONDS:-180}"
+REBOOTED_THIS_CYCLE=""  # H-03: check_agent_windows에서 reboot한 윈도우 추적
 
 # ──────────────────────────────────────────────
 # PID lock — 동일 프로젝트에 대한 중복 monitor 방지
@@ -585,6 +586,7 @@ check_agent_windows() {
 
         python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor crash_detected "$window_name" --detail count="${count}/${MAX_REBOOT}" || true
         increment_reboot_count "$window_name"
+        REBOOTED_THIS_CYCLE="${REBOOTED_THIS_CYCLE} ${window_name}"
 
         if bash "$TOOLS_DIR/cmd.sh" reboot "$window_name" "$PROJECT" 2>&1; then
           python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor reboot_success "$window_name" --detail count="$((count + 1))/${MAX_REBOOT}" || true
@@ -636,6 +638,11 @@ check_agent_health() {
 
   while IFS='|' read -r win_name win_activity; do
     if [ "$win_name" = "manager" ] || [ "$win_name" = "dashboard" ]; then
+      continue
+    fi
+
+    # H-03: 이번 사이클에서 이미 reboot된 window는 중복 escalation 방지
+    if [[ " $REBOOTED_THIS_CYCLE " == *" $win_name "* ]]; then
       continue
     fi
 
@@ -784,6 +791,7 @@ while true; do
     exit 1
   fi
 
+  REBOOTED_THIS_CYCLE=""
   check_agent_windows
   check_agent_health
   check_claude_plan_mode

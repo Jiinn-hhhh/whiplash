@@ -28,8 +28,8 @@ _ERROR_EVENTS = frozenset({
 })
 
 _WARN_EVENTS = frozenset({
-    "crash_detected", "idle_detected", "idle_recheck", "agent_kill",
-    "monitor_restart", "session_absent", "notify_delivery_fail",
+    "crash_detected", "idle_detected", "idle_dead", "idle_recheck", "agent_kill",
+    "monitor_restart", "monitor_orphaned", "session_absent", "notify_delivery_fail",
     "session_absent_confirmed", "reboot_count_reset", "plan_mode_detected",
     "auth_blocked_detected", "auth_blocked_recovery_skip",
 })
