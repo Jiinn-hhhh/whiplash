@@ -1959,7 +1959,7 @@ EOF
 
   local dashboard_state
   dashboard_state="$(probe_dashboard_agent developer)"
-  assert_eq "dashboard가 최근 활동 agent를 ALIVE로 표시" "ALIVE||" "$dashboard_state"
+  assert_eq "dashboard가 최근 활동 agent를 IDLE로 표시" "IDLE||" "$dashboard_state"
 
   bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer \
     task_assign normal "workspace/tasks/TASK-007.md" "dashboard status smoke" >/dev/null
@@ -1967,7 +1967,7 @@ EOF
   tmux select-window -t "${SESSION}:dashboard"
 
   dashboard_state="$(probe_dashboard_agent developer)"
-  assert_eq "dashboard가 live + draft report 표시" "ALIVE|draft|TASK-007" "$dashboard_state"
+  assert_eq "dashboard가 live + draft report 표시" "ACTIVE|draft|TASK-007" "$dashboard_state"
 
   local active_summary
   active_summary="$(probe_dashboard_active_task_summary)"
@@ -2005,12 +2005,12 @@ EOF
 EOF
 
   dashboard_state="$(probe_dashboard_agent developer)"
-  assert_eq "dashboard가 final report 표시" "ALIVE|final|TASK-007" "$dashboard_state"
+  assert_eq "dashboard가 final report 표시" "ACTIVE|final|TASK-007" "$dashboard_state"
 
   tmux send-keys -t "${SESSION}:developer" "Not logged in · Please run /login" Enter
   sleep 1
   dashboard_state="$(probe_dashboard_agent developer)"
-  assert_eq "dashboard가 auth-blocked Claude pane을 AUTH로 표시" "AUTH|final|TASK-007" "$dashboard_state"
+  assert_eq "dashboard가 auth-blocked Claude pane을 WAIT로 표시" "WAIT|final|TASK-007" "$dashboard_state"
 
   local pane_pid child_pid
   pane_pid="$(tmux list-panes -t "${SESSION}:developer" -F '#{pane_pid}' 2>/dev/null | head -1)"
@@ -2065,7 +2065,7 @@ PY
     task_assign normal "workspace/tasks/TASK-009.md" "dashboard codex alias smoke" >/dev/null
 
   dashboard_state="$(probe_dashboard_agent developer-codex)"
-  assert_eq "dashboard collect가 codex alias pane를 ALIVE로 표시" "ALIVE|draft|TASK-009" "$dashboard_state"
+  assert_eq "dashboard collect가 codex alias pane를 ACTIVE로 표시" "ACTIVE|draft|TASK-009" "$dashboard_state"
 
   echo "  시나리오 18 완료"
 }
@@ -2441,7 +2441,7 @@ EOF
 
   local waiting_state
   waiting_state="$(probe_dashboard_waiting_report developer)"
-  assert_eq "dashboard가 완료 후 대기 보고 표시" "1|ALIVE|TASK-008 완료" "$waiting_state"
+  assert_eq "dashboard가 완료 후 대기 보고 표시" "1|IDLE|TASK-008 완료" "$waiting_state"
 
   bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer \
     task_assign normal "workspace/tasks/TASK-009.md" "next task clears waiting report" >/dev/null
@@ -3080,7 +3080,7 @@ EOF
   assert_eq "auth-blocked actionable signal은 1회만 기록" "1" "$auth_alert_count"
 
   dashboard_state="$(probe_dashboard_agent developer)"
-  assert_eq "dashboard가 auth-blocked task/report visibility 유지" "AUTH|draft|TASK-010" "$dashboard_state"
+  assert_eq "dashboard가 auth-blocked task/report visibility 유지" "WAIT|draft|TASK-010" "$dashboard_state"
 
   status_out="$(bash "$TOOLS_DIR/cmd.sh" status "$PROJECT" 2>/dev/null || true)"
   TOTAL=$((TOTAL + 1))
@@ -3124,7 +3124,7 @@ EOF
       bash "$TOOLS_DIR/cmd.sh" reboot developer "$PROJECT"
 
   dashboard_state="$(probe_dashboard_agent developer)"
-  assert_eq "refresh/reboot guard 후 task/report visibility 유지" "AUTH|draft|TASK-010" "$dashboard_state"
+  assert_eq "refresh/reboot guard 후 task/report visibility 유지" "WAIT|draft|TASK-010" "$dashboard_state"
 
   local developer_report
   developer_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-010.md" "developer")"
@@ -3703,7 +3703,7 @@ EOF
 
   local dashboard_state
   dashboard_state="$(probe_dashboard_agent developer)"
-  assert_eq "healthy assigned agent는 여전히 ALIVE" "ALIVE|draft|TASK-010" "$dashboard_state"
+  assert_eq "healthy assigned agent는 여전히 ACTIVE" "ACTIVE|draft|TASK-010" "$dashboard_state"
 
   runtime_set_idle_check_ts "$PROJECT" "developer" "$(( $(date +%s) - 60 ))"
   dashboard_state="$(probe_dashboard_agent developer)"
@@ -3737,11 +3737,11 @@ EOF
 
   local dashboard_state
   dashboard_state="$(probe_dashboard_agent developer-codex)"
-  assert_eq "healthy codex assigned row는 ALIVE 유지" "ALIVE|draft|TASK-011" "$dashboard_state"
+  assert_eq "healthy codex assigned row는 ACTIVE 유지" "ACTIVE|draft|TASK-011" "$dashboard_state"
 
   runtime_set_manager_state "$PROJECT" "agent_health_developer-codex" "AUTH_BLOCKED"
   dashboard_state="$(probe_dashboard_agent developer-codex)"
-  assert_eq "runtime auth-blocked truth가 있으면 AUTH로 표시" "AUTH|draft|TASK-011" "$dashboard_state"
+  assert_eq "runtime auth-blocked truth가 있으면 WAIT로 표시" "WAIT|draft|TASK-011" "$dashboard_state"
 
   echo "  시나리오 42 완료"
 }

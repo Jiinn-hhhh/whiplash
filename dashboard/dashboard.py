@@ -35,6 +35,21 @@ except ImportError:
 
 _KST = timezone(timedelta(hours=9))
 
+_ROLE_ABBR = {
+    "manager": "mgr",
+    "discussion": "dis",
+    "developer": "dev",
+    "researcher": "res",
+    "systems-engineer": "sys",
+    "monitoring": "mon",
+    "monitor": "mon",
+}
+
+_ROLE_FULL = {
+    "mgr": "manager", "dis": "discussion", "dev": "developer", "res": "researcher",
+    "sys": "systems-engineer", "mon": "monitoring", "orc": "orchestrator",
+}
+
 _RECENT_ACTIVITY_WINDOW_SEC = 180
 
 # ──────────────────────────────────────────────
@@ -829,6 +844,31 @@ def collect(project_dir: str, session_name: str,
         key=lambda item: item.get("started") or datetime.fromtimestamp(0, _KST),
     )
 
+    # 대기 보고서 (통합 테스트 호환)
+    waiting_reports: list[dict[str, Any]] = []
+    for agent in agents:
+        win_name = agent.get("win_name", agent["role"])
+        waiting_info = waiting_state.get(win_name) or waiting_state.get(agent["role"])
+        if not waiting_info:
+            continue
+        if agent.get("task_id"):
+            continue
+        if agent.get("display_status") not in ("ACTIVE", "IDLE"):
+            continue
+        waiting_reports.append({
+            "agent": win_name,
+            "role": agent["role"],
+            "status": agent.get("display_status", ""),
+            "subject": waiting_info.get("subject", ""),
+            "task_ref": waiting_info.get("task_ref", ""),
+            "report_path": waiting_info.get("report_path", ""),
+            "ts": waiting_info.get("ts"),
+        })
+    waiting_reports.sort(
+        key=lambda item: item["ts"] or datetime.fromtimestamp(0, _KST),
+        reverse=True,
+    )
+
     # 유저 대상 알림 수집
     resolved_subjects = {
         e["subject"]
@@ -851,6 +891,7 @@ def collect(project_dir: str, session_name: str,
         "agents": agents,
         "active_task_summaries": active_task_summaries,
         "user_alerts": user_alerts,
+        "waiting_reports": waiting_reports,
         "monitor": monitor,
         "system_log": system_log,
         "message_log": message_log,
