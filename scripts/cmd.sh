@@ -2929,7 +2929,7 @@ cmd_boot() {
   sess="$(session_name "$project")"
 
   echo "=== ${project} 프로젝트 부팅 (mode: ${exec_mode}, loop: ${loop_mode}) ==="
-  runtime_set_manager_state "$project" "project_booting" "1"
+  runtime_set_manager_state "$project" "project_booting" "$(date +%s)"
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator project_boot_start "$project" --detail mode="$exec_mode" loop="$loop_mode" || true
 
   # 1. sessions.md 초기화 (멱등 — boot-manager에서 이미 생성했으면 건너뜀)

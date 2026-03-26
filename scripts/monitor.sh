@@ -387,8 +387,14 @@ rehydration_grace_active() {
 
   now_ts=$(date +%s)
   if [ "$now_ts" -ge "$grace_until" ]; then
-    if [ -n "$(runtime_get_manager_state "$PROJECT" "project_booting" "" 2>/dev/null || true)" ]; then
+    local booting_ts
+    booting_ts="$(runtime_get_manager_state "$PROJECT" "project_booting" "" 2>/dev/null || true)"
+    # project_booting 설정 후 5분 이내면 grace 연장 (부팅 중 보호)
+    # 5분 초과면 stale로 간주하고 정리
+    if [[ "${booting_ts:-}" =~ ^[0-9]+$ ]] && [ $((now_ts - booting_ts)) -lt 300 ]; then
       return 0
+    elif [ -n "$booting_ts" ]; then
+      runtime_clear_manager_state "$PROJECT" "project_booting" || true
     fi
     runtime_clear_manager_state "$PROJECT" "rehydration_grace_until" || true
     return 1
@@ -795,6 +801,7 @@ python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor monitor_started "$SESSION"
 
 # 초기 sweep: monitor 시작 전에 쌓인 상태를 즉시 처리
 # (메인 루프 첫 반복까지 최대 HEALTH_CHECK_INTERVAL초 지연 방지)
+REBOOTED_THIS_CYCLE=""
 check_agent_windows
 drain_message_queue
 
