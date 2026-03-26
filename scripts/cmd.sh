@@ -3369,7 +3369,7 @@ cmd_boot() {
   while IFS= read -r win_name; do
     [ -n "$win_name" ] || continue
     case "$win_name" in
-      manager|dashboard) continue ;;
+      manager|dashboard|discussion) continue ;;
     esac
     win_backend="claude"
     case "$win_name" in *-codex) win_backend="codex" ;; esac
