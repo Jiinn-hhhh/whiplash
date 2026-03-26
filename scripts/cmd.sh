@@ -2638,11 +2638,6 @@ boot_single_agent() {
       return 1
     fi
     sleep 1
-  done
-  if ! agent_window_has_live_backend "$sess" "$window_name" "claude"; then
-    echo "Warning: ${window_name} claude 프로세스 10초 내 미시작." >&2
-    python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot_fail "$window_name" --detail reason="claude 프로세스 미시작" || true
-    return 1
   fi
 
   # TUI 초기화 대기: 프로세스 감지 직후 paste를 보내면 바이너리가 아직
