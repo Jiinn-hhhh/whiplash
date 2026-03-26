@@ -2659,12 +2659,8 @@ boot_single_agent() {
     return 1
   fi
 
-  # sessions.md에는 visible boot prompt 전달 이후에만 기록한다.
-  add_session_row "$project" "$role" "$session_id" "$tmux_target" "$model" "claude"
-
   if ! submit_tmux_prompt_when_ready "$tmux_target" "$boot_msg" "${window_name}-boot"; then
     echo "Warning: ${window_name} 온보딩 프롬프트 전달 실패." >&2
-    mark_window_status "$project" "$window_name" "active" "crashed"
     kill_windows_by_name "$sess" "$window_name"
     python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot_fail "$window_name" --detail reason="온보딩 프롬프트 전달 실패" || true
     return 1
@@ -2672,13 +2668,15 @@ boot_single_agent() {
   if [ -n "$pending_task" ] && ! wait_for_visible_task_prompt "$tmux_target" "$pending_task" 4 1; then
     if ! submit_tmux_prompt_when_ready "$tmux_target" "$boot_msg" "${window_name}-boot-redeliver" 4 20 1; then
       echo "Warning: ${window_name} task prompt 재전달 실패." >&2
-      mark_window_status "$project" "$window_name" "active" "crashed"
       kill_windows_by_name "$sess" "$window_name"
       python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot_fail "$window_name" --detail reason="task prompt 재전달 실패" || true
       return 1
     fi
     send_task_visibility_reminder "$tmux_target" "$pending_task" "${window_name}-task-reminder" || true
   fi
+
+  # sessions.md는 boot prompt 전달 성공 후에만 기록 (2-A: phantom active 방지)
+  add_session_row "$project" "$role" "$session_id" "$tmux_target" "$model" "claude"
 
   clear_recovered_agent_runtime_state "$project" "$window_name"
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot "$window_name" --detail session="$session_id" || true
