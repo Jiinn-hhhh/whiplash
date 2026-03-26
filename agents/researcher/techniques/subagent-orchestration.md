@@ -56,6 +56,19 @@
 
 ---
 
+## 모델 선택 가이드
+
+Developer의 `subagent-orchestration.md` "모델 선택 가이드" 섹션과 동일한 3-tier 분류를 따른다. Researcher에서 자주 쓰는 specialist 기본 티어:
+
+| specialist | 기본 모델 | 비고 |
+|-----------|----------|------|
+| search-specialist | haiku | 넓은 검색. 정밀 분석 필요 시 sonnet override |
+| docs-researcher | sonnet | API/버전 사실 확인에 분석력 필요 |
+| code-mapper | haiku | 파일 매핑. 복잡한 흐름 추적 시 sonnet override |
+| report-synthesizer | haiku | 압축/요약 |
+
+---
+
 ## 금지 패턴
 
 - broad search 없이 바로 결론으로 점프

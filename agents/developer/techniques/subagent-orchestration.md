@@ -6,9 +6,18 @@
 
 ## 기본 원칙
 
-- trivial single-file 기계적 수정이 아니면, 직접 구현 전에 먼저 specialist fan-out을 한다.
+- trivial 예외가 아니면, 직접 구현 전에 먼저 specialist fan-out을 한다.
 - 기본 모델은 `map -> verify/debug -> implement -> review -> top-level synthesize`다.
 - 공식 코드 변경, 테스트 해석, 최종 보고 책임은 항상 Developer에게 있다.
+
+### trivial 예외 기준
+
+아래 조건을 **모두** 만족하면 subagent 없이 직접 처리해도 된다:
+- 변경 파일 1개, 변경 줄 수 ~20줄 이내
+- 사이드이펙트가 없는 기계적 수정 (오타, import 정리, 상수 변경 등)
+- 다른 파일에 영향을 주지 않음
+
+하나라도 해당하지 않으면 최소 `code-mapper`를 먼저 호출해서 영향 범위를 확인한다.
 
 ---
 
@@ -127,6 +136,25 @@
 
 - `debugger`는 좁은 범위의 재현, 로그 보강, 임시 probe, 테스트 추가를 할 수 있다.
 - 하지만 최종 패치 정리, 불필요한 probe 제거, 테스트 해석, release-ready 판정은 Developer가 직접 한다.
+
+---
+
+## 모델 선택 가이드
+
+native subagent pack은 3개 모델 티어로 분화되어 있다. 호출 시 기본 모델이 적용되지만, execution lead는 태스크 난이도에 따라 `model:` 인자로 override할 수 있다.
+
+| 티어 | 모델 | 기준 | 대상 specialist |
+|------|------|------|----------------|
+| 탐색/수집 | haiku | 파일 찾기, 패턴 매칭, 단순 검색, 요약 | code-mapper, search-specialist, report-synthesizer |
+| 분석/구현 | sonnet | 코드 분석, 테스트 작성, 리팩터, 디버깅, 성능 검토 | debugger, test-automator, refactoring-specialist, docs-researcher, performance-engineer, runtime-auditor, deployment-engineer, consensus-reviewer, task-distributor |
+| 판단/리뷰 | opus | 설계 판단, 보안 감사, 정확성 리뷰 | reviewer, architect-reviewer, security-auditor |
+
+### override 판단 기준
+
+- 탐색 specialist가 복잡한 코드 흐름을 추적해야 하면 → sonnet으로 올린다
+- 분석 specialist가 단순 반복 작업이면 → haiku로 내린다
+- 리뷰 specialist가 단순 린트 수준이면 → sonnet으로 내려도 된다
+- **판단이 애매하면 기본 티어를 쓴다** — 과도한 최적화보다 정확한 결과가 중요하다
 
 ---
 
