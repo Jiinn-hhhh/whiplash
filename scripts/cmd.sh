@@ -2457,7 +2457,12 @@ build_onboarding_analysis_note() {
   local project="$1"
   cat <<EOF
 
-[Onboarding]
+[Onboarding — Entry Branch]
+- 먼저 projects/ 디렉토리를 확인해라.
+- 기존 프로젝트가 있으면 목록을 보여주며 유저에게 물어라: "기존 프로젝트를 이어할까, 새 프로젝트를 시작할까?"
+- 유저가 기존 프로젝트를 선택하면 해당 project.md를 읽고 이어가라. 새 프로젝트를 선택하면 아래 설계 절차를 진행해라.
+
+[Onboarding — 프로젝트 설계]
 - 지금은 프로젝트 설계 단계다. 기존 코드/레포 분석, project.md 작성/보강, 팀 구성 확정까지 진행해라.
 - 필요하면 아래 명령으로 researcher 또는 systems-engineer 보조 에이전트를 띄울 수 있다:
   bash "$TOOLS_DIR/cmd.sh" spawn researcher onboarding-research ${project} "기존 레포/문서 분석 보조"
