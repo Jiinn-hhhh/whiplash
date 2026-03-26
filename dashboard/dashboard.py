@@ -967,12 +967,7 @@ def _render_agents(state: dict) -> Table:
     role_counts = Counter(a["role"] for a in active_agents)
     is_dual = any(c > 1 for c in role_counts.values())
 
-    prev_role = None
     for agent in active_agents:
-        # 역할 그룹 간 빈 줄 구분
-        if prev_role is not None and agent["role"] != prev_role:
-            table.add_row("", "", "", "", "", "")
-        prev_role = agent["role"]
         ds = agent.get("display_status", "CLOSED")
         label, style = _STATUS_STYLE.get(ds, ("?", ""))
 
@@ -1333,10 +1328,23 @@ def render(state: dict, interval: int) -> Layout:
     """전체 대시보드 렌더링 — Layout 그리드."""
     layout = Layout()
 
+    # 에이전트 수 기반으로 body 높이 결정
+    n_agents = len([a for a in state.get("agents", []) if a.get("display_status") != "CLOSED"])
+    body_height = max(12, n_agents + 5)  # 헤더+테두리+여유
+
+    # bottom 컨텐츠 높이 계산
+    n_tasks = len(state.get("active_tasks", []))
+    n_alerts = len(state.get("user_alerts", []))
+    n_waiting = len(state.get("waiting_reports", []))
+    bottom_content = max(n_tasks, n_alerts, 1) + 4  # 테이블 헤더+테두리
+    if n_waiting > 0:
+        bottom_content += n_waiting + 3
+    bottom_height = max(7, bottom_content)
+
     layout.split_column(
         Layout(name="header", size=3),
-        Layout(name="body"),
-        Layout(name="bottom", size=10),
+        Layout(name="body", size=body_height),
+        Layout(name="bottom", size=bottom_height),
         Layout(name="footer", size=1),
     )
 
