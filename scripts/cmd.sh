@@ -31,11 +31,7 @@ TASK_EXEC_TARGETS=()
 TASK_EXEC_ROLES=()
 
 tmux() {
-  if [ -n "${WHIPLASH_TMUX_SOCKET:-}" ]; then
-    command tmux -L "$WHIPLASH_TMUX_SOCKET" "$@"
-  else
-    command tmux "$@"
-  fi
+  command tmux "$@"
 }
 
 # shellcheck source=/dev/null
@@ -73,6 +69,15 @@ validate_window_name() {
     echo "Error: 잘못된 window 이름: '$name' (영문, 숫자, -, _ 만 허용)" >&2
     exit 1
   fi
+}
+
+activate_project_tmux_context() {
+  local project="$1"
+  local sess
+  sess="$(session_name "$project")"
+  export WHIPLASH_TMUX_PROJECT="$project"
+  export WHIPLASH_TMUX_SOCKET_NAME="$sess"
+  unset TMUX
 }
 
 session_name() {
@@ -497,14 +502,12 @@ write_agent_env_script() {
   local script_path base_path tmux_socket_name
   script_path="$(agent_env_script_path "$project" "$agent_id")"
   base_path="$PATH"
-  tmux_socket_name="$project"
 
   mkdir -p "$(dirname "$script_path")"
   {
     printf 'export PATH=%q\n' "$base_path"
     printf 'export WHIPLASH_REPO_ROOT=%q\n' "$REPO_ROOT"
     printf 'export WHIPLASH_TMUX_PROJECT=%q\n' "$project"
-    printf 'export WHIPLASH_TMUX_SOCKET_NAME=%q\n' "$tmux_socket_name"
     printf 'export WHIPLASH_NATIVE_CLAUDE_AGENTS=%q\n' "${REPO_ROOT}/.claude/agents"
     printf 'export WHIPLASH_NATIVE_CODEX_AGENTS=%q\n' "${REPO_ROOT}/.codex/agents"
     env | awk -F= '
@@ -1958,15 +1961,42 @@ reset_stale_boot_runtime_state() {
 
 submit_tmux_prompt_when_ready() {
   local tmux_target="$1" prompt="$2" label="$3"
-  local submit_attempts="${4:-8}" ready_attempts="${5:-20}" ready_delay="${6:-1}" attempt
+  local submit_attempts="${4:-12}" ready_attempts="${5:-30}" ready_delay="${6:-1}" attempt
   for attempt in $(seq 1 "$submit_attempts"); do
-    tmux_submit_wait_ready "$tmux_target" "$ready_attempts" "$ready_delay" || true
-    if tmux_submit_pasted_payload "$tmux_target" "$prompt" "$label"; then
+    if tmux_submit_wait_app_ready "$tmux_target" "$ready_attempts" "$ready_delay" 6 && \
+       tmux_submit_pasted_payload "$tmux_target" "$prompt" "$label"; then
       return 0
     fi
     sleep 2
   done
   return 1
+}
+
+pane_recent_contains() {
+  local tmux_target="$1" needle="$2" lines="${3:-220}" capture
+  [ -n "$needle" ] || return 1
+  capture="$(tmux capture-pane -pJ -t "$tmux_target" -S "-${lines}" 2>/dev/null || true)"
+  [[ "$capture" == *"$needle"* ]]
+}
+
+wait_for_visible_task_prompt() {
+  local tmux_target="$1" task_ref="$2" attempts="${3:-6}" delay="${4:-1}"
+  local task_key attempt
+  [ -n "$task_ref" ] || return 0
+  task_key="${task_ref##*/}"
+  for attempt in $(seq 1 "$attempts"); do
+    if pane_recent_contains "$tmux_target" "$task_ref" 260 || pane_recent_contains "$tmux_target" "$task_key" 260; then
+      return 0
+    fi
+    sleep "$delay"
+  done
+  return 1
+}
+
+send_task_visibility_reminder() {
+  local tmux_target="$1" task_ref="$2" label="$3"
+  [ -n "$task_ref" ] || return 0
+  submit_tmux_prompt_when_ready "$tmux_target" "이전 태스크 재개: ${task_ref}" "$label" 3 10 1
 }
 
 configure_tmux_session_visuals() {
@@ -1981,7 +2011,7 @@ configure_tmux_session_visuals() {
 }
 
 tmux_debug_enabled() {
-  case "${WHIPLASH_TMUX_DEBUG:-1}" in
+  case "${WHIPLASH_TMUX_DEBUG:-0}" in
     0|false|FALSE|off|OFF|no|NO)
       return 1
       ;;
@@ -2040,10 +2070,21 @@ tmux_new_session_detached() {
   (
     cd "$log_dir"
     ls tmux-*.log 2>/dev/null | sort > "$before_file" || true
-    tmux -vv new-session -d -s "$sess" -n "$window_name"
+    command tmux -vv new-session -d -s "$sess" -n "$window_name"
   )
   tmux_write_debug_meta "$project" "$sess" "$before_file"
   rm -f "$before_file"
+}
+
+tmux_session_exists_on_socket() {
+  local sess="$1"
+  command tmux has-session -t "$sess" 2>/dev/null
+}
+
+tmux_window_exists_on_socket() {
+  local sess="$1"
+  local window_name="$2"
+  command tmux list-windows -t "$sess" -F '#{window_name}' 2>/dev/null | grep -qx "$window_name"
 }
 
 ensure_dashboard_window() {
@@ -2067,7 +2108,7 @@ ensure_tmux_session_with_dashboard() {
 
   init_sessions_file "$project"
 
-  if ! tmux has-session -t "$sess" 2>/dev/null; then
+  if ! tmux_session_exists_on_socket "$sess"; then
     tmux_new_session_detached "$project" "$sess" "dashboard"
   fi
 
@@ -2271,6 +2312,16 @@ boot_single_agent() {
     python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot_fail "$window_name" --detail reason="온보딩 프롬프트 전달 실패" || true
     return 1
   fi
+  if [ -n "$pending_task" ] && ! wait_for_visible_task_prompt "$tmux_target" "$pending_task" 4 1; then
+    if ! submit_tmux_prompt_when_ready "$tmux_target" "$boot_msg" "${window_name}-boot-redeliver" 4 20 1; then
+      echo "Warning: ${window_name} task prompt 재전달 실패." >&2
+      mark_window_status "$project" "$window_name" "active" "crashed"
+      kill_windows_by_name "$sess" "$window_name"
+      python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot_fail "$window_name" --detail reason="task prompt 재전달 실패" || true
+      return 1
+    fi
+    send_task_visibility_reminder "$tmux_target" "$pending_task" "${window_name}-task-reminder" || true
+  fi
 
   clear_recovered_agent_runtime_state "$project" "$window_name"
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot "$window_name" --detail session="$session_id" || true
@@ -2343,23 +2394,15 @@ boot_codex_agent() {
 
   tmux new-window -d -t "$sess" -n "$window_name"
   tmux send-keys -t "$tmux_target" \
-    "cd $(printf '%q' "$REPO_ROOT") && . $(printf '%q' "$agent_env_script") &&${codex_env_args:+ ${codex_env_args}} codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox" Enter
+    "cd $(printf '%q' "$REPO_ROOT") && . $(printf '%q' "$agent_env_script") &&${codex_env_args:+ ${codex_env_args}} codex --no-alt-screen" Enter
   sleep 4
-  local prompt_ok=0
-  local attempt
-  for attempt in 1 2 3 4 5; do
-    if tmux_submit_wait_ready "$tmux_target" 10 1 && send_codex_prompt_tmux "$tmux_target" "$bootstrap_prompt"; then
-      prompt_ok=1
-      break
-    fi
-    sleep 2
-  done
-  if [ "$prompt_ok" -ne 1 ]; then
+  if ! submit_tmux_prompt_when_ready "$tmux_target" "$bootstrap_prompt" "codex-prompt" 5 20 1; then
     echo "Warning: ${window_name} codex TUI 온보딩 프롬프트 전달 실패." >&2
     tmux kill-window -t "$tmux_target" 2>/dev/null || true
     return 1
   fi
   add_session_row "$project" "$role" "codex-interactive" "$tmux_target" "$codex_model" "codex"
+  clear_recovered_agent_runtime_state "$project" "$window_name"
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator codex_boot "$window_name" --detail tmux="$tmux_target" mode="codex-interactive" || true
   echo "${window_name} 부팅 완료: tmux=${tmux_target} (codex interactive mode)"
   return 0
@@ -2662,7 +2705,7 @@ cmd_boot_onboarding() {
   echo ""
   echo "╔══════════════════════════════════════════════╗"
   echo "║  Onboarding 세션 준비 완료                  ║"
-  echo "║  tmux -L $sess attach -t $sess 로 분석 과정을 볼 수 있음 ║"
+  echo "║  tmux attach -t $sess 로 분석 과정을 볼 수 있음 ║"
   echo "╚══════════════════════════════════════════════╝"
   echo ""
 
@@ -2746,7 +2789,7 @@ cmd_handoff() {
     2>/dev/null || true
 
   echo "=== handoff 완료 ==="
-  echo "tmux -L $sess attach -t $sess 로 접속하라."
+  echo "tmux attach -t $sess 로 접속하라."
 }
 
 cmd_boot_manager() {
@@ -2760,22 +2803,29 @@ cmd_boot_manager() {
   stage="$(get_project_stage "$project")"
   local previous_stage="$stage"
   local created_session=0
+  local reuse_partial_session=0
 
-  if tmux has-session -t "$sess" 2>/dev/null; then
+  if tmux_session_exists_on_socket "$sess"; then
     if [ "$stage" = "onboarding" ]; then
       echo "Info: onboarding 세션이 이미 존재한다. Manager 부팅으로 이어간다."
       cmd_handoff "$project"
       return 0
     fi
-    echo "Error: tmux 세션 '$sess'가 이미 존재한다. 먼저 shutdown하라." >&2
-    exit 1
+    if tmux_window_exists_on_socket "$sess" "dashboard" \
+      && ! tmux_window_exists_on_socket "$sess" "manager"; then
+      echo "Info: dashboard만 남은 기존 세션 '$sess'를 재사용해 Manager 부팅을 이어간다."
+      reuse_partial_session=1
+    else
+      echo "Error: tmux 세션 '$sess'가 이미 존재한다. 먼저 shutdown하라." >&2
+      exit 1
+    fi
   fi
 
   bash "$TOOLS_DIR/preflight.sh" "$project" --mode "$exec_mode" || exit 1
 
   echo "=== Manager 부팅 ==="
   ensure_tmux_session_with_dashboard "$project"
-  if tmux has-session -t "$sess" 2>/dev/null; then
+  if [ "$reuse_partial_session" -eq 0 ] && tmux_session_exists_on_socket "$sess"; then
     created_session=1
   fi
   set_project_stage "$project" "handoff"
@@ -2783,7 +2833,7 @@ cmd_boot_manager() {
   echo ""
   echo "╔══════════════════════════════════════════════╗"
   echo "║  Dashboard 준비 완료                        ║"
-  echo "║  tmux -L $sess attach -t $sess 로 실시간 모니터링    ║"
+  echo "║  tmux attach -t $sess 로 실시간 모니터링    ║"
   echo "╚══════════════════════════════════════════════╝"
   echo ""
   echo "Manager 세션 생성 중..."
@@ -2792,9 +2842,9 @@ cmd_boot_manager() {
   start_lines="$(log_message_line_count "$project")"
   boot_manager_window "$project" || {
     set_project_stage "$project" "$previous_stage"
-    if [ "$created_session" -eq 1 ]; then
-      tmux kill-session -t "$sess" 2>/dev/null || true
-    fi
+    # Manager 윈도우만 정리, 세션 전체를 죽이지 않음
+    tmux kill-window -t "${sess}:manager" 2>/dev/null || true
+    echo "Error: Manager 부팅 실패. 세션은 유지됨." >&2
     exit 1
   }
 
@@ -2814,7 +2864,7 @@ cmd_boot_manager() {
     2>/dev/null || true
 
   echo "=== 전체 부팅 완료 ==="
-  echo "tmux -L $sess attach -t $sess 로 접속하라."
+  echo "tmux attach -t $sess 로 접속하라."
 }
 
 # ──────────────────────────────────────────────
@@ -2939,7 +2989,7 @@ cmd_boot() {
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator project_boot_end "$project" || true
   set_project_stage "$project" "active"
   echo "=== 부팅 완료 ==="
-  echo "tmux -L $sess attach -t $sess 로 세션에 접속하라."
+  echo "tmux attach -t $sess 로 세션에 접속하라."
 }
 
 # ──────────────────────────────────────────────
@@ -3550,87 +3600,87 @@ shift
 case "$command" in
   boot-onboarding)
     [ $# -lt 1 ] && { echo "Usage: cmd.sh boot-onboarding {project}" >&2; exit 1; }
-    export WHIPLASH_TMUX_SOCKET="$(session_name "$1")"
+    activate_project_tmux_context "$1"
     cmd_boot_onboarding "$1"
     ;;
   handoff)
     [ $# -lt 1 ] && { echo "Usage: cmd.sh handoff {project}" >&2; exit 1; }
-    export WHIPLASH_TMUX_SOCKET="$(session_name "$1")"
+    activate_project_tmux_context "$1"
     cmd_handoff "$1"
     ;;
   boot-manager)
     [ $# -lt 1 ] && { echo "Usage: cmd.sh boot-manager {project}" >&2; exit 1; }
-    export WHIPLASH_TMUX_SOCKET="$(session_name "$1")"
+    activate_project_tmux_context "$1"
     cmd_boot_manager "$1"
     ;;
   boot)
     [ $# -lt 1 ] && { echo "Usage: cmd.sh boot {project}" >&2; exit 1; }
-    export WHIPLASH_TMUX_SOCKET="$(session_name "$1")"
+    activate_project_tmux_context "$1"
     cmd_boot "$1"
     ;;
   dispatch)
     [ $# -lt 3 ] && { echo "Usage: cmd.sh dispatch {role} {task-file} {project}" >&2; exit 1; }
-    export WHIPLASH_TMUX_SOCKET="$(session_name "$3")"
+    activate_project_tmux_context "$3"
     cmd_dispatch "$1" "$2" "$3"
     ;;
   dual-dispatch)
     [ $# -lt 3 ] && { echo "Usage: cmd.sh dual-dispatch {role} {task-file} {project}" >&2; exit 1; }
-    export WHIPLASH_TMUX_SOCKET="$(session_name "$3")"
+    activate_project_tmux_context "$3"
     cmd_dual_dispatch "$1" "$2" "$3"
     ;;
   spawn)
     [ $# -lt 3 ] && { echo "Usage: cmd.sh spawn {role} {window-name} {project} [extra-msg]" >&2; exit 1; }
-    export WHIPLASH_TMUX_SOCKET="$(session_name "$3")"
+    activate_project_tmux_context "$3"
     cmd_spawn "$1" "$2" "$3" "${4:-}"
     ;;
   kill-agent)
     [ $# -lt 2 ] && { echo "Usage: cmd.sh kill-agent {window-name} {project}" >&2; exit 1; }
-    export WHIPLASH_TMUX_SOCKET="$(session_name "$2")"
+    activate_project_tmux_context "$2"
     cmd_kill_agent "$1" "$2"
     ;;
   shutdown)
     [ $# -lt 1 ] && { echo "Usage: cmd.sh shutdown {project}" >&2; exit 1; }
-    export WHIPLASH_TMUX_SOCKET="$(session_name "$1")"
+    activate_project_tmux_context "$1"
     cmd_shutdown "$1"
     ;;
   status)
     [ $# -lt 1 ] && { echo "Usage: cmd.sh status {project}" >&2; exit 1; }
-    export WHIPLASH_TMUX_SOCKET="$(session_name "$1")"
+    activate_project_tmux_context "$1"
     cmd_status "$1"
     ;;
   reboot)
     [ $# -lt 2 ] && { echo "Usage: cmd.sh reboot {target} {project}" >&2; exit 1; }
-    export WHIPLASH_TMUX_SOCKET="$(session_name "$2")"
+    activate_project_tmux_context "$2"
     cmd_reboot "$1" "$2"
     ;;
   refresh)
     [ $# -lt 2 ] && { echo "Usage: cmd.sh refresh {target} {project}" >&2; exit 1; }
-    export WHIPLASH_TMUX_SOCKET="$(session_name "$2")"
+    activate_project_tmux_context "$2"
     cmd_refresh "$1" "$2"
     ;;
   merge-worktree)
     [ $# -lt 3 ] && { echo "Usage: cmd.sh merge-worktree {role} {winner} {project}" >&2; exit 1; }
-    export WHIPLASH_TMUX_SOCKET="$(session_name "$3")"
+    activate_project_tmux_context "$3"
     cmd_merge_worktree "$1" "$2" "$3"
     ;;
   monitor-check)
     [ $# -lt 1 ] && { echo "Usage: cmd.sh monitor-check {project}" >&2; exit 1; }
-    export WHIPLASH_TMUX_SOCKET="$(session_name "$1")"
+    activate_project_tmux_context "$1"
     cmd_monitor_check "$1"
     ;;
   complete)
     [ $# -lt 2 ] && { echo "Usage: cmd.sh complete {agent} {project}" >&2; exit 1; }
-    export WHIPLASH_TMUX_SOCKET="$(session_name "$2")"
+    activate_project_tmux_context "$2"
     cmd_complete "$1" "$2"
     ;;
   expire-stale)
     [ $# -lt 1 ] && { echo "Usage: cmd.sh expire-stale {project} [max-hours]" >&2; exit 1; }
-    export WHIPLASH_TMUX_SOCKET="$(session_name "$1")"
+    activate_project_tmux_context "$1"
     expire_stale_assignments "$1" "${2:-4}"
     ;;
   assign)
     [ $# -lt 3 ] && { echo "Usage: cmd.sh assign {agent} {task} {project}" >&2; exit 1; }
-    export WHIPLASH_TMUX_SOCKET="$(session_name "$3")"
+    activate_project_tmux_context "$3"
     cmd_assign "$1" "$2" "$3"
     ;;
   *)

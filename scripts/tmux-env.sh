@@ -37,23 +37,12 @@ whiplash_tmux_maybe_activate_from_env() {
 
 whiplash_tmux_attach_command() {
   local session_name="$1"
-  local socket_name="${2:-${WHIPLASH_TMUX_SOCKET_NAME:-}}"
-  if [ -n "$socket_name" ]; then
-    printf 'tmux -L %s attach -t %s\n' "$socket_name" "$session_name"
-    return 0
-  fi
-
   printf 'tmux attach -t %s\n' "$session_name"
 }
 
 whiplash_tmux_run_on_socket() {
   local socket_name="${1:-}"
   shift
-  if [ -n "$socket_name" ]; then
-    command tmux -L "$socket_name" "$@"
-    return
-  fi
-
   command tmux "$@"
 }
 
@@ -68,7 +57,7 @@ whiplash_tmux_run_for_project() {
 }
 
 tmux() {
-  whiplash_tmux_run_on_socket "${WHIPLASH_TMUX_SOCKET_NAME:-}" "$@"
+  command tmux "$@"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
