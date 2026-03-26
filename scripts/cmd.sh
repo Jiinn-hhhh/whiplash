@@ -503,7 +503,17 @@ write_agent_env_script() {
   script_path="$(agent_env_script_path "$project" "$agent_id")"
   base_path="$PATH"
 
-  mkdir -p "$(dirname "$script_path")"
+  local env_dir
+  env_dir="$(dirname "$script_path")"
+  mkdir -p "$env_dir"
+  chmod 700 "$env_dir"
+
+  # agent_id 검증 (쉘 인젝션 방지 — H-02 수정)
+  if [[ "$agent_id" =~ [^a-zA-Z0-9_-] ]]; then
+    echo "Error: 잘못된 agent_id: '$agent_id' (영문/숫자/하이픈/밑줄만 허용)" >&2
+    return 1
+  fi
+
   {
     printf 'export PATH=%q\n' "$base_path"
     printf 'export WHIPLASH_REPO_ROOT=%q\n' "$REPO_ROOT"
