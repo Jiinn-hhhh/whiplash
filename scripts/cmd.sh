@@ -3299,6 +3299,14 @@ cmd_boot() {
     echo "Warning: discussion 부팅 실패. 건너뜀." >&2
     failed_agents="discussion"
   }
+  # discussion readiness gate (1-C): 부팅 성공 후 프로세스 생존 확인
+  if [ -z "$failed_agents" ]; then
+    sleep 2
+    if ! agent_window_has_live_backend "$sess" "discussion" "$discussion_backend" 2>/dev/null; then
+      echo "Warning: discussion 프로세스 부팅 후 즉사 감지." >&2
+      failed_agents="discussion"
+    fi
+  fi
 
   for role in $agents; do
     # manager/discussion은 control-plane 역할로 별도 처리됨
