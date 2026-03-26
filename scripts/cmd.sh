@@ -49,8 +49,8 @@ source "$TOOLS_DIR/assignment-state.sh"
 
 validate_project_name() {
   local name="$1"
-  if [ -z "$name" ] || [[ "$name" == */* ]] || [[ "$name" == *..* ]]; then
-    echo "Error: 잘못된 project 이름: '$name'" >&2
+  if [ -z "$name" ] || [[ "$name" =~ [^a-zA-Z0-9_-] ]]; then
+    echo "Error: 잘못된 project 이름: '$name' (영문/숫자/하이픈/밑줄만 허용)" >&2
     exit 1
   fi
 }

@@ -19,9 +19,9 @@ priority="$5"
 subject="$6"
 content="$7"
 
-# project 이름 검증 (경로 트래버설 방지)
-if [[ "$project" == */* ]] || [[ "$project" == *..* ]] || [ -z "$project" ]; then
-  echo "Error: 잘못된 project 이름: $project" >&2
+# project 이름 검증 (경로 트래버설, 쉘/정규식 메타문자 방지)
+if [ -z "$project" ] || [[ "$project" =~ [^a-zA-Z0-9_-] ]]; then
+  echo "Error: 잘못된 project 이름: $project (영문/숫자/하이픈/밑줄만 허용)" >&2
   exit 1
 fi
 
