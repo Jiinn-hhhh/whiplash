@@ -729,6 +729,14 @@ drain_message_queue() {
           ;;
         task_complete)
           if [ "$msg_to" = "manager" ]; then
+            # record_waiting_report: active task를 조회한 뒤 complete 처리
+            local _drain_task_ref _drain_report_path _drain_report_rel
+            _drain_task_ref="$(get_active_task_ref_for_project "$PROJECT" "$msg_from" 2>/dev/null || true)"
+            if [ -n "$_drain_task_ref" ]; then
+              _drain_report_path="$(runtime_task_report_path "$PROJECT" "$_drain_task_ref" "$msg_from" 2>/dev/null || true)"
+              _drain_report_rel="$(runtime_project_relative_path "$PROJECT" "$_drain_report_path" 2>/dev/null || true)"
+              runtime_set_waiting_report "$PROJECT" "$msg_from" "$(date +%s)" "$msg_subject" "$_drain_task_ref" "$_drain_report_rel" 2>/dev/null || true
+            fi
             complete_assignment_for_project "$PROJECT" "$msg_from" 2>/dev/null || true
           fi
           ;;
