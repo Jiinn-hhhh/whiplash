@@ -431,7 +431,7 @@ pane_is_in_plan_mode() {
 }
 
 check_claude_plan_mode() {
-  if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+  if ! session_exists; then
     return
   fi
 
@@ -471,7 +471,7 @@ check_claude_plan_mode() {
 }
 
 check_claude_auth_blocked() {
-  if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+  if ! session_exists; then
     return
   fi
 
@@ -627,7 +627,7 @@ check_agent_windows() {
 # ──────────────────────────────────────────────
 
 check_agent_health() {
-  if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+  if ! session_exists; then
     return
   fi
 

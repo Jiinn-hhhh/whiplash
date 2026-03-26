@@ -1974,21 +1974,23 @@ reset_stale_boot_runtime_state() {
   rm -f "$(runtime_idle_state_file "$project")"
   rm -f "$(runtime_waiting_state_file "$project")"
 
-  # tmux-debug 로그 정리: 이전 세션 잔재 삭제 (현재 tmux 서버 PID 제외)
+  # tmux-debug 로그 정리: 이전 세션 잔재 삭제
+  # server 로그는 현재 PID 보존, client 로그는 부팅 시점에 모두 이전 세션 잔재이므로 전부 삭제
   local debug_dir current_server_pid
   debug_dir="$(tmux_debug_log_dir "$project")"
   if [ -d "$debug_dir" ]; then
     current_server_pid="$(tmux display-message -p '#{pid}' 2>/dev/null || true)"
-    for log_file in "$debug_dir"/tmux-server-*.log "$debug_dir"/tmux-client-*.log; do
+    local log_file base_name
+    for log_file in "$debug_dir"/tmux-server-*.log; do
       [ -f "$log_file" ] || continue
-      local base_name
       base_name="$(basename "$log_file")"
-      # 현재 tmux 서버 로그는 보존
       if [ -n "$current_server_pid" ] && [[ "$base_name" == *"-${current_server_pid}.log" ]]; then
         continue
       fi
       rm -f "$log_file"
     done
+    # client 로그는 client PID 기반이므로 server PID로 보존 판별 불가 — 전부 삭제
+    rm -f "$debug_dir"/tmux-client-*.log
     rm -f "$debug_dir"/latest-*.meta
   fi
 }
