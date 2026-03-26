@@ -755,6 +755,10 @@ fi
 
 python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor monitor_started "$SESSION" --detail interval="${HEALTH_CHECK_INTERVAL}s" || true
 
+# 초기 sweep: monitor 시작 전에 쌓인 메시지를 즉시 처리
+# (메인 루프 첫 반복까지 최대 HEALTH_CHECK_INTERVAL초 지연 방지)
+drain_message_queue
+
 while true; do
   check_agent_windows
   check_agent_health
