@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from glob import glob
 from typing import Any
@@ -20,12 +21,13 @@ from typing import Any
 try:
     from rich.console import Console
     from rich.console import Group
+    from rich.layout import Layout
     from rich.live import Live
     from rich.panel import Panel
     from rich.table import Table
     from rich.text import Text
 except ImportError:
-    Console = Group = Live = Panel = Table = Text = None
+    Console = Group = Layout = Live = Panel = Table = Text = None
 
 # ──────────────────────────────────────────────
 # 상수
@@ -236,7 +238,7 @@ def _parse_project_field(line: str) -> tuple[str, str] | None:
 
 
 def _require_rich() -> None:
-    if None in (Console, Group, Live, Panel, Table, Text):
+    if None in (Console, Group, Layout, Live, Panel, Table, Text):
         print("rich 라이브러리가 필요합니다: pip install rich", file=sys.stderr)
         sys.exit(1)
 
@@ -866,11 +868,12 @@ def collect(project_dir: str, session_name: str,
 # ──────────────────────────────────────────────
 
 _STATUS_STYLE = {
-    "ALIVE": ("● ALIVE", "green"),
+    "ALIVE": ("● ALIVE", "bold green"),
     "READY": ("○ READY", "cyan"),
-    "AUTH": ("! AUTH", "yellow"),
-    "CRASHED": ("✗ CRASHED", "red"),
-    "ABSENT": ("○ ABSENT", "red"),
+    "WAIT": ("◎ WAIT", "yellow"),
+    "AUTH": ("◎ AUTH", "yellow"),
+    "CRASHED": ("✗ CRASH", "bold red"),
+    "ABSENT": ("— ABSENT", "red"),
     "CLOSED": ("— CLOSED", "dim"),
 }
 
@@ -885,12 +888,12 @@ _REPORT_STYLE = {
 def _render_header(state: dict) -> Panel:
     proj = state["project"]
     now = state["now"]
+    mon = state["monitor"]
     name = proj.get("name", "?")
     mode = proj.get("mode", "solo")
     loop_mode = proj.get("loop_mode", "guided")
     time_str = now.strftime("%Y-%m-%d %H:%M:%S")
-    mode_label = f"{mode}/{loop_mode}"
-    left = f"  WHIPLASH  {name}  {mode_label}"
+
     title = Text()
     title.append("  WHIPLASH", style="bold white")
     title.append("  ")
@@ -899,8 +902,25 @@ def _render_header(state: dict) -> Panel:
     title.append(mode, style="bold magenta")
     title.append("/", style="bold white")
     title.append(loop_mode, style="bold yellow" if loop_mode == "ralph" else "bold green")
-    # right-align time: Panel adds ~4 chars of border
-    padding = max(1, 72 - len(left) - len(time_str))
+    title.append("  ")
+
+    # monitor 상태 통합
+    if mon["alive"]:
+        title.append("● Mon", style="green")
+        if mon["heartbeat_age"] is not None:
+            hb_style = "green" if mon["heartbeat_age"] < 90 else "red"
+            title.append(f" {mon['heartbeat_age']}s", style=hb_style)
+    elif mon["pid"]:
+        title.append("✗ Mon", style="red")
+    else:
+        title.append("— Mon", style="dim")
+
+    if mon["queued"] > 0:
+        title.append(f"  Q:{mon['queued']}", style="yellow")
+
+    # 시간 우정렬 — 실제 렌더된 텍스트 길이 기반
+    current_len = len(title.plain)
+    padding = max(1, 72 - current_len - len(time_str))
     title.append(" " * padding)
     title.append(time_str, style="dim")
     return Panel(title, style="bold blue")
@@ -908,27 +928,25 @@ def _render_header(state: dict) -> Panel:
 
 def _render_agents(state: dict) -> Table:
     table = Table(
-        title="AGENTS",
-        title_style="bold white",
         show_header=True,
         header_style="bold",
         border_style="dim",
         pad_edge=True,
+        expand=True,
     )
-    table.add_column("Role", min_width=10)
-    table.add_column("Status", min_width=10)
-    table.add_column("Model", min_width=5)
-    table.add_column("Task Time", min_width=7, justify="right")
-    table.add_column("Current Task", min_width=20, max_width=40)
-    table.add_column("Report", min_width=6)
-    table.add_column("Reboot", min_width=6, justify="right")
+    table.add_column("Role", no_wrap=True)
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Task", ratio=2)
+    table.add_column("Time", no_wrap=True, justify="right")
+    table.add_column("Rpt", no_wrap=True)
+    table.add_column("R", no_wrap=True, justify="right")
 
     # CLOSED 제외
     active_agents = [a for a in state["agents"] if a.get("display_status") != "CLOSED"]
 
     if not active_agents:
         msg = "⏳ Booting..." if state.get("session_exists") else "(No session)"
-        table.add_row(msg, "", "", "", "", "", "")
+        table.add_row(msg, "", "", "", "", "")
         return table
 
     # 역할 우선순위 정렬: manager → discussion → systems-engineer → researcher → developer → monitoring
@@ -946,7 +964,6 @@ def _render_agents(state: dict) -> Table:
     ))
 
     # 듀얼 모드 감지: 같은 role이 2개 이상이면 backend 표시
-    from collections import Counter
     role_counts = Counter(a["role"] for a in active_agents)
     is_dual = any(c > 1 for c in role_counts.values())
 
@@ -954,7 +971,7 @@ def _render_agents(state: dict) -> Table:
     for agent in active_agents:
         # 역할 그룹 간 빈 줄 구분
         if prev_role is not None and agent["role"] != prev_role:
-            table.add_row("", "", "", "", "", "", "")
+            table.add_row("", "", "", "", "", "")
         prev_role = agent["role"]
         ds = agent.get("display_status", "CLOSED")
         label, style = _STATUS_STYLE.get(ds, ("?", ""))
@@ -972,10 +989,11 @@ def _render_agents(state: dict) -> Table:
         reboot_str = str(agent["reboots"]) if agent["reboots"] > 0 else ""
 
         # 듀얼 모드에서 같은 role이 복수면 backend 구분 표시
-        role_label = agent["role"]
+        win_name = agent.get("win_name", agent["role"])
         if is_dual and role_counts[agent["role"]] > 1:
-            backend = agent.get("backend", "")
-            role_label = f"{agent['role']}/{backend}"
+            role_label = win_name  # e.g. developer-claude
+        else:
+            role_label = agent["role"]
 
         # 태스크 표시: 제목이 있으면 "TASK-NNN 제목", 없으면 "--"
         task_id = agent.get("task_id", "")
@@ -993,9 +1011,8 @@ def _render_agents(state: dict) -> Table:
         table.add_row(
             Text(role_label),
             Text(label, style=style),
-            Text(agent.get("model", "?")),
-            Text(time_str),
             Text(task_str, style="dim" if task_stale else ""),
+            Text(time_str),
             Text(report_label, style=report_style),
             Text(reboot_str, style="yellow" if agent["reboots"] > 0 else ""),
         )
@@ -1035,7 +1052,7 @@ def _render_active_tasks(state: dict) -> Panel | None:
             Text(_format_elapsed_compact(elapsed), style="dim"),
         )
 
-    return Panel(table, title="ACTIVE TASKS", title_align="left", border_style="cyan", expand=False)
+    return Panel(table, title="TASKS", title_align="left", border_style="cyan")
 
 
 _ALERT_KINDS = frozenset({"escalation", "need_input", "user_notice"})
@@ -1085,7 +1102,7 @@ def _render_user_alerts(state: dict) -> Panel | None:
             Text(entry["sender"]),
             Text(entry["subject"]),
         )
-    return Panel(table, title="USER ALERTS", title_align="left", border_style="red", expand=False)
+    return Panel(table, title="ALERTS", title_align="left", border_style="red")
 
 
 def _render_waiting_reports(state: dict) -> Panel | None:
@@ -1115,33 +1132,11 @@ def _render_waiting_reports(state: dict) -> Panel | None:
 
     return Panel(
         body,
-        title="NEXT TASK WAITING",
+        title="WAITING",
         title_align="left",
         border_style="cyan",
-        expand=False,
     )
 
-
-def _render_health_check(state: dict) -> Panel:
-    mon = state["monitor"]
-    line = Text("  ")
-    sep = "  │  "
-    if mon["pid"]:
-        if mon["alive"]:
-            line.append("● Running", style="green")
-        else:
-            line.append("✗ Down", style="red")
-        line.append(sep, style="dim")
-        line.append(f"PID {mon['pid']}", style="")
-        if mon["heartbeat_age"] is not None:
-            hb_style = "green" if mon["heartbeat_age"] < 90 else "red"
-            line.append(sep, style="dim")
-            line.append(f"Heartbeat {mon['heartbeat_age']}s ago", style=hb_style)
-    else:
-        line.append("— Not started", style="dim")
-    line.append(sep, style="dim")
-    line.append(f"Queued {mon['queued']}", style="")
-    return Panel(line, title="HEALTH CHECK", title_align="left", border_style="dim", expand=False)
 
 
 def _event_icon(level: str, message: str) -> tuple[str, str]:
@@ -1255,30 +1250,29 @@ def _classify_system_event(message: str) -> tuple[str, str]:
 
 
 def _timeline_time(ts: datetime) -> str:
-    """3분 이내면 'N분 N초 전', 아니면 HH:MM:SS."""
+    """3분 이내면 'Nm Ns', 아니면 HH:MM."""
     diff = _now_kst() - ts
     secs = int(diff.total_seconds())
     if secs < 0:
-        return "방금"
+        return "now"
+    if secs < 60:
+        return f"{secs}s"
     if secs < 180:
         m, s = divmod(secs, 60)
-        if m > 0:
-            return f"{m}분 {s}초 전"
-        return f"{s}초 전"
-    return ts.strftime("%H:%M:%S")
+        return f"{m}m{s}s"
+    return ts.strftime("%H:%M")
 
 
 def _render_timeline(state: dict) -> Table:
     table = Table(
-        title="TIMELINE",
-        title_style="bold white",
         show_header=True,
         header_style="bold",
         border_style="dim",
+        expand=True,
     )
-    table.add_column("Time", min_width=10)
-    table.add_column("Type", min_width=10)
-    table.add_column("Event", min_width=40)
+    table.add_column("Time", no_wrap=True)
+    table.add_column("Type", no_wrap=True)
+    table.add_column("Event", ratio=1)
 
     # (ts, type_label, type_style, event_text)
     merged: list[tuple[datetime, str, str, str]] = []
@@ -1295,20 +1289,20 @@ def _render_timeline(state: dict) -> Table:
     for entry in state["message_log"]:
         st = entry["status"]
         if st == "delivered":
-            type_label, type_style = "message", ""
+            type_label, type_style = "msg", ""
         elif st == "skipped":
-            type_label, type_style = "msg skip", "yellow"
+            type_label, type_style = "skip", "yellow"
         elif st == "queued":
-            type_label, type_style = "msg queue", "yellow"
+            type_label, type_style = "queue", "yellow"
         else:
-            type_label, type_style = "message", ""
-        sender = _full_name(entry["sender"])
-        receiver = _full_name(entry["receiver"])
+            type_label, type_style = "msg", ""
+        sender = _abbr(entry["sender"])
+        receiver = _abbr(entry["receiver"])
         subject = entry["subject"]
         tm = _TASK_PATH_RE.search(subject)
         if tm:
             subject = _TASK_PATH_RE.sub(tm.group(1), subject)
-        text = f'{sender} → {receiver} "{subject}"'
+        text = f'{sender}→{receiver} {subject}'
         merged.append((entry["ts"], type_label, type_style, text))
 
     merged.sort(key=lambda x: x[0])
@@ -1335,36 +1329,74 @@ def _render_footer(interval: int) -> Text:
     return text
 
 
-def render(state: dict, interval: int) -> Group:
-    """전체 대시보드 렌더링."""
-    parts: list = [
-        _render_header(state),
-        Text(),
-        _render_agents(state),
-    ]
-    active_tasks_panel = _render_active_tasks(state)
-    if active_tasks_panel is not None:
-        parts.append(Text())
-        parts.append(active_tasks_panel)
-    parts.extend([
-        Text(),
-        _render_health_check(state),
-    ])
+def render(state: dict, interval: int) -> Layout:
+    """전체 대시보드 렌더링 — Layout 그리드."""
+    layout = Layout()
+
+    layout.split_column(
+        Layout(name="header", size=3),
+        Layout(name="body"),
+        Layout(name="bottom", size=10),
+        Layout(name="footer", size=1),
+    )
+
+    # body: 좌측 에이전트 테이블, 우측 타임라인 (2:1)
+    layout["body"].split_row(
+        Layout(name="agents", ratio=2),
+        Layout(name="timeline", ratio=1),
+    )
+
+    # bottom: 좌측 태스크, 우측 알림 (1:1)
+    layout["bottom"].split_row(
+        Layout(name="tasks"),
+        Layout(name="alerts"),
+    )
+
+    # 헤더
+    layout["header"].update(_render_header(state))
+
+    # 에이전트 테이블
+    layout["agents"].update(
+        Panel(_render_agents(state), title="AGENTS", title_align="left", border_style="dim")
+    )
+
+    # 타임라인
+    layout["timeline"].update(
+        Panel(_render_timeline(state), title="TIMELINE", title_align="left", border_style="dim")
+    )
+
+    # 하단 좌측: 활성 태스크 (항상 표시, 없으면 placeholder)
+    tasks_panel = _render_active_tasks(state)
+    if tasks_panel is None:
+        tasks_panel = Panel(
+            Text("대기 중 태스크 없음", style="dim"),
+            title="TASKS", title_align="left",
+            border_style="dim",
+        )
+    layout["tasks"].update(tasks_panel)
+
+    # 하단 우측: 유저 알림 + waiting (항상 표시, 둘 다 있으면 합침)
     alerts_panel = _render_user_alerts(state)
-    if alerts_panel is not None:
-        parts.append(Text())
-        parts.append(alerts_panel)
     waiting_panel = _render_waiting_reports(state)
-    if waiting_panel is not None:
-        parts.append(Text())
-        parts.append(waiting_panel)
-    parts.extend([
-        Text(),
-        _render_timeline(state),
-        Text(),
-        _render_footer(interval),
-    ])
-    return Group(*parts)
+    if alerts_panel is not None and waiting_panel is not None:
+        layout["alerts"].update(Group(alerts_panel, waiting_panel))
+    elif alerts_panel is not None:
+        layout["alerts"].update(alerts_panel)
+    elif waiting_panel is not None:
+        layout["alerts"].update(waiting_panel)
+    else:
+        layout["alerts"].update(
+            Panel(
+                Text("알림 없음", style="dim"),
+                title="ALERTS", title_align="left",
+                border_style="dim",
+            )
+        )
+
+    # 푸터
+    layout["footer"].update(_render_footer(interval))
+
+    return layout
 
 
 # ──────────────────────────────────────────────
@@ -1407,7 +1439,7 @@ def main() -> None:
         render(initial, interval),
         console=console,
         refresh_per_second=1,
-        screen=False,
+        screen=True,
     ) as live:
         while True:
             time.sleep(interval)
