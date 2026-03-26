@@ -38,6 +38,8 @@ source "$TOOLS_DIR/runtime-paths.sh"
 # shellcheck source=/dev/null
 source "$TOOLS_DIR/agent-health.sh"
 # shellcheck source=/dev/null
+source "$TOOLS_DIR/assignment-state.sh"
+# shellcheck source=/dev/null
 source "$TOOLS_DIR/message-queue.sh"
 # shellcheck source=/dev/null
 source "$TOOLS_DIR/notify-format.sh"
@@ -719,6 +721,18 @@ drain_message_queue() {
 
     if submit_notification "$msg_to" "$notification"; then
       rm -f "$msg_file"
+      # bookkeeping: 전달 성공 후에만 assignments.md 갱신 (C-02 수정)
+      case "$msg_kind" in
+        task_assign)
+          runtime_clear_waiting_report "$PROJECT" "$msg_to" 2>/dev/null || true
+          record_assignment_for_project "$PROJECT" "$msg_to" "$msg_subject" 2>/dev/null || true
+          ;;
+        task_complete)
+          if [ "$msg_to" = "manager" ]; then
+            complete_assignment_for_project "$PROJECT" "$msg_from" 2>/dev/null || true
+          fi
+          ;;
+      esac
       python3 "$TOOLS_DIR/log.py" message "$PROJECT" "$msg_from" "$msg_to" "$msg_kind" "$msg_priority" "$msg_subject" delivered --reason "queued-drain" || true
     fi
     runtime_release_message_target_lock "$PROJECT" "$msg_to" || true

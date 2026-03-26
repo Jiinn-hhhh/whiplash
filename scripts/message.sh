@@ -618,13 +618,11 @@ if [[ "$to" == "user" ]]; then
 fi
 
 if target_has_pending_queue "$to"; then
-  apply_bookkeeping
   queue_with_optional_mirror
   exit 0
 fi
 
 if ! runtime_claim_message_target_lock "$project" "$to"; then
-  apply_bookkeeping
   queue_with_optional_mirror
   exit 0
 fi
@@ -638,19 +636,16 @@ case "${delivery_state%%|*}" in
   healthy)
     ;;
   auth-blocked)
-    apply_bookkeeping
     queue_with_optional_mirror "queued-auth-blocked"
     exit 0
     ;;
   *)
-    apply_bookkeeping
     queue_with_optional_mirror
     exit 0
     ;;
 esac
 
 if ! target_has_live_agent "$to"; then
-  apply_bookkeeping
   queue_with_optional_mirror
   exit 0
 fi
@@ -663,5 +658,4 @@ if submit_notification "$to" "$notification"; then
   exit 0
 fi
 
-apply_bookkeeping
 queue_with_optional_mirror
