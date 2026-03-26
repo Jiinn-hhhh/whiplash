@@ -84,10 +84,14 @@ Claude Code의 subagent / TeamCreate / 병렬 태스크와 Codex CLI의 subagent
 - 이 레포는 repo-local native subagent pack을 함께 제공한다:
   - Claude Code: `.claude/agents/`
   - Codex CLI: `.codex/agents/`
-- `manager`, `discussion`, `developer`, `researcher`, `systems-engineer`는 비사소한 작업에서 이 pack을 **기본값**으로 활용한다.
-- `manager`는 목표, 제약, 우선순위를 준다. `developer`, `researcher`, `systems-engineer` 같은 execution lead는 어떤 specialist를 어떤 순서로 호출할지 스스로 결정한다.
-- "subagent를 하나도 쓰지 않는 경로"는 trivial 예외일 때만 허용한다. 그렇지 않으면 어떤 specialist를 썼는지 또는 왜 생략했는지 설명할 수 있어야 한다.
-- 역할별 기본 fan-out 규칙은 각 역할의 `techniques/subagent-orchestration.md`에 정의한다.
+- 이 specialist pack은 **활용 가능한 옵션**이지, 반드시 따라야 하는 강제 사항이 아니다.
+- `developer`, `researcher`, `systems-engineer` 같은 팀장급 execution lead는 서브에이전트 팀을 **자율적으로 구성**한다:
+  - 기존 specialist가 작업에 맞으면 활용한다.
+  - 파일별 병렬 코딩, 영역별 병렬 조사처럼 specialist 성격 부여 없이 범용 에이전트를 자유롭게 팀 구성하는 것도 허용한다.
+  - 팀장이 판단하여 가장 효율적인 조합을 선택한다.
+- `manager`는 목표, 제약, 우선순위를 준다. 내부 fan-out 조합과 에이전트 구성은 execution lead가 자율적으로 결정한다.
+- "subagent를 하나도 쓰지 않는 경로"는 trivial 예외일 때만 허용한다. 그렇지 않으면 어떤 에이전트를 썼는지 또는 왜 생략했는지 설명할 수 있어야 한다.
+- 역할별 참고 패턴은 각 역할의 `techniques/subagent-orchestration.md`에 정의한다. 이 패턴은 출발점이지 구속이 아니다.
 
 ### 작업 루프 정책
 - backend 실행 모드(`solo | dual`)와 작업 루프(`guided | ralph`)는 별도 축이다.
