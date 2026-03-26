@@ -354,7 +354,9 @@ is_agent_alive() {
 }
 
 session_epoch_marker() {
-  tmux display-message -p -t "$SESSION" '#{session_id}|#{session_created}' 2>/dev/null || true
+  # #{session_name}|#{session_created} — 세션 name + 생성 시각으로 epoch 식별
+  # (#{session_id}는 $0/$1 형식이라 쉘/awk 컨텍스트에서 의도치 않은 전개 위험)
+  tmux display-message -p -t "$SESSION" '#{session_name}|#{session_created}' 2>/dev/null || true
 }
 
 begin_rehydration_grace() {
