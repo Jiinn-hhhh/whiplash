@@ -9,6 +9,7 @@
 - runtime 사실은 증거 기반이어야 한다.
 - 기본 모델은 `audit -> map/verify -> conclude`다.
 - 운영 결론, write authority 판단, 최종 runbook 반영 책임은 Systems Engineer에게 있다.
+- **자율 구성**: 아래의 specialist 패턴은 참고용 출발점이다. 기존 specialist가 작업에 맞으면 활용하고, 스크립트별/영역별 병렬 감사처럼 specialist 역할 없이 범용 에이전트를 자유롭게 팀 구성하는 것도 허용한다. 어떤 조합이 효율적인지는 Systems Engineer가 판단한다.
 
 ---
 
@@ -88,9 +89,11 @@
 
 ## 최소 운영 규칙
 
-- 감사 시작: `runtime-auditor`
-- code path 연동 필요: `+ code-mapper`
-- risky change plan: `+ reviewer`
-- rollout/rollback 설계: `+ deployment-engineer`
-- hardening/security review: `+ security-auditor`
-- 성능/용량 문제: `+ performance-engineer`
+- 비사소한 작업에서는 서브에이전트를 최소 1개 이상 활용한다.
+- 아래는 **참고 패턴**이다. 작업에 맞으면 쓰고, 범용 병렬 에이전트가 더 효율적이면 자유 구성한다.
+  - 감사 시작: `runtime-auditor`
+  - code path 연동 필요: `+ code-mapper`
+  - risky change plan: `+ reviewer`
+  - rollout/rollback 설계: `+ deployment-engineer`
+  - hardening/security review: `+ security-auditor`
+  - 성능/용량 문제: `+ performance-engineer`
