@@ -2913,6 +2913,7 @@ normalize_spawn_role() {
     systems-engineer|systems-engineer-claude|systems-engineer-codex) echo "systems-engineer" ;;
     monitoring|monitoring-claude|monitoring-codex) echo "monitoring" ;;
     manager|manager-claude|manager-codex) echo "manager" ;;
+    discussion|discussion-claude|discussion-codex) echo "discussion" ;;
     *)
       echo "Error: 지원하지 않는 spawn role: '$role'" >&2
       exit 1
