@@ -88,6 +88,8 @@ source "$TOOLS_DIR/assignment-state.sh"
 # shellcheck source=/dev/null
 source "$TOOLS_DIR/agent-health.sh"
 # shellcheck source=/dev/null
+source "$TOOLS_DIR/assignment-state.sh"
+# shellcheck source=/dev/null
 source "$TOOLS_DIR/message-queue.sh"
 # shellcheck source=/dev/null
 source "$TOOLS_DIR/notify-format.sh"
@@ -150,6 +152,7 @@ normalize_task_ref() {
   normalize_assignment_task_ref "$project" "$1"
 }
 
+# assignment-state.sh의 잠금+awk 기반 함수를 사용하는 래퍼
 get_active_task_ref() {
   get_active_task_ref_for_project "$project" "$1"
 }
