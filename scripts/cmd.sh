@@ -1836,13 +1836,28 @@ init_sessions_file() {
 HEADER
 }
 
-# sessions.md에 행 추가
+# sessions.md에 행 추가 (role+backend 중복 방지)
 add_session_row() {
   local project="$1" role="$2" session_id="$3" tmux_target="$4" model="$5" backend="${6:-claude}"
   local sf
   init_sessions_file "$project"
   sf="$(sessions_file "$project")"
   prune_active_session_rows "$project" "$role" "$backend" "$tmux_target"
+
+  # prune 후에도 동일 role+backend active 행이 남아있으면 중복 append 방지
+  if grep -q "| active |" "$sf" 2>/dev/null; then
+    local dup
+    dup="$(awk -F'|' -v role="$role" -v backend="$backend" '
+      function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+      trim($6) == "active" && trim($2) == role && trim($3) == backend { found=1; exit }
+      END { if (found) print "1" }
+    ' "$sf")"
+    if [ "$dup" = "1" ]; then
+      python3 "$TOOLS_DIR/log.py" system "$project" cmd session_duplicate_skipped "$role" \
+        --detail backend="$backend" target="$tmux_target" || true
+      return 0
+    fi
+  fi
 
   local today
   today="$(date +%Y-%m-%d)"
