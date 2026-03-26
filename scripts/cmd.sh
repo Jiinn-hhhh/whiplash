@@ -2888,15 +2888,15 @@ boot_manager_window() {
       return 1
     fi
 
+    add_session_row "$project" "manager" "$session_id" "$tmux_target" "$model"
+    python3 "$TOOLS_DIR/log.py" system "$project" orchestrator manager_boot manager --detail session="$session_id" || true
+
     if ! submit_tmux_prompt_when_ready "$tmux_target" "$boot_msg" "manager-boot"; then
       echo "Error: Manager 온보딩 프롬프트 전달 실패." >&2
+      mark_window_status "$project" "manager" "active" "boot-failed"
       kill_windows_by_name "$(session_name "$project")" "manager"
       return 1
     fi
-
-    # sessions.md는 prompt 전달 성공 후에만 기록 (2-A: phantom active 방지)
-    add_session_row "$project" "manager" "$session_id" "$tmux_target" "$model"
-    python3 "$TOOLS_DIR/log.py" system "$project" orchestrator manager_boot manager --detail session="$session_id" || true
   fi
 
   return 0
