@@ -35,34 +35,6 @@ except ImportError:
 
 _KST = timezone(timedelta(hours=9))
 
-_ROLE_ABBR = {
-    "manager": "mgr",
-    "discussion": "dis",
-    "developer": "dev",
-    "researcher": "res",
-    "systems-engineer": "sys",
-    "monitoring": "mon",
-    "monitor": "mon",
-}
-
-_SUCCESS_EVENTS = frozenset({
-    "agent_boot", "agent_spawn", "task_dispatch", "dual_dispatch",
-    "reboot_success", "agent_refresh_end", "project_boot_end",
-    "idle_cleared", "session_recovered",
-})
-
-_WARN_EVENTS = frozenset({
-    "idle_detected", "idle_recheck", "crash_detected", "session_absent",
-    "session_absent_confirmed", "monitor_restart",
-    "notify_delivery_fail", "agent_kill", "reboot_count_reset",
-    "plan_mode_detected",
-})
-
-_ERROR_EVENTS = frozenset({
-    "agent_boot_fail", "reboot_failed", "reboot_limit",
-    "monitor_exit", "monitor_zombie", "manager_crash_alert",
-})
-
 _RECENT_ACTIVITY_WINDOW_SEC = 180
 
 # ──────────────────────────────────────────────
@@ -80,32 +52,7 @@ def _now_kst() -> datetime:
     return datetime.now(_KST)
 
 
-def _relative_time(dt: datetime) -> str:
-    """datetime을 'N분 전', 'N초 전' 형태로 변환."""
-    diff = _now_kst() - dt
-    secs = int(diff.total_seconds())
-    if secs < 0:
-        return "방금"
-    if secs < 60:
-        return f"{secs}초 전"
-    mins = secs // 60
-    if mins < 60:
-        return f"{mins}분 전"
-    hours = mins // 60
-    return f"{hours}시간 전"
-
-
-def _format_idle(seconds: int) -> str:
-    """초를 'm분 s초' 형태로 변환."""
-    if seconds < 0:
-        return "--"
-    m, s = divmod(seconds, 60)
-    if m > 0:
-        return f"{m}m {s}s"
-    return f"{s}s"
-
-
-def _format_elapsed_compact(seconds: int) -> str:
+def _format_elapsed(seconds: int) -> str:
     """경과 시간을 짧게 표시."""
     if seconds < 0:
         return "--"
@@ -168,10 +115,6 @@ def _read_tsv_rows(path: str) -> list[list[str]]:
     return rows
 
 
-def _abbr(name: str) -> str:
-    return _ROLE_ABBR.get(name, name[:3])
-
-
 def _sanitize_report_component(value: str, default: str) -> str:
     value = value.replace(" ", "-")
     value = re.sub(r"[^A-Za-z0-9._-]", "", value)
@@ -210,13 +153,11 @@ def _parse_project_heading(line: str) -> str | None:
     match = re.match(r"^#\s+(.+)$", line)
     if not match:
         return None
-
     title = match.group(1).strip()
     if ":" in title:
         key, value = title.split(":", 1)
         if key.strip().lower() in {"project", "프로젝트"}:
             return _clean_project_value(value)
-
     return _clean_project_value(title)
 
 
@@ -224,10 +165,8 @@ def _parse_project_field(line: str) -> tuple[str, str] | None:
     match = re.match(r"^-\s+(.+?):\s*(.+)$", line)
     if not match:
         return None
-
     key = _clean_project_value(match.group(1)).lower()
     value = _clean_project_value(match.group(2))
-
     if "domain" in key or "도메인" in key:
         return "domain", value
     if "execution mode" in key or "실행 모드" in key:
@@ -273,11 +212,9 @@ def parse_project_md(project_dir: str) -> dict[str, str]:
         if name:
             info["name"] = name
             continue
-
         field = _parse_project_field(line)
         if not field:
             continue
-
         key, value = field
         if key == "mode":
             if "dual" in value.lower():
@@ -300,6 +237,25 @@ def parse_project_md(project_dir: str) -> dict[str, str]:
     return info
 
 
+def parse_project_phase(project_dir: str) -> str:
+    """project.md의 '현재 상태' 섹션에서 첫 의미 있는 줄 추출."""
+    content = _read_file(os.path.join(project_dir, "project.md"))
+    if not content:
+        return ""
+    in_section = False
+    for line in content.splitlines():
+        if re.match(r"^##\s*현재 상태", line):
+            in_section = True
+            continue
+        if in_section:
+            if line.startswith("#"):
+                break
+            stripped = line.strip()
+            if stripped:
+                return stripped[:80]
+    return ""
+
+
 def parse_sessions_md(project_dir: str) -> list[dict[str, str]]:
     """sessions.md 파싱 → 에이전트 목록."""
     content = _read_file(
@@ -313,11 +269,9 @@ def parse_sessions_md(project_dir: str) -> list[dict[str, str]]:
         if not line.startswith("|"):
             continue
         cols = [c.strip() for c in line.split("|")]
-        # cols[0]은 빈 문자열 (| 앞), cols[-1]도 빈 문자열
         cols = [c for c in cols if c]
         if len(cols) < 7:
             continue
-        # 헤더/구분선 건너뛰기
         if cols[0] in ("역할", "------", "---") or cols[0].startswith("-"):
             continue
         raw_agents.append({
@@ -525,7 +479,7 @@ def parse_boot_times(project_dir: str) -> dict[str, datetime]:
             )
         except ValueError:
             continue
-        boot_times[agent_name] = ts  # 마지막 부팅이 덮어씀
+        boot_times[agent_name] = ts
     return boot_times
 
 
@@ -553,12 +507,11 @@ def parse_system_log(project_dir: str, count: int = 20) -> list[dict]:
     return entries
 
 
-def parse_message_log(project_dir: str, count: int = 10) -> list[dict]:
+def parse_message_log(project_dir: str, count: int = 30) -> list[dict]:
     """message.log 마지막 N줄 파싱."""
     lines = _read_tail(
         os.path.join(project_dir, "logs", "message.log"), count
     )
-    # 새 포맷: kind+priority 포함, 하위 호환: kind/priority 없는 기존 로그도 파싱
     pattern = re.compile(
         r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) '
         r'\[(\w+)\] '
@@ -585,7 +538,6 @@ def parse_message_log(project_dir: str, count: int = 10) -> list[dict]:
             "subject": subject,
         })
     return entries
-
 
 
 def get_reboot_counts(project_dir: str) -> dict[str, int]:
@@ -624,28 +576,49 @@ def parse_waiting_state(project_dir: str) -> dict[str, dict[str, Any]]:
     return result
 
 
-def _read_task_title(project_dir: str, task_path: str) -> str:
-    """태스크 파일 첫 줄에서 제목 추출. '# TASK-013: 설명' → '설명'."""
-    # 절대경로면 그대로, repo-root 상대경로는 repo_root 기준,
-    # 그 외 상대경로는 project_dir 기준 결합
+def _resolve_task_path(project_dir: str, task_path: str) -> str:
+    """태스크 파일 경로를 절대경로로 해석."""
     if os.path.isabs(task_path):
-        full = task_path
-    elif task_path.startswith("projects/"):
+        return task_path
+    if task_path.startswith("projects/"):
         repo_root = os.path.dirname(os.path.dirname(project_dir))
-        full = os.path.join(repo_root, task_path)
-    else:
-        full = os.path.join(project_dir, task_path)
+        return os.path.join(repo_root, task_path)
+    return os.path.join(project_dir, task_path)
+
+
+def _read_task_title(project_dir: str, task_path: str) -> str:
+    """태스크 파일 첫 줄에서 제목 추출."""
+    full = _resolve_task_path(project_dir, task_path)
     content = _read_file(full)
     if not content:
         return ""
     first = content.splitlines()[0]
-    # "# TASK-NNN: 제목" 패턴
     m = re.match(r'^#\s*TASK-\d{3}:\s*(.+)', first)
     return m.group(1).strip() if m else ""
 
 
+def _read_task_background(project_dir: str, task_path: str) -> str:
+    """태스크 파일에서 목표/배경 첫 의미줄 추출."""
+    full = _resolve_task_path(project_dir, task_path)
+    content = _read_file(full)
+    if not content:
+        return ""
+    in_section = False
+    for line in content.splitlines():
+        if re.match(r"^##\s*(목표|배경|Goal|Background)", line):
+            in_section = True
+            continue
+        if in_section:
+            if line.startswith("#"):
+                break
+            stripped = line.strip().lstrip("> ").strip()
+            if stripped:
+                return stripped[:100]
+    return ""
+
+
 def parse_assignments_md(project_dir: str) -> dict[str, dict]:
-    """assignments.md에서 active/stale 태스크 매핑 (role → {id, title, started, stale})."""
+    """assignments.md에서 active/stale 태스크 매핑."""
     content = _read_file(
         os.path.join(project_dir, "memory", "manager", "assignments.md")
     )
@@ -663,7 +636,6 @@ def parse_assignments_md(project_dir: str) -> dict[str, dict]:
             continue
         if cols[0] in ("역할", "에이전트", "------", "---") or cols[0].startswith("-"):
             continue
-        # cols: [에이전트, 태스크파일, 할당시각, 상태, ...]
         status = cols[3].lower() if len(cols) > 3 else ""
         if "active" not in status and "stale" not in status:
             continue
@@ -672,7 +644,6 @@ def parse_assignments_md(project_dir: str) -> dict[str, dict]:
         assign_ts_str = cols[2] if len(cols) > 2 else ""
         is_stale = "stale" in status
 
-        # 할당 시각 파싱
         started = None
         try:
             started = datetime.strptime(
@@ -684,14 +655,24 @@ def parse_assignments_md(project_dir: str) -> dict[str, dict]:
         task_match = task_re.search(task_file)
         if task_match:
             task_id = task_match.group()
-            title = _read_task_title(project_dir, task_file)
+            # 파일 경로 형식이면 파일에서 읽기, 아니면 문자열에서 추출
+            if "/" in task_file or task_file.endswith(".md"):
+                title = _read_task_title(project_dir, task_file)
+                background = _read_task_background(project_dir, task_file)
+            else:
+                # "TASK-014: 대시보드 재설계 — 처음부터" 형태
+                desc_match = re.match(r'TASK-\d{3}:\s*(.+)', task_file)
+                title = desc_match.group(1).strip() if desc_match else ""
+                background = ""
         else:
             task_id = "WORK"
-            title = task_file[:30] + ("..." if len(task_file) > 30 else "")
+            title = task_file[:40] + ("..." if len(task_file) > 40 else "")
+            background = ""
 
         result[role] = {
             "id": task_id,
             "title": title,
+            "background": background,
             "started": started,
             "stale": is_stale,
             "task_ref": task_file,
@@ -735,14 +716,14 @@ def collect(project_dir: str, session_name: str,
     boot_times = parse_boot_times(project_dir)
     system_log = parse_system_log(project_dir, 20)
     message_log = parse_message_log(project_dir, 30)
+    project_phase = parse_project_phase(project_dir)
 
-    # 에이전트별 uptime 및 상태 계산
     for agent in agents:
         role = agent["role"]
         tmux_target = agent.get("tmux_target", "")
         win_name = tmux_target.split(":", 1)[1] if ":" in tmux_target else role
 
-        # uptime: system.log 부팅 시각 기준
+        # uptime
         boot_ts = boot_times.get(win_name) or boot_times.get(role)
         if boot_ts:
             agent["uptime_sec"] = int((now - boot_ts).total_seconds())
@@ -751,26 +732,33 @@ def collect(project_dir: str, session_name: str,
 
         if agent["status"] != "active":
             agent["display_status"] = "CLOSED"
+            agent["status_reason"] = ""
             continue
+
         pane_info = tmux_panes.get(win_name)
         if pane_info is None:
             agent["display_status"] = "ABSENT"
+            agent["status_reason"] = "윈도우 없음"
         elif _agent_process_alive(
             pane_info["pid"], pane_info.get("command", ""), agent.get("backend", "")
         ):
             if _agent_has_auth_block(
                 manager_state, session_name, win_name, agent.get("backend", "")
             ):
-                agent["display_status"] = "AUTH"
+                agent["display_status"] = "WAIT"
+                agent["status_reason"] = "인증 필요"
             else:
                 agent["display_status"] = "ALIVE"
+                agent["status_reason"] = ""
         else:
             agent["display_status"] = "CRASHED"
+            agent["status_reason"] = "프로세스 종료됨"
 
         task_info = assignments.get(win_name) or assignments.get(role)
         if task_info:
             agent["task_id"] = task_info["id"]
             agent["task_title"] = task_info["title"]
+            agent["task_background"] = task_info.get("background", "")
             agent["task_started"] = task_info.get("started")
             agent["task_stale"] = task_info.get("stale", False)
             report_info = resolve_task_report(
@@ -780,45 +768,30 @@ def collect(project_dir: str, session_name: str,
             )
             agent["report_path"] = report_info["path"]
             agent["report_status"] = report_info["status"]
+            if agent["display_status"] == "ALIVE":
+                agent["display_status"] = "ACTIVE"
+                agent["status_reason"] = ""
         else:
             agent["task_id"] = ""
             agent["task_title"] = ""
+            agent["task_background"] = ""
             agent["task_started"] = None
             agent["task_stale"] = False
             agent["report_path"] = ""
             agent["report_status"] = ""
             if agent["display_status"] == "ALIVE":
                 activity_ts = tmux_activity.get(win_name)
-                if activity_ts is None or (now_epoch - activity_ts) > _RECENT_ACTIVITY_WINDOW_SEC:
-                    agent["display_status"] = "READY"
+                if activity_ts and (now_epoch - activity_ts) < _RECENT_ACTIVITY_WINDOW_SEC:
+                    agent["display_status"] = "IDLE"
+                    agent["status_reason"] = "태스크 대기중"
+                else:
+                    agent["display_status"] = "IDLE"
+                    agent["status_reason"] = "유휴"
+
         agent["reboots"] = reboot_counts.get(role, 0)
         agent["win_name"] = win_name
 
-    waiting_reports: list[dict[str, Any]] = []
-    for agent in agents:
-        win_name = agent.get("win_name", agent["role"])
-        waiting_info = waiting_state.get(win_name) or waiting_state.get(agent["role"])
-        if not waiting_info:
-            continue
-        if agent.get("task_id"):
-            continue
-        if agent.get("display_status") not in ("ALIVE", "READY"):
-            continue
-        waiting_reports.append({
-            "agent": win_name,
-            "role": agent["role"],
-            "status": agent.get("display_status", ""),
-            "subject": waiting_info.get("subject", ""),
-            "task_ref": waiting_info.get("task_ref", ""),
-            "report_path": waiting_info.get("report_path", ""),
-            "ts": waiting_info.get("ts"),
-        })
-
-    waiting_reports.sort(
-        key=lambda item: item["ts"] or datetime.fromtimestamp(0, _KST),
-        reverse=True,
-    )
-
+    # 활성 태스크 요약 (에이전트별 중복 제거)
     active_task_summaries: list[dict[str, Any]] = []
     summary_map: dict[tuple[str, str], dict[str, Any]] = {}
     for agent in agents:
@@ -834,8 +807,10 @@ def collect(project_dir: str, session_name: str,
             summary = {
                 "task_id": task_id,
                 "task_title": task_title,
+                "task_background": agent.get("task_background", ""),
                 "assignees": [],
                 "started": agent.get("task_started"),
+                "report_status": agent.get("report_status", ""),
             }
             summary_map[key] = summary
             active_task_summaries.append(summary)
@@ -845,17 +820,37 @@ def collect(project_dir: str, session_name: str,
         existing_started = summary.get("started")
         if started and (existing_started is None or started < existing_started):
             summary["started"] = started
+        # report 상태: 가장 진행된 걸로 (final > draft > missing)
+        rs = agent.get("report_status", "")
+        if rs == "final" or (rs == "draft" and summary["report_status"] != "final"):
+            summary["report_status"] = rs
 
     active_task_summaries.sort(
         key=lambda item: item.get("started") or datetime.fromtimestamp(0, _KST),
     )
 
+    # 유저 대상 알림 수집
+    resolved_subjects = {
+        e["subject"]
+        for e in message_log
+        if e.get("kind") == "alert_resolve" and e.get("receiver") == "user"
+    }
+    alert_kinds = frozenset({"escalation", "need_input", "user_notice"})
+    user_alerts = [
+        e for e in message_log
+        if e.get("kind") in alert_kinds and e.get("receiver") == "user"
+        and e["subject"] not in resolved_subjects
+    ]
+    user_alerts.sort(key=lambda e: e["ts"], reverse=True)
+    user_alerts = user_alerts[:8]
+
     return {
         "now": now,
         "project": project_info,
+        "project_phase": project_phase,
         "agents": agents,
         "active_task_summaries": active_task_summaries,
-        "waiting_reports": waiting_reports,
+        "user_alerts": user_alerts,
         "monitor": monitor,
         "system_log": system_log,
         "message_log": message_log,
@@ -867,347 +862,294 @@ def collect(project_dir: str, session_name: str,
 # 렌더링
 # ──────────────────────────────────────────────
 
-_STATUS_STYLE = {
-    "ALIVE": ("● ALIVE", "bold green"),
-    "READY": ("○ READY", "cyan"),
-    "WAIT": ("◎ WAIT", "yellow"),
-    "AUTH": ("◎ AUTH", "yellow"),
-    "CRASHED": ("✗ CRASH", "bold red"),
-    "ABSENT": ("— ABSENT", "red"),
-    "CLOSED": ("— CLOSED", "dim"),
+_STATUS_DISPLAY = {
+    "ACTIVE":  ("● ACTIVE", "bold green"),
+    "IDLE":    ("○ IDLE",   "dim"),
+    "WAIT":    ("◎ WAIT",   "yellow"),
+    "CRASHED": ("✗ CRASH",  "bold red"),
+    "ABSENT":  ("— ABSENT", "red"),
+    "CLOSED":  ("— CLOSED", "dim"),
 }
 
-_REPORT_STYLE = {
-    "final": ("FINAL", "green"),
-    "draft": ("DRAFT", "yellow"),
-    "missing": ("MISS", "red"),
-    "unknown": ("UNK", "yellow"),
+_REPORT_DISPLAY = {
+    "final":   ("✓ FINAL", "green"),
+    "draft":   ("  DRAFT", "yellow"),
+    "missing": ("",        "dim"),
+    "unknown": ("  ???",   "yellow"),
 }
+
+
+def _time_ago(ts: datetime) -> str:
+    """시간을 '3m', '1h 5m' 등으로 표시."""
+    diff = _now_kst() - ts
+    secs = int(diff.total_seconds())
+    if secs < 0:
+        return "now"
+    if secs < 60:
+        return f"{secs}s"
+    m = secs // 60
+    if m < 60:
+        return f"{m}m"
+    h = m // 60
+    rm = m % 60
+    return f"{h}h {rm}m"
 
 
 def _render_header(state: dict) -> Panel:
+    """프로젝트 컨텍스트 + 모니터 상태 헤더."""
     proj = state["project"]
     now = state["now"]
     mon = state["monitor"]
-    name = proj.get("name", "?")
+    phase = state.get("project_phase", "")
+
+    # 첫째 줄: 프로젝트명 + 모드 + 모니터 + 시간
+    line1 = Text()
+    line1.append("  WHIPLASH", style="bold white")
+    line1.append(" › ", style="dim")
+    line1.append(proj.get("name", "?"), style="bold cyan")
+    line1.append("  ", style="")
+
     mode = proj.get("mode", "solo")
-    loop_mode = proj.get("loop_mode", "guided")
-    time_str = now.strftime("%Y-%m-%d %H:%M:%S")
+    loop = proj.get("loop_mode", "guided")
+    line1.append(mode, style="bold magenta")
+    line1.append("/", style="dim")
+    line1.append(loop, style="bold yellow" if loop == "ralph" else "bold green")
+    line1.append("  ", style="")
 
-    title = Text()
-    title.append("  WHIPLASH", style="bold white")
-    title.append("  ")
-    title.append(name, style="bold cyan")
-    title.append("  ")
-    title.append(mode, style="bold magenta")
-    title.append("/", style="bold white")
-    title.append(loop_mode, style="bold yellow" if loop_mode == "ralph" else "bold green")
-    title.append("  ")
-
-    # monitor 상태 통합
+    # monitor
     if mon["alive"]:
-        title.append("● Mon", style="green")
+        line1.append("● Mon", style="green")
         if mon["heartbeat_age"] is not None:
             hb_style = "green" if mon["heartbeat_age"] < 90 else "red"
-            title.append(f" {mon['heartbeat_age']}s", style=hb_style)
+            line1.append(f" {mon['heartbeat_age']}s", style=hb_style)
     elif mon["pid"]:
-        title.append("✗ Mon", style="red")
+        line1.append("✗ Mon", style="red")
     else:
-        title.append("— Mon", style="dim")
+        line1.append("— Mon", style="dim")
 
     if mon["queued"] > 0:
-        title.append(f"  Q:{mon['queued']}", style="yellow")
+        line1.append(f"  Q:{mon['queued']}", style="yellow")
 
-    # 시간 우정렬 — 실제 렌더된 텍스트 길이 기반
-    current_len = len(title.plain)
-    padding = max(1, 72 - current_len - len(time_str))
-    title.append(" " * padding)
-    title.append(time_str, style="dim")
-    return Panel(title, style="bold blue")
+    # 시간 우정렬
+    time_str = now.strftime("%H:%M:%S")
+    current_len = len(line1.plain)
+    padding = max(1, 76 - current_len - len(time_str))
+    line1.append(" " * padding)
+    line1.append(time_str, style="dim")
 
+    # 둘째 줄: 프로젝트 단계
+    line2 = Text()
+    if phase:
+        line2.append("  ", style="")
+        line2.append(phase, style="italic dim")
 
-def _render_agents(state: dict) -> Table:
-    table = Table(
-        show_header=True,
-        header_style="bold",
-        border_style="dim",
-        pad_edge=True,
-        expand=True,
-    )
-    table.add_column("Role", no_wrap=True)
-    table.add_column("Status", no_wrap=True)
-    table.add_column("Task", ratio=2)
-    table.add_column("Time", no_wrap=True, justify="right")
-    table.add_column("Rpt", no_wrap=True)
-    table.add_column("R", no_wrap=True, justify="right")
+    body = Text()
+    body.append_text(line1)
+    body.append("\n")
+    body.append_text(line2)
 
-    # CLOSED 제외
-    active_agents = [a for a in state["agents"] if a.get("display_status") != "CLOSED"]
-
-    if not active_agents:
-        msg = "⏳ Booting..." if state.get("session_exists") else "(No session)"
-        table.add_row(msg, "", "", "", "", "")
-        return table
-
-    # 역할 우선순위 정렬: manager → discussion → systems-engineer → researcher → developer → monitoring
-    _ROLE_ORDER = {
-        "manager": 0,
-        "discussion": 1,
-        "systems-engineer": 2,
-        "researcher": 3,
-        "developer": 4,
-        "monitoring": 5,
-    }
-    active_agents.sort(key=lambda a: (
-        _ROLE_ORDER.get(a["role"], 99),
-        a.get("backend", ""),  # 같은 role 내: claude < codex
-    ))
-
-    # 듀얼 모드 감지: 같은 role이 2개 이상이면 backend 표시
-    role_counts = Counter(a["role"] for a in active_agents)
-    is_dual = any(c > 1 for c in role_counts.values())
-
-    for agent in active_agents:
-        ds = agent.get("display_status", "CLOSED")
-        label, style = _STATUS_STYLE.get(ds, ("?", ""))
-
-        # 태스크 작업 시간: ALIVE + 태스크 있으면 할당 시각부터 경과, 아니면 "--"
-        task_started = agent.get("task_started")
-        if ds in ("ALIVE",) and task_started:
-            elapsed = int((state["now"] - task_started).total_seconds())
-            h, rem = divmod(elapsed, 3600)
-            m = rem // 60
-            time_str = f"{h}h {m}m" if h > 0 else f"{m}m"
-        else:
-            time_str = "--"
-
-        reboot_str = str(agent["reboots"]) if agent["reboots"] > 0 else ""
-
-        # 듀얼 모드에서 같은 role이 복수면 backend 구분 표시
-        win_name = agent.get("win_name", agent["role"])
-        if is_dual and role_counts[agent["role"]] > 1:
-            role_label = win_name  # e.g. developer-claude
-        else:
-            role_label = agent["role"]
-
-        # 태스크 표시: 제목이 있으면 "TASK-NNN 제목", 없으면 "--"
-        task_id = agent.get("task_id", "")
-        task_title = agent.get("task_title", "")
-        if task_id and task_title:
-            task_str = f"{task_id} {task_title}"
-        elif task_id:
-            task_str = task_id
-        else:
-            task_str = "--"
-
-        task_stale = agent.get("task_stale", False)
-        report_status = agent.get("report_status", "")
-        report_label, report_style = _REPORT_STYLE.get(report_status, ("--", "dim"))
-        table.add_row(
-            Text(role_label),
-            Text(label, style=style),
-            Text(task_str, style="dim" if task_stale else ""),
-            Text(time_str),
-            Text(report_label, style=report_style),
-            Text(reboot_str, style="yellow" if agent["reboots"] > 0 else ""),
-        )
-    return table
+    return Panel(body, style="blue", height=4)
 
 
-def _render_active_tasks(state: dict) -> Panel | None:
-    summaries = state.get("active_task_summaries", [])
-    if not summaries:
-        return None
-
-    table = Table(
-        show_header=True,
-        header_style="bold",
-        border_style="dim",
-        pad_edge=True,
-    )
-    table.add_column("Task", min_width=20, max_width=38)
-    table.add_column("Assignee", min_width=14, max_width=26)
-    table.add_column("Elapsed", min_width=7, justify="right")
-
-    now = state["now"]
-    for entry in summaries[:6]:
-        task_title = entry.get("task_title", "")
-        task_label = entry.get("task_id", "")
-        if task_title:
-            task_label = f"{task_label} {task_title}"
-        assignees = ", ".join(entry.get("assignees", []))
-        started = entry.get("started")
-        if started:
-            elapsed = int((now - started).total_seconds())
-        else:
-            elapsed = -1
-        table.add_row(
-            Text(task_label or "--"),
-            Text(assignees or "--"),
-            Text(_format_elapsed_compact(elapsed), style="dim"),
-        )
-
-    return Panel(table, title="TASKS", title_align="left", border_style="cyan")
-
-
-_ALERT_KINDS = frozenset({"escalation", "need_input", "user_notice"})
-
-
-def _render_user_alerts(state: dict) -> Panel | None:
-    """유저 대상 알림 패널. alert_resolve로 해결된 건 숨김."""
-    # resolve된 subject 수집
-    resolved_subjects = {
-        e["subject"]
-        for e in state["message_log"]
-        if e.get("kind") == "alert_resolve" and e.get("receiver") == "user"
-    }
-    alerts = [
-        e for e in state["message_log"]
-        if e.get("kind") in _ALERT_KINDS and e.get("receiver") == "user"
-        and e["subject"] not in resolved_subjects
-    ]
+def _render_alerts(alerts: list[dict]) -> Panel | None:
+    """유저 조치가 필요한 알림. 없으면 None."""
     if not alerts:
         return None
-    # 최근 10개, 시간순 역정렬
-    alerts.sort(key=lambda e: e["ts"], reverse=True)
-    alerts = alerts[:10]
 
     table = Table(
-        show_header=True,
-        header_style="bold",
-        border_style="dim",
+        show_header=False,
+        border_style="red",
         pad_edge=True,
+        expand=True,
+        show_edge=False,
     )
-    table.add_column("Time", min_width=10)
-    table.add_column("", min_width=1)  # icon
-    table.add_column("From", min_width=8)
-    table.add_column("Subject", min_width=30)
+    table.add_column("icon", width=2)
+    table.add_column("subject", ratio=3)
+    table.add_column("from", min_width=12)
+    table.add_column("time", min_width=6, justify="right")
 
     for entry in alerts:
         kind = entry.get("kind", "")
         if kind == "escalation":
-            icon = Text("!", style="bold red")
+            icon = Text("!!", style="bold red")
         elif kind == "user_notice":
-            icon = Text("i", style="bold cyan")
+            icon = Text(">>", style="bold cyan")
         else:
-            icon = Text("?", style="bold yellow")
+            icon = Text("??", style="bold yellow")
+
         table.add_row(
-            Text(_timeline_time(entry["ts"]), style="dim"),
             icon,
-            Text(entry["sender"]),
-            Text(entry["subject"]),
+            Text(entry["subject"], style="bold"),
+            Text(entry["sender"], style="dim"),
+            Text(_time_ago(entry["ts"]), style="dim"),
         )
-    return Panel(table, title="ALERTS", title_align="left", border_style="red")
-
-
-def _render_waiting_reports(state: dict) -> Panel | None:
-    waiting = state.get("waiting_reports", [])
-    if not waiting:
-        return None
-
-    entry = waiting[0]
-    status = entry.get("status", "")
-    status_label, status_style = _STATUS_STYLE.get(status, ("?", ""))
-    subject = entry.get("subject") or entry.get("task_ref") or "--"
-    task_ref = entry.get("task_ref") or "--"
-    agent = entry.get("agent", "")
-    ts = entry.get("ts")
-
-    body = Text()
-    body.append(_timeline_time(ts) if ts else "--", style="dim")
-    body.append("  |  ", style="dim")
-    body.append(subject, style="bold")
-    body.append("\n")
-    body.append(agent, style="")
-    body.append("  |  ", style="dim")
-    body.append(status_label, style=status_style)
-    if task_ref and task_ref != "--":
-        body.append("  |  ", style="dim")
-        body.append(task_ref, style="dim")
 
     return Panel(
-        body,
-        title="WAITING",
+        table,
+        title="⚠ 조치 필요",
+        title_align="left",
+        border_style="bold red",
+    )
+
+
+def _render_tasks(state: dict) -> Panel:
+    """활성 태스크 카드 — hero 섹션."""
+    summaries = state.get("active_task_summaries", [])
+    now = state["now"]
+
+    if not summaries:
+        return Panel(
+            Text("  활성 태스크 없음", style="dim"),
+            title="TASKS",
+            title_align="left",
+            border_style="cyan",
+        )
+
+    lines = Text()
+    for i, entry in enumerate(summaries[:8]):
+        if i > 0:
+            lines.append("\n")
+
+        task_id = entry.get("task_id", "")
+        task_title = entry.get("task_title", "")
+        background = entry.get("task_background", "")
+        assignees = entry.get("assignees", [])
+        started = entry.get("started")
+        report_status = entry.get("report_status", "")
+
+        # elapsed
+        if started:
+            elapsed = _format_elapsed(int((now - started).total_seconds()))
+        else:
+            elapsed = "--"
+
+        # 첫줄: task id + title + elapsed
+        lines.append(f"  ▸ {task_id}", style="bold cyan")
+        if task_title:
+            lines.append(f"  {task_title}", style="bold")
+        # elapsed 우측
+        lines.append(f"  ({elapsed})", style="dim")
+
+        # report status
+        if report_status:
+            rl, rs = _REPORT_DISPLAY.get(report_status, ("", "dim"))
+            if rl:
+                lines.append(f"  {rl}", style=rs)
+
+        lines.append("\n")
+
+        # 둘째줄: 배경
+        if background:
+            lines.append(f"    {background}", style="dim italic")
+            lines.append("\n")
+
+        # 셋째줄: 담당 에이전트
+        lines.append("    ", style="")
+        for j, assignee in enumerate(assignees):
+            if j > 0:
+                lines.append("  ", style="")
+            lines.append(f"● {assignee}", style="green")
+        lines.append("\n")
+
+    return Panel(
+        lines,
+        title="TASKS",
         title_align="left",
         border_style="cyan",
     )
 
 
+def _render_agents(state: dict) -> Panel:
+    """에이전트 상태 테이블 — 간결하게."""
+    table = Table(
+        show_header=True,
+        header_style="bold dim",
+        border_style="dim",
+        pad_edge=True,
+        expand=True,
+        show_edge=False,
+    )
+    table.add_column("Agent", no_wrap=True, min_width=18)
+    table.add_column("Status", no_wrap=True, min_width=10)
+    table.add_column("Info", no_wrap=True, ratio=1, overflow="ellipsis")
+    table.add_column("Uptime", no_wrap=True, justify="right", min_width=7)
 
-def _event_icon(level: str, message: str) -> tuple[str, str]:
-    """이벤트 메시지에 맞는 아이콘과 스타일 반환."""
-    msg_lower = message.lower()
-    # Check for specific event keywords
-    for ev in _ERROR_EVENTS:
-        kw = ev.replace("_", " ")
-        if kw in msg_lower or ev in msg_lower:
-            return "✗", "red"
-    for ev in _WARN_EVENTS:
-        kw = ev.replace("_", " ")
-        if kw in msg_lower or ev in msg_lower:
-            return "⚠", "yellow"
-    for ev in _SUCCESS_EVENTS:
-        kw = ev.replace("_", " ")
-        if kw in msg_lower or ev in msg_lower:
-            return "✓", "green"
+    active_agents = [a for a in state["agents"] if a.get("display_status") != "CLOSED"]
 
-    # Fallback: use log level
-    if level == "error":
-        return "✗", "red"
-    if level == "warn":
-        return "⚠", "yellow"
-    return "●", ""
+    if not active_agents:
+        msg = "⏳ 부팅중..." if state.get("session_exists") else "(세션 없음)"
+        table.add_row(msg, "", "", "")
+        return Panel(table, title="AGENTS", title_align="left", border_style="dim")
+
+    # 역할 우선순위 정렬
+    _ROLE_ORDER = {
+        "manager": 0, "discussion": 1, "systems-engineer": 2,
+        "researcher": 3, "developer": 4, "monitoring": 5,
+    }
+    active_agents.sort(key=lambda a: (
+        _ROLE_ORDER.get(a["role"], 99),
+        a.get("backend", ""),
+    ))
+
+    # 듀얼 감지
+    role_counts = Counter(a["role"] for a in active_agents)
+    is_dual = any(c > 1 for c in role_counts.values())
+
+    for agent in active_agents:
+        ds = agent.get("display_status", "CLOSED")
+        label, style = _STATUS_DISPLAY.get(ds, ("?", ""))
+
+        # 이름
+        win_name = agent.get("win_name", agent["role"])
+        if is_dual and role_counts[agent["role"]] > 1:
+            name_label = win_name
+        else:
+            name_label = agent["role"]
+
+        # 정보열: 태스크 or 상태 설명
+        task_id = agent.get("task_id", "")
+        task_title = agent.get("task_title", "")
+        status_reason = agent.get("status_reason", "")
+
+        if task_id and task_title:
+            # 제목을 적당히 잘라서 표시
+            short_title = task_title[:25] + ("…" if len(task_title) > 25 else "")
+            info_str = f"{task_id} {short_title}"
+            info_style = ""
+        elif task_id:
+            info_str = task_id
+            info_style = ""
+        elif status_reason:
+            info_str = status_reason
+            info_style = "dim italic"
+        else:
+            info_str = ""
+            info_style = "dim"
+
+        # Uptime
+        uptime = agent.get("uptime_sec", -1)
+        uptime_str = _format_elapsed(uptime) if uptime >= 0 else "--"
+
+        table.add_row(
+            Text(name_label),
+            Text(label, style=style),
+            Text(info_str, style=info_style),
+            Text(uptime_str, style="dim"),
+        )
+
+    return Panel(table, title="AGENTS", title_align="left", border_style="dim")
 
 
-# Korean keyword → event type mapping for icon detection
-_KR_WARN_KEYWORDS = ["비활성 감지", "재확인", "크래시 감지", "세션 부재", "좀비"]
-_KR_SUCCESS_KEYWORDS = ["부팅", "부팅 완료", "활동 재개", "리프레시 완료",
-                         "스폰", "전달", "리부팅 성공", "복귀 감지"]
-_KR_ERROR_KEYWORDS = ["부팅 실패", "리부팅 실패", "한도 초과", "모니터 종료"]
-
-
-def _event_icon_kr(level: str, message: str) -> tuple[str, str]:
-    """한국어 메시지 기반 아이콘."""
-    for kw in _KR_ERROR_KEYWORDS:
-        if kw in message:
-            return "✗", "red"
-    for kw in _KR_WARN_KEYWORDS:
-        if kw in message:
-            return "⚠", "yellow"
-    for kw in _KR_SUCCESS_KEYWORDS:
-        if kw in message:
-            return "✓", "green"
-    return _event_icon(level, message)
-
-
+# idle 이벤트 필터
 _IDLE_FILTER_EVENTS = frozenset({
     "idle_detected", "idle_recheck", "idle_cleared",
 })
-
 _IDLE_FILTER_KR = ["비활성 감지", "재확인 예약", "비활성 재확인", "활동 재개"]
 
 _TASK_PATH_RE = re.compile(r'(?:task=|파일=)\S*/?(TASK-\d{3})\S*')
 
-_ROLE_FULL = {
-    "mgr": "manager", "dis": "discussion", "dev": "developer", "res": "researcher", "sys": "systems-engineer",
-    "mon": "monitoring", "orc": "orchestrator",
-}
-
-
-def _full_name(name: str) -> str:
-    return _ROLE_FULL.get(name, name)
-
-
-def _simplify_system_message(message: str) -> str:
-    """풀 경로를 TASK-NNN만 추출하여 축약."""
-    m = _TASK_PATH_RE.search(message)
-    if m:
-        message = _TASK_PATH_RE.sub(m.group(1), message)
-    return message
-
 
 def _is_idle_event(message: str) -> bool:
-    """idle_detected/idle_recheck/idle_cleared 이벤트인지 확인."""
     msg_lower = message.lower().replace(" ", "_")
     for ev in _IDLE_FILTER_EVENTS:
         if ev in msg_lower:
@@ -1218,191 +1160,105 @@ def _is_idle_event(message: str) -> bool:
     return False
 
 
-def _classify_system_event(message: str) -> tuple[str, str]:
-    """시스템 로그 메시지 → (이벤트 유형 라벨, 스타일)."""
-    checks = [
-        ("부팅 실패", "boot fail", "red"),
-        ("리부팅 실패", "reboot fail", "red"),
-        ("한도 초과", "limit hit", "red"),
-        ("모니터 종료", "monitor exit", "red"),
-        ("크래시 감지", "crash", "red"),
-        ("좀비", "zombie", "red"),
-        ("세션 부재", "absent", "yellow"),
-        ("plan mode 감지", "plan mode", "yellow"),
-        ("듀얼 태스크 전달", "task dispatch", ""),
-        ("태스크 전달", "task dispatch", ""),
-        ("부팅 완료", "boot", ""),
-        ("리부팅 성공", "reboot", ""),
-        ("스폰", "spawn", ""),
-        ("리프레시", "refresh", ""),
-        ("활동 재개", "resumed", ""),
-        ("모니터 시작", "monitor", ""),
-    ]
-    for kw, label, style in checks:
-        if kw in message:
-            return label, style
-    return "system", ""
+def _summarize_event(message: str) -> str:
+    """시스템 로그 메시지를 짧게 요약."""
+    m = _TASK_PATH_RE.search(message)
+    if m:
+        message = _TASK_PATH_RE.sub(m.group(1), message)
+    return message[:70]
 
 
-def _timeline_time(ts: datetime) -> str:
-    """3분 이내면 'Nm Ns', 아니면 HH:MM."""
-    diff = _now_kst() - ts
-    secs = int(diff.total_seconds())
-    if secs < 0:
-        return "now"
-    if secs < 60:
-        return f"{secs}s"
-    if secs < 180:
-        m, s = divmod(secs, 60)
-        return f"{m}m{s}s"
-    return ts.strftime("%H:%M")
+def _render_recent(state: dict) -> Panel:
+    """최근 주요 이벤트 5줄 요약."""
+    merged: list[tuple[datetime, str]] = []
 
-
-def _render_timeline(state: dict) -> Table:
-    table = Table(
-        show_header=True,
-        header_style="bold",
-        border_style="dim",
-        expand=True,
-    )
-    table.add_column("Time", no_wrap=True)
-    table.add_column("Type", no_wrap=True)
-    table.add_column("Event", ratio=1)
-
-    # (ts, type_label, type_style, event_text)
-    merged: list[tuple[datetime, str, str, str]] = []
-
-    # system.log
     for entry in state["system_log"]:
         if _is_idle_event(entry["message"]):
             continue
-        type_label, type_style = _classify_system_event(entry["message"])
-        text = _simplify_system_message(entry["message"])
-        merged.append((entry["ts"], type_label, type_style, text))
+        merged.append((entry["ts"], _summarize_event(entry["message"])))
 
-    # message.log
     for entry in state["message_log"]:
-        st = entry["status"]
-        if st == "delivered":
-            type_label, type_style = "msg", ""
-        elif st == "skipped":
-            type_label, type_style = "skip", "yellow"
-        elif st == "queued":
-            type_label, type_style = "queue", "yellow"
-        else:
-            type_label, type_style = "msg", ""
-        sender = _abbr(entry["sender"])
-        receiver = _abbr(entry["receiver"])
+        sender = entry["sender"]
+        receiver = entry["receiver"]
         subject = entry["subject"]
-        tm = _TASK_PATH_RE.search(subject)
-        if tm:
-            subject = _TASK_PATH_RE.sub(tm.group(1), subject)
-        text = f'{sender}→{receiver} {subject}'
-        merged.append((entry["ts"], type_label, type_style, text))
+        m = _TASK_PATH_RE.search(subject)
+        if m:
+            subject = _TASK_PATH_RE.sub(m.group(1), subject)
+        text = f"{sender}→{receiver} {subject}"
+        merged.append((entry["ts"], text))
 
     merged.sort(key=lambda x: x[0])
-    recent = merged[-12:]
+    recent = merged[-6:]
+
+    table = Table(
+        show_header=False,
+        border_style="dim",
+        pad_edge=False,
+        expand=True,
+        show_edge=False,
+    )
+    table.add_column("time", no_wrap=True, width=5, style="dim")
+    table.add_column("event", no_wrap=True, ratio=1, overflow="ellipsis")
 
     if not recent:
-        table.add_row("--", "--", "(로그 없음)")
-        return table
+        table.add_row("--", "(이벤트 없음)")
+    else:
+        for ts, text in reversed(recent):
+            table.add_row(ts.strftime("%H:%M"), text)
 
-    for ts, type_label, type_style, text in reversed(recent):
-        table.add_row(
-            Text(_timeline_time(ts), style="dim"),
-            Text(type_label, style=type_style),
-            Text(text),
-        )
-    return table
+    return Panel(table, title="RECENT", title_align="left", border_style="dim")
 
 
 def _render_footer(interval: int) -> Text:
     text = Text()
     text.append(" Ctrl-C to exit", style="dim")
-    text.append("  |  ", style="dim")
+    text.append("  │  ", style="dim")
     text.append(f"Refresh: {interval}s", style="dim")
     return text
 
 
 def render(state: dict, interval: int) -> Layout:
-    """전체 대시보드 렌더링 — Layout 그리드."""
+    """전체 대시보드 렌더링."""
+    alerts = state.get("user_alerts", [])
+    active_agents = [a for a in state.get("agents", []) if a.get("display_status") != "CLOSED"]
+
+    # 동적 높이 계산
+    alerts_height = min(len(alerts) + 3, 8) if alerts else 0
+    n_agents = len(active_agents)
+    # agent table: header(1) + rows + panel borders(2) + title(1)
+    bottom_height = max(9, n_agents + 4)
+
     layout = Layout()
 
-    # 에이전트 수 기반으로 body 높이 결정
-    n_agents = len([a for a in state.get("agents", []) if a.get("display_status") != "CLOSED"])
-    body_height = max(12, n_agents + 5)  # 헤더+테두리+여유
+    # 알림 유무에 따라 레이아웃 구성
+    sections = [
+        Layout(name="header", size=4),
+    ]
+    if alerts_height > 0:
+        sections.append(Layout(name="alerts", size=alerts_height))
+    sections.append(Layout(name="tasks"))  # flexible
+    sections.append(Layout(name="bottom", size=bottom_height))
+    sections.append(Layout(name="footer", size=1))
 
-    # bottom 컨텐츠 높이 계산
-    n_tasks = len(state.get("active_tasks", []))
-    n_alerts = len(state.get("user_alerts", []))
-    n_waiting = len(state.get("waiting_reports", []))
-    left_height = n_tasks + 4  # tasks 테이블 헤더+테두리
-    right_height = n_alerts + 4  # alerts 테이블 헤더+테두리
-    if n_waiting > 0:
-        right_height += n_waiting + 5  # waiting 패널 (내용+상하테두리+제목줄+여유)
-    bottom_height = max(7, max(left_height, right_height))
+    layout.split_column(*sections)
 
-    layout.split_column(
-        Layout(name="header", size=3),
-        Layout(name="body", size=body_height),
-        Layout(name="bottom", size=bottom_height),
-        Layout(name="footer", size=1),
-    )
-
-    # body: 좌측 에이전트 테이블, 우측 타임라인 (2:1)
-    layout["body"].split_row(
-        Layout(name="agents", ratio=2),
-        Layout(name="timeline", ratio=1),
-    )
-
-    # bottom: 좌측 태스크, 우측 알림 (1:1)
+    # bottom: 에이전트 좌측(넓게), 최근 우측(좁게)
     layout["bottom"].split_row(
-        Layout(name="tasks"),
-        Layout(name="alerts"),
+        Layout(name="agents", ratio=2),
+        Layout(name="recent", ratio=1),
     )
 
-    # 헤더
+    # 렌더링
     layout["header"].update(_render_header(state))
 
-    # 에이전트 테이블
-    layout["agents"].update(
-        Panel(_render_agents(state), title="AGENTS", title_align="left", border_style="dim")
-    )
+    if alerts_height > 0:
+        alerts_panel = _render_alerts(alerts)
+        if alerts_panel:
+            layout["alerts"].update(alerts_panel)
 
-    # 타임라인
-    layout["timeline"].update(
-        Panel(_render_timeline(state), title="TIMELINE", title_align="left", border_style="dim")
-    )
-
-    # 하단 좌측: 활성 태스크 (항상 표시, 없으면 placeholder)
-    tasks_panel = _render_active_tasks(state)
-    if tasks_panel is None:
-        tasks_panel = Panel(
-            Text("대기 중 태스크 없음", style="dim"),
-            title="TASKS", title_align="left",
-            border_style="dim",
-        )
-    layout["tasks"].update(tasks_panel)
-
-    # 하단 우측: 유저 알림 + waiting (항상 표시, 둘 다 있으면 합침)
-    alerts_panel = _render_user_alerts(state)
-    waiting_panel = _render_waiting_reports(state)
-    if alerts_panel is not None and waiting_panel is not None:
-        layout["alerts"].update(Group(alerts_panel, waiting_panel))
-    elif alerts_panel is not None:
-        layout["alerts"].update(alerts_panel)
-    elif waiting_panel is not None:
-        layout["alerts"].update(waiting_panel)
-    else:
-        layout["alerts"].update(
-            Panel(
-                Text("알림 없음", style="dim"),
-                title="ALERTS", title_align="left",
-                border_style="dim",
-            )
-        )
-
-    # 푸터
+    layout["tasks"].update(_render_tasks(state))
+    layout["agents"].update(_render_agents(state))
+    layout["recent"].update(_render_recent(state))
     layout["footer"].update(_render_footer(interval))
 
     return layout
@@ -1434,12 +1290,10 @@ def main() -> None:
         print(f"프로젝트 디렉토리 없음: {project_dir}", file=sys.stderr)
         sys.exit(1)
 
-    # 프로젝트 정보 (첫 로드만)
     project_info = parse_project_md(project_dir)
     if not project_info["name"]:
         project_info["name"] = project
 
-    # Ctrl-C 깨끗한 종료
     signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
 
     console = _build_console()
@@ -1452,8 +1306,11 @@ def main() -> None:
     ) as live:
         while True:
             time.sleep(interval)
-            state = collect(project_dir, session_name, project_info)
-            live.update(render(state, interval))
+            try:
+                state = collect(project_dir, session_name, project_info)
+                live.update(render(state, interval))
+            except Exception:
+                pass  # 수집/렌더 오류 무시 — 다음 사이클에서 재시도
 
 
 if __name__ == "__main__":
