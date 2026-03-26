@@ -732,6 +732,7 @@ drain_message_queue() {
       continue
     fi
 
+    local notification
     notification="$(build_notification "$msg_from" "$msg_to" "$msg_kind" "$msg_priority" "$msg_subject" "$msg_content")"
 
     local backend delivery_state
@@ -771,7 +772,18 @@ python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor monitor_started "$SESSION"
 # (메인 루프 첫 반복까지 최대 HEALTH_CHECK_INTERVAL초 지연 방지)
 drain_message_queue
 
+MONITOR_PARENT_PID="$$"
+
 while true; do
+  # C-01 대응: wrapper 사망 시 orphan 자가 감지 → 깔끔한 exit
+  # (wrapper가 죽으면 PPID가 1/init이 됨. 정상 exit 후 monitor-check이 재시작)
+  local_ppid="$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ' || echo "1")"
+  if [ "$local_ppid" = "1" ]; then
+    python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor monitor_orphaned "$SESSION" \
+      --detail reason="wrapper-dead, PPID=1" || true
+    exit 1
+  fi
+
   check_agent_windows
   check_agent_health
   check_claude_plan_mode
