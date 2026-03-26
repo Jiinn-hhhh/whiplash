@@ -40,9 +40,11 @@ whiplash_tmux_attach_command() {
   printf 'tmux attach -t %s\n' "$session_name"
 }
 
+# 이하 3개 함수: 864de78에서 소켓 격리 제거 후 모두 `command tmux "$@"` 동일.
+# integration-test.sh 등에서 호출하므로 시그니처 유지. 첫 파라미터는 하위 호환용(무시).
+
 whiplash_tmux_run_on_socket() {
-  local socket_name="${1:-}"
-  shift
+  shift  # socket_name (legacy, 무시)
   command tmux "$@"
 }
 
@@ -51,9 +53,8 @@ whiplash_tmux_run_default() {
 }
 
 whiplash_tmux_run_for_project() {
-  local project="$1"
-  shift
-  whiplash_tmux_run_on_socket "$(whiplash_tmux_socket_name "$project")" "$@"
+  shift  # project (legacy, 무시)
+  command tmux "$@"
 }
 
 tmux() {
