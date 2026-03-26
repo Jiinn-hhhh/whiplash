@@ -408,6 +408,15 @@ handle_session_epoch_transition() {
     return 0
   fi
 
+  # legacy 포맷 감지: 이전 #{session_id} 기반 "$N|..." → 현재 #{session_name} 기반으로 전환
+  # 포맷 불일치는 진짜 epoch 변경이 아니므로 무해하게 overwrite
+  if [[ "$previous_epoch" == \$* ]] && [[ "$current_epoch" != \$* ]]; then
+    runtime_set_manager_state "$PROJECT" "session_epoch" "$current_epoch"
+    python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor session_epoch_format_migrated "$SESSION" \
+      --detail previous="$previous_epoch" current="$current_epoch" || true
+    return 0
+  fi
+
   if [ "$previous_epoch" != "$current_epoch" ]; then
     python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor session_epoch_changed "$SESSION" \
       --detail previous="$previous_epoch" current="$current_epoch" || true
