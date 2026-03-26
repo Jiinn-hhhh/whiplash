@@ -3267,6 +3267,7 @@ cmd_boot() {
   sess="$(session_name "$project")"
 
   echo "=== ${project} 프로젝트 부팅 (mode: ${exec_mode}, loop: ${loop_mode}) ==="
+  runtime_set_manager_state "$project" "project_booting" "$(date +%s)"
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator project_boot_start "$project" --detail mode="$exec_mode" loop="$loop_mode" || true
 
   # 1. sessions.md 초기화 (멱등 — boot-manager에서 이미 생성했으면 건너뜀)
@@ -3380,6 +3381,7 @@ cmd_boot() {
   echo "monitor.sh 시작됨 (PID: $monitor_pid, 자동 재시작 wrapper)"
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator monitor_start monitor --detail pid="$monitor_pid" || true
 
+  runtime_clear_manager_state "$project" "project_booting" || true
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator project_boot_end "$project" || true
   set_project_stage "$project" "active"
   echo "=== 부팅 완료 ==="
