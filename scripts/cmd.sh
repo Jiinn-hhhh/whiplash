@@ -2457,7 +2457,12 @@ build_onboarding_analysis_note() {
   local project="$1"
   cat <<EOF
 
-[Onboarding]
+[Onboarding — Entry Branch]
+- 먼저 projects/ 디렉토리를 확인해라.
+- 기존 프로젝트가 있으면 목록을 보여주며 유저에게 물어라: "기존 프로젝트를 이어할까, 새 프로젝트를 시작할까?"
+- 유저가 기존 프로젝트를 선택하면 해당 project.md를 읽고 이어가라. 새 프로젝트를 선택하면 아래 설계 절차를 진행해라.
+
+[Onboarding — 프로젝트 설계]
 - 지금은 프로젝트 설계 단계다. 기존 코드/레포 분석, project.md 작성/보강, 팀 구성 확정까지 진행해라.
 - 필요하면 아래 명령으로 researcher 또는 systems-engineer 보조 에이전트를 띄울 수 있다:
   bash "$TOOLS_DIR/cmd.sh" spawn researcher onboarding-research ${project} "기존 레포/문서 분석 보조"
@@ -2659,12 +2664,8 @@ boot_single_agent() {
     return 1
   fi
 
-  # sessions.md에는 visible boot prompt 전달 이후에만 기록한다.
-  add_session_row "$project" "$role" "$session_id" "$tmux_target" "$model" "claude"
-
   if ! submit_tmux_prompt_when_ready "$tmux_target" "$boot_msg" "${window_name}-boot"; then
     echo "Warning: ${window_name} 온보딩 프롬프트 전달 실패." >&2
-    mark_window_status "$project" "$window_name" "active" "crashed"
     kill_windows_by_name "$sess" "$window_name"
     python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot_fail "$window_name" --detail reason="온보딩 프롬프트 전달 실패" || true
     return 1
@@ -2672,13 +2673,15 @@ boot_single_agent() {
   if [ -n "$pending_task" ] && ! wait_for_visible_task_prompt "$tmux_target" "$pending_task" 4 1; then
     if ! submit_tmux_prompt_when_ready "$tmux_target" "$boot_msg" "${window_name}-boot-redeliver" 4 20 1; then
       echo "Warning: ${window_name} task prompt 재전달 실패." >&2
-      mark_window_status "$project" "$window_name" "active" "crashed"
       kill_windows_by_name "$sess" "$window_name"
       python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot_fail "$window_name" --detail reason="task prompt 재전달 실패" || true
       return 1
     fi
     send_task_visibility_reminder "$tmux_target" "$pending_task" "${window_name}-task-reminder" || true
   fi
+
+  # sessions.md는 boot prompt 전달 성공 후에만 기록 (2-A: phantom active 방지)
+  add_session_row "$project" "$role" "$session_id" "$tmux_target" "$model" "claude"
 
   clear_recovered_agent_runtime_state "$project" "$window_name"
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot "$window_name" --detail session="$session_id" || true
@@ -2752,7 +2755,22 @@ boot_codex_agent() {
   tmux new-window -d -t "$sess" -n "$window_name"
   tmux send-keys -t "$tmux_target" \
     "cd $(printf '%q' "$REPO_ROOT") && . $(printf '%q' "$agent_env_script") &&${codex_env_args:+ ${codex_env_args}} codex --no-alt-screen" Enter
-  sleep 4
+  # codex 프로세스 시작 대기 + 검증 (2-B)
+  local codex_boot_pane_pid codex_boot_attempt
+  codex_boot_pane_pid=$(tmux list-panes -t "$tmux_target" -F '#{pane_pid}' 2>/dev/null | head -1)
+  if [ -n "$codex_boot_pane_pid" ]; then
+    for codex_boot_attempt in $(seq 1 8); do
+      process_or_child_named "$codex_boot_pane_pid" "codex" && break
+      sleep 1
+    done
+    if ! process_or_child_named "$codex_boot_pane_pid" "codex"; then
+      echo "Warning: ${window_name} codex 프로세스 8초 내 미시작." >&2
+      python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot_fail "$window_name" --detail reason="codex 프로세스 미시작" || true
+      tmux kill-window -t "$tmux_target" 2>/dev/null || true
+      return 1
+    fi
+  fi
+  sleep 1
   if ! submit_tmux_prompt_when_ready "$tmux_target" "$bootstrap_prompt" "codex-prompt" 5 20 1; then
     echo "Warning: ${window_name} codex TUI 온보딩 프롬프트 전달 실패." >&2
     tmux kill-window -t "$tmux_target" 2>/dev/null || true
@@ -3302,6 +3320,14 @@ cmd_boot() {
     echo "Warning: discussion 부팅 실패. 건너뜀." >&2
     failed_agents="discussion"
   }
+  # discussion readiness gate (1-C): 부팅 성공 후 프로세스 생존 확인
+  if [ -z "$failed_agents" ]; then
+    sleep 2
+    if ! agent_window_has_live_backend "$sess" "discussion" "$discussion_backend" 2>/dev/null; then
+      echo "Warning: discussion 프로세스 부팅 후 즉사 감지." >&2
+      failed_agents="discussion"
+    fi
+  fi
 
   for role in $agents; do
     # manager/discussion은 control-plane 역할로 별도 처리됨
@@ -3336,6 +3362,29 @@ cmd_boot() {
       }
     fi
   done
+
+  # 4. post-boot liveness gate (2-C): 부팅 직후 모든 에이전트 최종 생존 확인
+  sleep 3
+  local check_windows win_name win_backend
+  check_windows="$(tmux list-windows -t "$sess" -F '#{window_name}' 2>/dev/null || true)"
+  while IFS= read -r win_name; do
+    [ -n "$win_name" ] || continue
+    case "$win_name" in
+      manager|dashboard) continue ;;
+    esac
+    win_backend="claude"
+    case "$win_name" in *-codex) win_backend="codex" ;; esac
+    if ! agent_window_has_live_backend "$sess" "$win_name" "$win_backend" 2>/dev/null; then
+      echo "Warning: post-boot check — ${win_name} 프로세스 사망 감지." >&2
+      python3 "$TOOLS_DIR/log.py" system "$project" orchestrator post_boot_dead "$win_name" || true
+      if [ -n "$failed_agents" ]; then
+        # 중복 방지
+        case ",$failed_agents," in *",$win_name,"*) ;; *) failed_agents="${failed_agents},${win_name}" ;; esac
+      else
+        failed_agents="$win_name"
+      fi
+    fi
+  done <<< "$check_windows"
 
   # 부팅 실패 에이전트 목록을 런타임 상태에 기록 (호출자가 참조)
   if [ -n "$failed_agents" ]; then
