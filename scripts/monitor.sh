@@ -575,6 +575,10 @@ check_agent_windows() {
     for window_name in $active_window_names; do
       if is_agent_alive "$window_name"; then
         reset_reboot_count "$window_name"
+      else
+        # 2-F: grace 중에도 crash 감지 + 로그. reboot은 grace 만료까지 유예.
+        python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor crash_detected_during_grace "$window_name" \
+          --detail reason="rehydration-grace-active, reboot-deferred" || true
       fi
     done
     return
