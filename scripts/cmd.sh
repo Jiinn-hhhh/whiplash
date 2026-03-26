@@ -2750,7 +2750,22 @@ boot_codex_agent() {
   tmux new-window -d -t "$sess" -n "$window_name"
   tmux send-keys -t "$tmux_target" \
     "cd $(printf '%q' "$REPO_ROOT") && . $(printf '%q' "$agent_env_script") &&${codex_env_args:+ ${codex_env_args}} codex --no-alt-screen" Enter
-  sleep 4
+  # codex 프로세스 시작 대기 + 검증 (2-B)
+  local codex_boot_pane_pid codex_boot_attempt
+  codex_boot_pane_pid=$(tmux list-panes -t "$tmux_target" -F '#{pane_pid}' 2>/dev/null | head -1)
+  if [ -n "$codex_boot_pane_pid" ]; then
+    for codex_boot_attempt in $(seq 1 8); do
+      process_or_child_named "$codex_boot_pane_pid" "codex" && break
+      sleep 1
+    done
+    if ! process_or_child_named "$codex_boot_pane_pid" "codex"; then
+      echo "Warning: ${window_name} codex 프로세스 8초 내 미시작." >&2
+      python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot_fail "$window_name" --detail reason="codex 프로세스 미시작" || true
+      tmux kill-window -t "$tmux_target" 2>/dev/null || true
+      return 1
+    fi
+  fi
+  sleep 1
   if ! submit_tmux_prompt_when_ready "$tmux_target" "$bootstrap_prompt" "codex-prompt" 5 20 1; then
     echo "Warning: ${window_name} codex TUI 온보딩 프롬프트 전달 실패." >&2
     tmux kill-window -t "$tmux_target" 2>/dev/null || true
