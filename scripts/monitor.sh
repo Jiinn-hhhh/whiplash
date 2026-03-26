@@ -516,14 +516,26 @@ check_claude_auth_blocked() {
 # 크래시 감지 + 자동 reboot
 # ──────────────────────────────────────────────
 
+session_exists() {
+  # 1차: has-session (빠름)
+  if tmux has-session -t "$SESSION" 2>/dev/null; then
+    return 0
+  fi
+  # 2차: list-sessions fallback (has-session 일시 실패 대비)
+  if tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -qx "$SESSION"; then
+    return 0
+  fi
+  return 1
+}
+
 check_agent_windows() {
   local active_window_names window_name
-  if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+  if ! session_exists; then
     SESSION_ABSENT_COUNT=$((SESSION_ABSENT_COUNT + 1))
     if [ "$SESSION_ABSENT_COUNT" -ge 3 ]; then
       python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor session_absent_confirmed "$SESSION" --detail reason="3회 연속 세션 부재, 대기 모드 진입" || true
       # 대기 모드: 60초 간격으로 세션 복귀 대기 (exit 대신)
-      while ! tmux has-session -t "$SESSION" 2>/dev/null; do
+      while ! session_exists; do
         sleep 60
         runtime_set_manager_state "$PROJECT" "monitor_heartbeat" "$(date +%s)" || true  # 좀비 오판 방지
       done
