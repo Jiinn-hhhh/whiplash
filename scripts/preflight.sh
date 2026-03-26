@@ -172,7 +172,7 @@ get_manager_backend() {
       ;;
   esac
 
-  echo "codex"
+  echo "claude"
 }
 
 check_codex() {
@@ -214,6 +214,11 @@ check_codex() {
 check_native_subagents() {
   info "repo-local native subagent pack 확인 중..."
 
+  local requires_codex_pack=0
+  if [ "$MODE" = "dual" ] || [ "$(get_manager_backend)" = "codex" ]; then
+    requires_codex_pack=1
+  fi
+
   local required_agents=(
     task-distributor
     consensus-reviewer
@@ -241,14 +246,18 @@ check_native_subagents() {
   local agent_name
   for agent_name in "${required_agents[@]}"; do
     [ -f "$REPO_ROOT/.claude/agents/${agent_name}.md" ] || fail "Claude subagent pack 누락: .claude/agents/${agent_name}.md"
-    [ -f "$REPO_ROOT/.codex/agents/${agent_name}.toml" ] || fail "Codex subagent pack 누락: .codex/agents/${agent_name}.toml"
+    if [ "$requires_codex_pack" -eq 1 ]; then
+      [ -f "$REPO_ROOT/.codex/agents/${agent_name}.toml" ] || fail "Codex subagent pack 누락: .codex/agents/${agent_name}.toml"
+    fi
   done
 
-  [ -f "$REPO_ROOT/.codex/config.toml" ] || fail "Codex project config 누락: .codex/config.toml"
-  grep -q '^model = "gpt-5.4"$' "$REPO_ROOT/.codex/config.toml" || fail ".codex/config.toml 에 top-level model = \"gpt-5.4\" 설정이 없다."
-  grep -q '^\[agents\]' "$REPO_ROOT/.codex/config.toml" || fail ".codex/config.toml 에 [agents] 섹션이 없다."
-  grep -q '^max_threads = ' "$REPO_ROOT/.codex/config.toml" || fail ".codex/config.toml 에 max_threads 설정이 없다."
-  grep -q '^max_depth = ' "$REPO_ROOT/.codex/config.toml" || fail ".codex/config.toml 에 max_depth 설정이 없다."
+  if [ "$requires_codex_pack" -eq 1 ]; then
+    [ -f "$REPO_ROOT/.codex/config.toml" ] || fail "Codex project config 누락: .codex/config.toml"
+    grep -q '^model = "gpt-5.4"$' "$REPO_ROOT/.codex/config.toml" || fail ".codex/config.toml 에 top-level model = \"gpt-5.4\" 설정이 없다."
+    grep -q '^\[agents\]' "$REPO_ROOT/.codex/config.toml" || fail ".codex/config.toml 에 [agents] 섹션이 없다."
+    grep -q '^max_threads = ' "$REPO_ROOT/.codex/config.toml" || fail ".codex/config.toml 에 max_threads 설정이 없다."
+    grep -q '^max_depth = ' "$REPO_ROOT/.codex/config.toml" || fail ".codex/config.toml 에 max_depth 설정이 없다."
+  fi
 
   local role profile
   for role in "${role_profiles[@]}"; do
