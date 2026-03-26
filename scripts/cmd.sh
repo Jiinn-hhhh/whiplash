@@ -3001,8 +3001,16 @@ cmd_boot() {
   fi
 
   # 6. monitor.sh 백그라운드 실행 (자동 재시작 wrapper)
-  # 기존 좀비 monitor 정리
+  # 기존 좀비 monitor 정리 — stored PID + 자식 프로세스 kill 후 broad sweep
+  local old_monitor_pid
+  old_monitor_pid="$(runtime_get_manager_state "$project" "monitor_pid" "" 2>/dev/null || true)"
+  if [[ "${old_monitor_pid:-}" =~ ^[0-9]+$ ]] && kill -0 "$old_monitor_pid" 2>/dev/null; then
+    pkill -P "$old_monitor_pid" 2>/dev/null || true
+    kill "$old_monitor_pid" 2>/dev/null || true
+  fi
   pkill -f "monitor\\.sh[[:space:]]+${project}$" 2>/dev/null || true
+  runtime_clear_manager_state "$project" "monitor_pid" || true
+  runtime_clear_manager_state "$project" "monitor_heartbeat" || true
   runtime_release_manager_lock "$project" || true
   sleep 1  # lock 파일 해제 대기
   local log_dir="$(project_dir "$project")/logs"
