@@ -60,7 +60,10 @@ if [ "$MONITOR_ONCE" != "1" ]; then
     echo "Error: monitor.sh가 이미 실행 중 (PID: ${OLD_PID:-unknown}). 중복 실행 방지." >&2
     exit 1
   fi
-  trap 'runtime_release_manager_lock "$PROJECT" "$$"' EXIT
+  cleanup_monitor() {
+    runtime_release_manager_lock "$PROJECT" "$$"
+  }
+  trap cleanup_monitor EXIT INT TERM HUP
 fi
 
 # ──────────────────────────────────────────────
