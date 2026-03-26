@@ -9,6 +9,7 @@
 - 비사소한 조사에서는 `수집`과 `검증`을 분리한다.
 - 기본 모델은 `search/docs gather -> analyze -> synthesize`다.
 - 최종 연구 판단과 공식 제안 책임은 항상 Researcher에게 있다.
+- **자율 구성**: 아래의 specialist 패턴은 참고용 출발점이다. 기존 specialist가 작업에 맞으면 활용하고, 영역별/주제별 병렬 조사처럼 specialist 역할 없이 범용 에이전트를 자유롭게 팀 구성하는 것도 허용한다. 어떤 조합이 효율적인지는 Researcher가 판단한다.
 
 ---
 
@@ -80,6 +81,8 @@ Developer의 `subagent-orchestration.md` "모델 선택 가이드" 섹션과 동
 
 ## 최소 운영 규칙
 
-- 조사 시작: `search-specialist + docs-researcher`
-- codebase 연동 시: `+ code-mapper`
-- 증거가 많으면: `report-synthesizer`
+- 비사소한 작업에서는 서브에이전트를 최소 1개 이상 활용한다.
+- 아래는 **참고 패턴**이다. 작업에 맞으면 쓰고, 범용 병렬 에이전트가 더 효율적이면 자유 구성한다.
+  - 조사 시작: `search-specialist + docs-researcher`
+  - codebase 연동 시: `+ code-mapper`
+  - 증거가 많으면: `report-synthesizer`
