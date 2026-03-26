@@ -24,18 +24,33 @@ normalize_assignment_task_ref() {
   printf '%s\n' "$task_ref"
 }
 
-assignment_state_sed_inplace() {
-  if [[ "$OSTYPE" == darwin* ]]; then
-    sed -i '' "$@"
-  else
-    sed -i "$@"
-  fi
+# awk 기반 상태 전환 (sed injection 방지 — H-01 수정)
+_assignment_state_transition() {
+  local af="$1" agent="$2" old_status="$3" new_status="$4"
+  [ -f "$af" ] || return 0
+  local tmp="${af}.tmp.$$"
+  awk -v agent="$agent" -v old_status="$old_status" -v new_status="$new_status" '
+    BEGIN { FS="|"; OFS="|" }
+    {
+      if (NF >= 5) {
+        a = $2; gsub(/^[ \t]+|[ \t]+$/, "", a)
+        s = $5; gsub(/^[ \t]+|[ \t]+$/, "", s)
+        if (a == agent && s == old_status) {
+          $5 = " " new_status " "
+        }
+      }
+      print
+    }
+  ' "$af" > "$tmp" && mv "$tmp" "$af"
 }
 
 record_assignment_for_project() {
   local project="$1" agent="$2" task_ref="$3" af
   af="$(assignments_file_for_project "$project")"
   mkdir -p "$(dirname "$af")"
+
+  # 파일 잠금 (C-03 수정: read-modify-append 경합 방지)
+  runtime_acquire_path_lock "$af" || return 1
 
   if [ ! -f "$af" ]; then
     cat > "$af" << 'HEADER'
@@ -45,30 +60,37 @@ record_assignment_for_project() {
 HEADER
   fi
 
-  if grep -q "| ${agent} |.*| active |" "$af" 2>/dev/null; then
-    assignment_state_sed_inplace "s/| ${agent} |\(.*\)| active |/| ${agent} |\1| superseded |/" "$af"
-  fi
+  _assignment_state_transition "$af" "$agent" "active" "superseded"
 
   task_ref="$(normalize_assignment_task_ref "$project" "$task_ref")"
   echo "| ${agent} | ${task_ref} | $(date '+%Y-%m-%d %H:%M') | active |" >> "$af"
+
+  runtime_release_path_lock "$af"
 }
 
 complete_assignment_for_project() {
   local project="$1" agent="$2" af
   af="$(assignments_file_for_project "$project")"
   [ -f "$af" ] || return 0
-  if grep -q "| ${agent} |.*| active |" "$af" 2>/dev/null; then
-    assignment_state_sed_inplace "s/| ${agent} |\(.*\)| active |/| ${agent} |\1| completed |/" "$af"
-  fi
+
+  runtime_acquire_path_lock "$af" || return 1
+  _assignment_state_transition "$af" "$agent" "active" "completed"
+  runtime_release_path_lock "$af"
 }
 
 get_active_task_ref_for_project() {
   local project="$1" agent="$2" af
   af="$(assignments_file_for_project "$project")"
   [ -f "$af" ] || return 0
-  { grep "| ${agent} |" "$af" 2>/dev/null || true; } \
-    | grep "| active |" \
-    | tail -1 \
-    | awk -F'|' '{print $3}' \
-    | sed 's/^ *//;s/ *$//' || true
+  awk -F'|' -v agent="$agent" '
+    {
+      a = $2; gsub(/^[ \t]+|[ \t]+$/, "", a)
+      s = $5; gsub(/^[ \t]+|[ \t]+$/, "", s)
+      if (a == agent && s == "active") { task = $3 }
+    }
+    END {
+      gsub(/^[ \t]+|[ \t]+$/, "", task)
+      if (task != "") print task
+    }
+  ' "$af" || true
 }
