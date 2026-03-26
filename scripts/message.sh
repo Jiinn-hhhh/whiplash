@@ -25,6 +25,32 @@ if [[ "$project" == */* ]] || [[ "$project" == *..* ]] || [ -z "$project" ]; the
   exit 1
 fi
 
+# from 검증 (빈값, 경로 트래버설, 쉘 메타문자 방지)
+if [ -z "$from" ]; then
+  echo "Error: from이 비어 있다." >&2
+  exit 1
+fi
+if [[ "$from" == */* ]] || [[ "$from" == *..* ]] || [[ "$from" =~ [^a-zA-Z0-9_-] ]]; then
+  echo "Error: 잘못된 from: $from (영문/숫자/하이픈/밑줄만 허용)" >&2
+  exit 1
+fi
+
+# to 검증
+if [ -z "$to" ]; then
+  echo "Error: to가 비어 있다." >&2
+  exit 1
+fi
+if [[ "$to" == */* ]] || [[ "$to" == *..* ]] || [[ "$to" =~ [^a-zA-Z0-9_-] ]]; then
+  echo "Error: 잘못된 to: $to (영문/숫자/하이픈/밑줄만 허용)" >&2
+  exit 1
+fi
+
+# subject 검증 (빈값 방지)
+if [ -z "$subject" ]; then
+  echo "Error: subject가 비어 있다." >&2
+  exit 1
+fi
+
 # kind 검증
 case "$kind" in
   task_complete|status_update|need_input|escalation|agent_ready|reboot_notice|consensus_request|consensus_response|alert_resolve|task_assign|user_notice) ;;
