@@ -43,7 +43,7 @@ source "$TOOLS_DIR/message-queue.sh"
 source "$TOOLS_DIR/notify-format.sh"
 whiplash_activate_tmux_project "$PROJECT"
 HEALTH_CHECK_INTERVAL=30
-MAX_REBOOT=5
+MAX_REBOOT=3
 HUNG_THRESHOLD=600  # 10분 (초)
 QUEUE_TTL=86400  # 24시간
 ensure_manager_runtime_layout "$PROJECT"
