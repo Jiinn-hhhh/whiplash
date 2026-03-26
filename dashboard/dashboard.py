@@ -1336,10 +1336,11 @@ def render(state: dict, interval: int) -> Layout:
     n_tasks = len(state.get("active_tasks", []))
     n_alerts = len(state.get("user_alerts", []))
     n_waiting = len(state.get("waiting_reports", []))
-    bottom_content = max(n_tasks, n_alerts, 1) + 4  # 테이블 헤더+테두리
+    left_height = n_tasks + 4  # tasks 테이블 헤더+테두리
+    right_height = n_alerts + 4  # alerts 테이블 헤더+테두리
     if n_waiting > 0:
-        bottom_content += n_waiting + 3
-    bottom_height = max(7, bottom_content)
+        right_height += n_waiting + 5  # waiting 패널 (내용+상하테두리+제목줄+여유)
+    bottom_height = max(7, max(left_height, right_height))
 
     layout.split_column(
         Layout(name="header", size=3),
