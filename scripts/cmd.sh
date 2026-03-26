@@ -3357,6 +3357,29 @@ cmd_boot() {
     fi
   done
 
+  # 4. post-boot liveness gate (2-C): 부팅 직후 모든 에이전트 최종 생존 확인
+  sleep 3
+  local check_windows win_name win_backend
+  check_windows="$(tmux list-windows -t "$sess" -F '#{window_name}' 2>/dev/null || true)"
+  while IFS= read -r win_name; do
+    [ -n "$win_name" ] || continue
+    case "$win_name" in
+      manager|dashboard) continue ;;
+    esac
+    win_backend="claude"
+    case "$win_name" in *-codex) win_backend="codex" ;; esac
+    if ! agent_window_has_live_backend "$sess" "$win_name" "$win_backend" 2>/dev/null; then
+      echo "Warning: post-boot check — ${win_name} 프로세스 사망 감지." >&2
+      python3 "$TOOLS_DIR/log.py" system "$project" orchestrator post_boot_dead "$win_name" || true
+      if [ -n "$failed_agents" ]; then
+        # 중복 방지
+        case ",$failed_agents," in *",$win_name,"*) ;; *) failed_agents="${failed_agents},${win_name}" ;; esac
+      else
+        failed_agents="$win_name"
+      fi
+    fi
+  done <<< "$check_windows"
+
   # 부팅 실패 에이전트 목록을 런타임 상태에 기록 (호출자가 참조)
   if [ -n "$failed_agents" ]; then
     runtime_set_manager_state "$project" "boot_failed_agents" "$failed_agents"
