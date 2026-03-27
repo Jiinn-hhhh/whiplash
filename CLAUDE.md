@@ -22,7 +22,7 @@
 - **에이전트**: Onboarding → Manager → Developer, Researcher, Systems Engineer(선택), Monitoring
 - **구조**: `agents/`(정의, immutable) + `domains/`(도메인, immutable) + `scripts/`(인프라 스크립트) + `projects/`(런타임, gitignored)
 - **각 에이전트**: `profile.md`(역할) + `techniques/`(방법론)
-- **실행 모드**: solo(tmux 단일 백엔드) / dual(Claude Code + Codex 이중 실행, 실험적)
+- **실행 모드**: solo(tmux 단일 백엔드) / dual(Claude Code + Codex 병렬 운용, Manager가 이중 실행 또는 분업을 유기적으로 판단)
 - **소통**: notify(실시간 알림) + 토론/회의/공지(구조화 문서)
 
 상세 아키텍처: `agents/common/README.md`

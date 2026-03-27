@@ -101,7 +101,7 @@ tmux attach -t whiplash-{project-name}
 | 모드 | 설명 | tmux 윈도우 구성 | 비용 |
 |------|------|-----------------|------|
 | **solo** | Manager가 역할별 에이전트를 하나씩 실행 (tmux 기반) | `manager`, `discussion`, `developer`, `researcher`, `monitoring`, 필요 시 `systems-engineer` | 1x |
-| **dual** (실험적) | 같은 태스크를 Claude Code + Codex CLI 이중 실행, Manager가 합의 도출 | `manager`, `discussion`, `developer-claude`, `developer-codex`, `researcher-claude`, `researcher-codex`, `monitoring`, 필요 시 `systems-engineer`(solo) | 2x |
+| **dual** | Claude Code + Codex CLI 병렬 운용. Manager가 태스크 성격에 따라 이중 실행(비교/검증) 또는 분업을 유기적으로 판단 | `manager`, `discussion`, `developer-claude`, `developer-codex`, `researcher-claude`, `researcher-codex`, `monitoring`, 필요 시 `systems-engineer`(solo) | 1~2x |
 
 - Dual 모드에서 Monitoring은 항상 solo로 실행 (이중 실행 불필요)
 - Discussion은 항상 solo로 실행 (전략 토론 역할, backend 복제 불필요)
