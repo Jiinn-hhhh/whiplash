@@ -551,6 +551,18 @@ bash scripts/message.sh {project} researcher developer \
 | reboot_notice | 에이전트 복구 상태 확인, 필요 시 수동 개입 |
 | consensus_request | (dual 모드) 에이전트에게 합의 문서 검토 요청. 응답 대기 후 판정(§6.4) |
 
+### Discussion handoff 처리 흐름
+
+1. `discussion`이 `memory/discussion/handoff.md`를 작성하고 Manager에게 `status_update`로 알린다.
+2. Manager가 handoff를 읽고 유효성을 확인한다 (`User approved: yes`, `Why this change`, `Scope impact`, `Manager next action` 필수).
+3. Manager가 handoff 내용을 실행 계획으로 반영하고 태스크를 분배한다.
+4. **모든 관련 태스크 처리가 완료되면**, Manager가 `discussion`에 `status_update`로 완료 알림을 보낸다.
+   ```bash
+   bash scripts/message.sh {project} manager discussion \
+     status_update normal "handoff 처리 완료" "handoff 건 '{제목}' 관련 태스크 모두 완료."
+   ```
+5. `discussion`은 완료 알림을 받으면 해당 건을 종료 처리한다.
+
 ### monitor.sh 관리
 
 ```bash
