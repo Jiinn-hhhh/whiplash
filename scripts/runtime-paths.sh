@@ -215,11 +215,14 @@ runtime_acquire_path_lock() {
       holder_pid=$(sed -n '1p' "$holder_file" 2>/dev/null || true)
       holder_ts=$(sed -n '2p' "$holder_file" 2>/dev/null || true)
       if ! [[ "${holder_pid:-}" =~ ^[0-9]+$ ]] || ! kill -0 "$holder_pid" 2>/dev/null; then
+        # M-07: stale lock 제거 후 즉시 재시도 (TOCTOU 창 최소화)
         rm -rf "$lock_dir" 2>/dev/null || true
+        if mkdir "$lock_dir" 2>/dev/null; then break; fi
         continue
       fi
       if [[ "${holder_ts:-}" =~ ^[0-9]+$ ]] && [ $((now_ts - holder_ts)) -gt 15 ]; then
         rm -rf "$lock_dir" 2>/dev/null || true
+        if mkdir "$lock_dir" 2>/dev/null; then break; fi
         continue
       fi
     fi

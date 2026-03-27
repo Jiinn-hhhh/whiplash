@@ -25,12 +25,16 @@ whiplash_queue_write_file() {
   content_preview="$(whiplash_queue_flatten_preview "$msg_content")"
   content_b64="$(printf '%s' "$msg_content" | whiplash_queue_encode)"
 
+  # M-05: subject 뉴라인을 공백으로 치환 (단일 행 필드 보장)
+  local safe_subject
+  safe_subject="$(printf '%s' "$msg_subject" | tr '\r\n' '  ')"
+
   cat > "$target_path" <<MSGEOF
 from=${msg_from}
 to=${msg_to}
 kind=${msg_kind}
 priority=${msg_priority}
-subject=${msg_subject}
+subject=${safe_subject}
 content=${content_preview}
 content_b64=${content_b64}
 MSGEOF

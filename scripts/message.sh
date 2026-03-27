@@ -88,8 +88,6 @@ source "$TOOLS_DIR/assignment-state.sh"
 # shellcheck source=/dev/null
 source "$TOOLS_DIR/agent-health.sh"
 # shellcheck source=/dev/null
-source "$TOOLS_DIR/assignment-state.sh"
-# shellcheck source=/dev/null
 source "$TOOLS_DIR/message-queue.sh"
 # shellcheck source=/dev/null
 source "$TOOLS_DIR/notify-format.sh"
@@ -608,13 +606,14 @@ prepare_task_assign_report_stub
 validate_discussion_handoff_contract
 validate_task_complete_report
 augment_content_with_report_context
+# M-10: bookkeeping은 원본 subject를 사용해야 하므로 포맷팅 전에 실행
+apply_bookkeeping
 if [ "$kind" = "user_notice" ] || { [ "$kind" = "status_update" ] && { [ "$to" = "manager" ] || [ "$to" = "user" ]; }; }; then
   subject="$(whiplash_notification_subject "$kind" "$subject")"
   content="$(whiplash_notification_body "$kind" "$subject" "$content")"
 fi
 
 if [[ "$to" == "user" ]]; then
-  apply_bookkeeping
   python3 "$TOOLS_DIR/log.py" message "$project" "$from" "$to" "$kind" "$priority" "$subject" delivered --reason "user-alert" || true
   echo "전달 완료: ${from} → ${to} | ${kind}"
   exit 0
@@ -654,7 +653,6 @@ if ! target_has_live_agent "$to"; then
 fi
 
 if submit_notification "$to" "$notification"; then
-  apply_bookkeeping
   python3 "$TOOLS_DIR/log.py" message "$project" "$from" "$to" "$kind" "$priority" "$subject" delivered --reason "interactive" || true
   mirror_peer_message_to_manager
   echo "전달 완료: ${from} → ${to} | ${kind}"

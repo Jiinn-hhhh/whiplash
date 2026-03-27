@@ -397,6 +397,7 @@ tmux_submit_pasted_payload() {
   fi
 
   tmpfile="$(mktemp)"
+  trap 'rm -f "$tmpfile"' RETURN
   printf '%s' "$payload" > "$tmpfile"
   buf_name="${buf_prefix}-$$-${RANDOM}"
 

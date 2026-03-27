@@ -81,6 +81,11 @@ activate_project_tmux_context() {
 }
 
 session_name() {
+  # M-01: sed 메타문자 방지 — project 이름 재검증
+  if [[ "$1" =~ [^a-zA-Z0-9_-] ]]; then
+    echo "Error: session_name에 잘못된 project 이름: '$1'" >&2
+    return 1
+  fi
   echo "whiplash-$1"
 }
 
