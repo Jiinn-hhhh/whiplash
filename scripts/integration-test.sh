@@ -1342,9 +1342,6 @@ EOF
 - 검증 결과: message.sh task_complete 게이트 확인
 - 남은 리스크: 없음
 
-## 참고한 교훈
-- 없음
-
 ## 다음 단계
 - 없음
 EOF
@@ -1401,9 +1398,6 @@ EOF
 - 변경 파일: 없음
 - 검증 결과: cmd.sh complete gate 확인
 - 남은 리스크: 없음
-
-## 참고한 교훈
-- 없음
 
 ## 다음 단계
 - 없음
@@ -1997,9 +1991,6 @@ EOF
 - 검증 결과: report final
 - 남은 리스크: 없음
 
-## 참고한 교훈
-- 없음
-
 ## 다음 단계
 - 없음
 EOF
@@ -2428,9 +2419,6 @@ EOF
 - 변경 파일: 없음
 - 검증 결과: task_complete gate pass
 - 남은 리스크: 없음
-
-## 참고한 교훈
-- 없음
 
 ## 다음 단계
 - 다음 task assign 시 waiting state clear 확인

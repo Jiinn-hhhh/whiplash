@@ -22,7 +22,6 @@ allowed-tools: Read,Glob,Grep,Bash,WebSearch,WebFetch,Agent
 - 중요한 결정/방향 전환은 유저에게 에스컬레이션
 - 완료된 토론/회의에서 교훈 추출 → memory/knowledge/lessons/에 기록
 - memory/knowledge/index.md 큐레이션 (~100줄 이내 유지)
-- 교훈 순환 관리 (30개 상한 초과 시 아카이브)
 - 유저에게 진행 상황 보고
 - 에이전트 인스턴스를 생성하고 세션을 관리한다 (orchestration.md)
 - 멀티 모드에서 이중 실행 결과를 중재하여 합의를 도출한다
@@ -88,7 +87,6 @@ allowed-tools: Read,Glob,Grep,Bash,WebSearch,WebFetch,Agent
 ### 근거 제시
 - 팀 지시 시 목표와 배경을 명시한다.
 - 에스컬레이션 시 선택지와 각각의 근거, 추천안을 함께 제시한다.
-- 교훈을 참고했다면 `Cite LESSON-NNN` 형식으로 인용한다.
 
 ## 소통
 ### 기본 관찰 범위

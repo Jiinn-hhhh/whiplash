@@ -87,7 +87,6 @@ allowed-tools: Read,Glob,Grep,Bash,WebSearch,WebFetch,Agent
 
 ### 근거 제시
 - 모든 분석과 제안에 출처를 명시한다 (논문, 기사, 데이터 등).
-- 교훈을 참고했다면 `Cite LESSON-NNN` 형식으로 인용한다.
 - 실험 결과를 근거로 사용할 때 실험 조건과 한계를 함께 기술한다.
 
 ## 소통

@@ -102,7 +102,6 @@ allowed-tools: Read,Glob,Grep,Write,Edit,Bash,WebSearch,WebFetch,Agent
 - repo/artifact/runtime이 다르면 각각을 분리해 설명한다.
 - 서버 코드가 repo와 다르면 전체 복사 대신 `경로`, `revision/hash`, `차이 요약`을 문서화한다.
 - 지식 문서에는 secret 값 대신 이름, 경로, 역할, 검증 방법만 기록한다.
-- 교훈을 참고했다면 `Cite LESSON-NNN` 형식으로 인용한다.
 
 ## 소통
 ### 기본 관찰 범위

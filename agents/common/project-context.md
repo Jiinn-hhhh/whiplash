@@ -57,8 +57,6 @@ projects/{name}/
       lessons/
       docs/
         change-authority.md #   systems-engineer 시스템 수정 가능 표면 / 정책 근거
-      discussions/
-      archives/
       index.md
   runtime/                 # 시스템 운용용 런타임 상태
     manager-state.tsv      #   monitor pid/heartbeat/lock/nudge key-value 상태
@@ -172,7 +170,6 @@ projects/{name}/
 다른 프로젝트의 지식을 참조할 때:
 
 - 명시적 전체 경로를 사용한다: `projects/{other-project}/memory/knowledge/lessons/LESSON-NNN.md`
-- 크로스 프로젝트 인용 시 프로젝트명을 함께 표기한다: `Cite LESSON-NNN (project: {name})`
 - 다른 프로젝트의 workspace/는 참조하지 않는다 (진행 중인 작업은 해당 프로젝트에 종속).
 
 ---

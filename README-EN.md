@@ -262,7 +262,6 @@ Combines real-time notifications with structured documents.
 |---------|---------------|-----|
 | Real-time notifications | `message.sh` → tmux `load-buffer` + `paste-buffer` | Task completion, status, urgent escalation |
 | Discussions | `workspace/shared/discussions/DISC-NNN.md` (append-only) | Technical decisions |
-| Meetings | `workspace/shared/meetings/MEET-NNN.md` (3 rounds) | Position → response → synthesis |
 | Announcements | `workspace/shared/announcements/` | Task directives (TASK-NNN.md) |
 
 Notification types: `task_complete`, `status_update`, `need_input`, `escalation`, `agent_ready`, `reboot_notice`, `consensus_request`
@@ -615,12 +614,11 @@ Details: `domains/README.md`
 |-----------|-------------|
 | Environment Engineering | Repo structure and file conventions have more leverage than prompts |
 | 3-Folder Separation | Immutable (agents/ + domains/) and mutable (projects/) separated at folder level |
-| Context Minimization | Give a map, not an encyclopedia. Index ~100 lines, lessons capped at 30 |
+| Context Minimization | Give a map, not an encyclopedia. Index ~100 lines |
 | Progressive Disclosure | Documents split into 3 layers (required/on-task/on-demand) to save context window |
 | Backend-native Teams | Actively use Claude Code and Codex CLI native subagent / agent team / parallel features, and prefer them over manual decomposition when available |
 | Role-based File Access | Project code modifiable only by Developer. Enforced via --allowedTools |
 | Backpressure Gate | Self-verification required before task_complete. No unverified completion reports |
-| Semantic Compaction | Inactive lessons move to archive/ with 1-line summary reference. Originals preserved |
 | Role-based Tool Restriction | Allowed tools defined in profile.md metadata, enforced by cmd.sh via --allowedTools |
 | Harness = Competitive Edge | Changing structure yields more than changing models |
 | Fail-safe | When agents fail, improve the environment instead of having humans take over |

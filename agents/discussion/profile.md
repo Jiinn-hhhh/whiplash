@@ -82,7 +82,6 @@ allowed-tools: Read,Glob,Grep,Write,Edit,Bash,WebSearch,WebFetch,Agent
 ### 근거 제시
 - 전략 제안에는 변경 이유, 대안, 트레이드오프를 명시한다.
 - `유저 합의 완료`와 `아직 토론 중` 상태를 명확히 구분한다.
-- 교훈을 참고했다면 `Cite LESSON-NNN` 형식으로 인용한다.
 
 ## 소통
 ### 기본 관찰 범위

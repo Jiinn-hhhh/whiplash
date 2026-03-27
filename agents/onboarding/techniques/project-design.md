@@ -315,7 +315,6 @@ projects/{name}/
   workspace/
     shared/
       discussions/
-      meetings/
       announcements/
     teams/
       research/
@@ -332,8 +331,6 @@ projects/{name}/
       lessons/
       docs/
       discussions/
-      meetings/
-      archives/
       index.md
   reports/
 ```

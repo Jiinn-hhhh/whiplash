@@ -126,8 +126,6 @@ ensure_onboarding_project_layout() {
     "$base/memory/onboarding" \
     "$base/memory/knowledge/lessons" \
     "$base/memory/knowledge/docs" \
-    "$base/memory/knowledge/discussions" \
-    "$base/memory/knowledge/archives" \
     "$base/runtime/message-queue" \
     "$base/runtime/message-locks" \
     "$base/runtime/manager" \
@@ -1703,9 +1701,6 @@ write_pattern_manager_report_stub() {
 - 최종 판정: 작성 필요
 - 검증 결과: 작성 필요
 - 남은 리스크: 작성 필요
-
-## 참고한 교훈
-- 해당 없으면 비워둘 수 있음
 
 ## 다음 단계
 - 후속 작업이 있으면 작성

@@ -89,7 +89,6 @@ allowed-tools: Read,Glob,Grep,Write,Edit,Bash,WebSearch,WebFetch,Agent
 ### 근거 제시
 - 아키텍처 결정에 ADR 형식으로 근거를 기록한다 (결정, 대안, 선택 이유).
 - 기술 선택 시 비교 평가 결과를 명시한다.
-- 교훈을 참고했다면 `Cite LESSON-NNN` 형식으로 인용한다.
 
 ## 소통
 ### 기본 관찰 범위

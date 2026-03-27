@@ -284,7 +284,6 @@ tmux 세션: whiplash-{project}
 |------|------|------|
 | 실시간 알림 | `message.sh` → interactive 세션 직접 입력 | 태스크 완료, 상태, 긴급 에스컬레이션 |
 | 토론 | `workspace/shared/discussions/DISC-NNN.md` (append-only) | 기술 의사결정 |
-| 회의 | `workspace/shared/meetings/MEET-NNN.md` (3라운드) | 입장→응답→종합 |
 | 공지 | `workspace/shared/announcements/` | 태스크 지시서 (TASK-NNN.md) |
 
 알림 종류: `task_complete`, `status_update`, `need_input`, `escalation`, `agent_ready`, `reboot_notice`, `consensus_request`, `consensus_response`, `task_assign`, `alert_resolve`
@@ -643,13 +642,12 @@ whiplash/
 |------|------|
 | Environment Engineering | 프롬프트보다 레포 구조, 파일 컨벤션이 더 큰 레버리지 |
 | 3-Folder 분리 | Immutable(agents/ + domains/)과 mutable(projects/)를 폴더 레벨에서 분리 |
-| 컨텍스트 최소화 | 지도를 줘라, 백과사전을 주지 마라. index ~100줄, 교훈 30개 상한 |
+| 컨텍스트 최소화 | 지도를 줘라, 백과사전을 주지 마라. index ~100줄 |
 | Progressive Disclosure | 문서를 3단계(필수/작업시/필요시)로 나눠 컨텍스트 윈도우 절약 |
 | 백엔드 네이티브 팀 활용 | Claude Code와 Codex CLI의 subagent / agent team / 병렬 기능을 적극 활용하고, 가능하면 수동 분해보다 우선 검토 |
 | 역할 기반 파일 접근 | 프로젝트 코드는 Developer와 Systems Engineer만 수정. 원격 시스템 변경은 별도 문서 정책을 따른다 |
 | 시스템 변경 정책 | `systems-engineer`는 프로젝트 문서(`team/systems-engineer.md`, `change-authority.md`) 기준으로 원격 시스템 변경을 판단 |
 | 백프레셔 게이트 | task_complete 전 자체 검증 필수. 검증 없이 완료 보고 금지 |
-| Semantic Compaction | 비활성 교훈을 archive/로 이동 + 1줄 요약 참조 유지. 원본 보존 |
 | 역할별 도구 제한 | profile.md 메타데이터로 허용 도구 정의, cmd.sh가 --allowedTools로 강제 적용 |
 | Harness = 경쟁력 | 모델을 바꾸는 것보다 구조를 바꾸는 것이 더 큰 성능 향상 |
 | Fail-safe | 에이전트 실패 시 사람이 대신하지 않고 환경을 개선 |

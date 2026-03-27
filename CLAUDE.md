@@ -81,11 +81,10 @@ See `agents/manager/techniques/orchestration.md`
 
 - **Language**: All framework documents are written in Korean.
 - **Append-only**: Never edit another agent's text. Corrections go in new sections.
-- **Citation enforcement**: Reference prior lessons as `Cite LESSON-NNN`. Never use lesson content without citation.
 - **Reasoning obligation**: Every decision and artifact must include explicit rationale.
-- **Context minimization**: `memory/knowledge/index.md` stays under ~100 lines. Active lessons capped at 30. Deep reads are on-demand.
+- **Context minimization**: `memory/knowledge/index.md` stays under ~100 lines. Deep reads are on-demand.
 - **No prototype-to-production shortcuts**: Researcher prototypes must be re-architected by Developer before production.
-- **Document IDs**: `LESSON-NNN`, `DISC-NNN`, `MEET-NNN`, `ADR-NNN` (3-digit sequential).
+- **Document IDs**: `LESSON-NNN`, `DISC-NNN`, `ADR-NNN` (3-digit sequential).
 - **Project-relative paths**: `workspace/`, `memory/`, `reports/` in agent docs resolve to current project's directories.
 
 ## Agent Onboarding Sequence (Progressive Disclosure)
