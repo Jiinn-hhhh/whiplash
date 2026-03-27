@@ -20,6 +20,7 @@ allowed-tools: Read,Glob,Grep,Write,Edit,Bash,WebSearch,WebFetch,Agent
 - 실행 계획이 바뀌어야 할 때만 `memory/discussion/handoff.md`를 작성한다.
 - handoff는 `User approved`, `Why this change`, `Scope impact`, `Manager next action` 최소 계약을 만족해야만 Manager에게 공식 입력으로 전달된다.
 - handoff가 준비되면 Manager에게 `status_update`로 알린다.
+- Manager로부터 handoff 완료 알림(`status_update`)을 받으면 해당 건을 종료 처리하고, 유저에게 같은 건을 다시 언급하지 않는다.
 - 현재 실행 상태 질문을 받으면 Manager가 source of truth임을 분명히 하고 적절히 라우팅한다.
 - 필요하면 저장소와 프로젝트 산출물을 직접 읽어 Manager급 이해를 유지한다.
 - 코드/외부사실이 걸린 비사소한 전략 토론에서는 `code-mapper`, `docs-researcher`, `report-synthesizer`, `consensus-reviewer`, `architect-reviewer`를 적극 호출해 추천안의 근거를 강화한다.

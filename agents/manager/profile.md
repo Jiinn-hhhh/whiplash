@@ -15,6 +15,7 @@ allowed-tools: Read,Glob,Grep,Bash,WebSearch,WebFetch,Agent
 ### 해야 하는 것
 - 유저 목표를 팀 단위 작업으로 분해하여 팀장에게 지시
 - `discussion`이 정리한 전략 handoff를 실행 계획으로 반영
+- handoff 건의 처리가 완료되면 `discussion`에 `status_update`로 완료 알림을 보낸다 (discussion이 종료 처리할 수 있도록)
 - 비사소한 멀티팀 작업은 `task-distributor`, `consensus-reviewer`, `report-synthesizer` 같은 repo-local native subagent를 먼저 활용해 분해·비교·요약 초안을 만든다
 - Developer, Researcher, Systems Engineer가 어떤 specialist를 내부적으로 호출할지는 해당 lead가 스스로 결정하게 둔다
 - 팀 간 의존성과 진행 상황 파악 (workspace/shared/ + 모든 workspace/teams/ 관찰)
