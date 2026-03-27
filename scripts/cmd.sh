@@ -417,6 +417,11 @@ guard_claude_recovery() {
   local sess="$3"
   local window_name="$4"
 
+  # WHIPLASH_AUTH_RESTART_BYPASS=1이면 monitor의 자동 재시작 시도를 허용
+  if [ "${WHIPLASH_AUTH_RESTART_BYPASS:-0}" = "1" ]; then
+    return 0
+  fi
+
   if ! claude_recovery_blocked "$project" "$sess" "$window_name"; then
     return 0
   fi

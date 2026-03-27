@@ -468,12 +468,32 @@ check_claude_auth_blocked() {
       if [ "$previous_state" != "AUTH_BLOCKED" ]; then
         python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor auth_blocked_detected "$win_name" \
           --detail backend="$backend" role="$role" session="$session_id" reason="${detail:-pane-login-required}" || true
+
+        # 자동 세션 재시작 1회 시도 (최초 감지 시에만)
+        python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor auth_restart_attempt "$win_name" \
+          --detail backend="$backend" role="$role" || true
+        if WHIPLASH_AUTH_RESTART_BYPASS=1 bash "$TOOLS_DIR/cmd.sh" reboot "$win_name" "$PROJECT" 2>&1; then
+          # 재시작 후 auth 상태 재확인
+          sleep 5
+          local recheck
+          recheck="$(agent_classify_window_health "$PROJECT" "$SESSION" "$win_name" "$backend")"
+          local recheck_state="${recheck%%|*}"
+          if [ "$recheck_state" != "AUTH_BLOCKED" ]; then
+            python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor auth_restart_success "$win_name" \
+              --detail backend="$backend" role="$role" || true
+            runtime_clear_agent_health_state "$PROJECT" "$win_name" || true
+            runtime_clear_agent_health_alert_ts "$PROJECT" "$win_name" || true
+            continue
+          fi
+        fi
+        python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor auth_restart_failed "$win_name" \
+          --detail backend="$backend" role="$role" || true
       fi
       if ! [[ "${previous_alert:-}" =~ ^[0-9]+$ ]]; then
         runtime_set_agent_health_alert_ts "$PROJECT" "$win_name" "$(date +%s)" || true
         bash "$TOOLS_DIR/message.sh" "$PROJECT" monitor manager \
           need_input normal "${win_name} Claude auth blocked" \
-          "${SESSION}:${win_name} pane이 로그인 필요 상태다. direct delivery와 reboot/refresh를 중단했다. Claude 인증 복구 후 다시 진행해라." || true
+          "${SESSION}:${win_name} pane이 로그인 필요 상태다. 자동 재시작을 시도했으나 실패했다. Claude 인증 복구 후 다시 진행해라." || true
       fi
       continue
     fi
