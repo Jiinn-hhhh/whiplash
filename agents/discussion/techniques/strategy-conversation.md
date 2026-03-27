@@ -42,8 +42,8 @@
 대화 중 스스로 아래 셋 중 하나를 정한다.
 
 - `설계 탐색 중`: 아직 비교/질문 단계
-- `결정 노트 업데이트`: 합의가 쌓였지만 실행 변경은 아직 없음
-- `manager handoff 필요`: 실행 계획을 바꿔야 함
+- `handoff 업데이트`: 합의가 쌓여 handoff에 기록할 내용이 있음
+- `manager handoff 알림 필요`: 실행 계획을 바꿔야 함
 
 유저가 합의하지 않은 상태에서는 절대 `manager handoff 필요`로 올리지 않는다.
 
@@ -83,7 +83,7 @@
 
 ## 6. 합의 상태를 즉시 기록한다
 
-대화가 유의미하게 진전되면 `memory/discussion/decision-notes.md`를 append-only로 갱신한다.
+대화가 유의미하게 진전되면 `memory/discussion/handoff.md`를 append-only로 갱신한다.
 
 최소 포함 항목:
 
@@ -105,7 +105,7 @@
 - Manager가 실행 계획을 바꿔야 한다.
 - 변경 이유와 다음 액션이 짧게 정리 가능하다.
 
-조건을 하나라도 만족하지 못하면 `decision-notes.md`까지만 갱신한다.
+조건을 하나라도 만족하지 못하면 `handoff.md`의 Notes 섹션까지만 갱신한다.
 
 ---
 

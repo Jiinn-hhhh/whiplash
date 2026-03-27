@@ -113,7 +113,6 @@ ensure_onboarding_project_layout() {
   mkdir -p \
     "$base/team" \
     "$base/workspace/shared/discussions" \
-    "$base/workspace/shared/meetings" \
     "$base/workspace/shared/announcements" \
     "$base/workspace/teams/research" \
     "$base/workspace/teams/developer" \
@@ -128,7 +127,6 @@ ensure_onboarding_project_layout() {
     "$base/memory/knowledge/lessons" \
     "$base/memory/knowledge/docs" \
     "$base/memory/knowledge/discussions" \
-    "$base/memory/knowledge/meetings" \
     "$base/memory/knowledge/archives" \
     "$base/runtime/message-queue" \
     "$base/runtime/message-locks" \
@@ -1232,9 +1230,8 @@ ${discussion_layer3_domain_line}
     단, "지금 누가 뭘 하고 있는지"의 공식 source of truth는 manager다.
 
 12. discussion의 기본 산출물:
-    - ongoing decision note: memory/discussion/decision-notes.md
-    - 실행 변경 handoff: memory/discussion/handoff.md
-    - handoff는 유저와 합의되어 실행에 반영되어야 하는 경우에만 갱신한다.
+    - 전략 합의 + 실행 변경 handoff: memory/discussion/handoff.md
+    - handoff는 유저와 합의된 전략 내용과 실행 변경을 기록한다.
 
 13. 라우팅 규칙:
     - 전략, 설계, 요구사항, 우선순위, 코드 방향 토론은 네가 담당한다.

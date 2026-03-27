@@ -2609,15 +2609,6 @@ EOF
   discussion_msg="$(probe_cmd_boot_message discussion "$PROJECT")"
 
   TOTAL=$((TOTAL + 1))
-  if echo "$discussion_msg" | grep -q 'memory/discussion/decision-notes.md'; then
-    echo "  PASS: discussion 부팅 메시지에 decision-notes 안내 포함"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: discussion 부팅 메시지에 decision-notes 안내 누락"
-    FAIL=$((FAIL + 1))
-  fi
-
-  TOTAL=$((TOTAL + 1))
   if echo "$discussion_msg" | grep -q 'memory/discussion/handoff.md'; then
     echo "  PASS: discussion 부팅 메시지에 handoff 안내 포함"
     PASS=$((PASS + 1))

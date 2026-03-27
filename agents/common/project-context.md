@@ -39,7 +39,6 @@ projects/{name}/
   workspace/               # 진행 중인 작업
     shared/
       discussions/
-      meetings/
       announcements/
     teams/
       research/
@@ -47,8 +46,7 @@ projects/{name}/
       systems-engineer/
   memory/                  # 축적된 상태
     discussion/
-      decision-notes.md    #   전략 토론 메모 (선택)
-      handoff.md           #   manager에게 넘길 실행 변경 handoff (선택)
+      handoff.md           #   전략 합의 + 실행 변경 handoff (선택)
     manager/
       sessions.md          #   활성 세션 추적
     researcher/
@@ -60,7 +58,6 @@ projects/{name}/
       docs/
         change-authority.md #   systems-engineer 시스템 수정 가능 표면 / 정책 근거
       discussions/
-      meetings/
       archives/
       index.md
   runtime/                 # 시스템 운용용 런타임 상태
