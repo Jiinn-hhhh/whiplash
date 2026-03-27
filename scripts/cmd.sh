@@ -1710,191 +1710,6 @@ EOF
   printf '%s\n' "$report_rel"
 }
 
-# ──────────────────────────────────────────────
-# task-pattern 메타데이터 파싱 및 실행 계획
-# ──────────────────────────────────────────────
-
-_task_trim() {
-  printf '%s' "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
-}
-
-_task_line_backtick_value() {
-  printf '%s\n' "$1" | sed -n 's/.*`\([^`][^`]*\)`.*/\1/p' | head -1
-}
-
-_task_line_backtick_csv() {
-  printf '%s\n' "$1" | grep -o '`[^`][^`]*`' 2>/dev/null | tr -d '`' | paste -sd, - | sed 's/^ *//;s/ *$//'
-}
-
-resolve_task_metadata_path() {
-  local project="$1" task="$2"
-  local normalized_task pdir
-  if [ -f "$task" ]; then
-    printf '%s\n' "$task"
-    return 0
-  fi
-  pdir="$(project_dir "$project")"
-  normalized_task="$(normalize_task_ref "$project" "$task")"
-  if [ -f "$pdir/$normalized_task" ]; then
-    printf '%s\n' "$pdir/$normalized_task"
-    return 0
-  fi
-  if [[ "$task" == "projects/$project/"* ]] && [ -f "$REPO_ROOT/$task" ]; then
-    printf '%s\n' "$REPO_ROOT/$task"
-    return 0
-  fi
-  return 1
-}
-
-_task_metadata_line() {
-  local project="$1" task="$2" label="$3" task_path
-  task_path="$(resolve_task_metadata_path "$project" "$task" 2>/dev/null || true)"
-  [ -f "$task_path" ] || return 0
-  grep -m1 "^- \\*\\*${label}\\*\\*:" "$task_path" 2>/dev/null || true
-}
-
-canonicalize_task_pattern() {
-  local raw lowered
-  raw="$(_task_trim "${1:-}")"
-  lowered="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
-  case "$lowered" in
-    "single owner"|"single-owner"|"single_owner")
-      printf 'single_owner\n'
-      ;;
-    "lead + verify"|"lead+verify"|"lead-verify"|"lead_verify"|"mirror + challenge"|"mirror+challenge"|"mirror-challenge"|"mirror + verify"|"split + cross-check"|"split+cross-check"|"split-cross-check")
-      printf 'lead_verify\n'
-      ;;
-    "independent compare"|"independent-compare"|"independent_compare"|"mirror + consensus"|"mirror+consensus"|"mirror-consensus"|"mirror + synth"|"mirror+synth"|"mirror-synth")
-      printf 'independent_compare\n'
-      ;;
-    *)
-      printf 'single_owner\n'
-      ;;
-  esac
-}
-
-task_pattern_from_task() {
-  local project="$1" task="$2" line value
-  line="$(_task_metadata_line "$project" "$task" "Pattern")"
-  value="$(_task_line_backtick_value "$line")"
-  canonicalize_task_pattern "$value"
-}
-
-task_owner_lane_from_task() {
-  local project="$1" task="$2" line value
-  line="$(_task_metadata_line "$project" "$task" "Owner lane")"
-  value="$(_task_line_backtick_value "$line")"
-  [ "$value" = "none" ] && value=""
-  printf '%s\n' "$value"
-}
-
-task_owner_lanes_from_task() {
-  local project="$1" task="$2" line value
-  line="$(_task_metadata_line "$project" "$task" "Owner lanes")"
-  value="$(_task_line_backtick_csv "$line")"
-  [ "$value" = "none" ] && value=""
-  printf '%s\n' "$value"
-}
-
-task_review_lane_from_task() {
-  local project="$1" task="$2" line value
-  line="$(_task_metadata_line "$project" "$task" "Review lane")"
-  value="$(_task_line_backtick_value "$line")"
-  [ "$value" = "none" ] && value=""
-  printf '%s\n' "$value"
-}
-
-csv_first_value() {
-  local csv="${1:-}" first
-  IFS=',' read -r first _ <<< "$csv"
-  _task_trim "${first:-}"
-}
-
-append_unique_task_target() {
-  local target="$1" role_label="$2" existing idx
-  [ -n "$target" ] || return 0
-  for idx in "${!TASK_EXEC_TARGETS[@]}"; do
-    existing="${TASK_EXEC_TARGETS[$idx]}"
-    if [ "$existing" = "$target" ]; then
-      return 0
-    fi
-  done
-  TASK_EXEC_TARGETS+=("$target")
-  TASK_EXEC_ROLES+=("$role_label")
-}
-
-peer_lane_for_target() {
-  local role="$1" target="$2"
-  if [[ "$target" == *-claude ]]; then
-    printf '%s\n' "${target%-claude}-codex"
-    return 0
-  fi
-  if [[ "$target" == *-codex ]]; then
-    printf '%s\n' "${target%-codex}-claude"
-    return 0
-  fi
-  if [ "$target" = "$role" ]; then
-    printf '%s-codex\n' "$role"
-    return 0
-  fi
-  printf '%s-codex\n' "$role"
-}
-
-resolve_task_execution_plan() {
-  local role="$1" task="$2" project="$3" forced_pattern="${4:-}"
-  local pattern owner_lane owner_lanes review_lane lead_target verify_target compare_csv compare_target
-  local IFS=','
-
-  TASK_EXEC_TARGETS=()
-  TASK_EXEC_ROLES=()
-  TASK_EXEC_MANAGER_STUB=""
-
-  if [ -n "${forced_pattern:-}" ]; then
-    pattern="$(canonicalize_task_pattern "$forced_pattern")"
-  else
-    pattern="$(task_pattern_from_task "$project" "$task")"
-  fi
-
-  owner_lane="$(task_owner_lane_from_task "$project" "$task")"
-  owner_lanes="$(task_owner_lanes_from_task "$project" "$task")"
-  review_lane="$(task_review_lane_from_task "$project" "$task")"
-
-  case "$pattern" in
-    single_owner)
-      append_unique_task_target "${owner_lane:-$(csv_first_value "$owner_lanes")}" "owner"
-      if [ "${#TASK_EXEC_TARGETS[@]}" -eq 0 ]; then
-        append_unique_task_target "$role" "owner"
-      fi
-      ;;
-    lead_verify)
-      lead_target="${owner_lane:-$(csv_first_value "$owner_lanes")}"
-      [ -n "$lead_target" ] || lead_target="$role"
-      append_unique_task_target "$lead_target" "lead"
-      verify_target="$review_lane"
-      if [ -z "$verify_target" ] || [[ "$verify_target" == manager* ]]; then
-        verify_target="$(peer_lane_for_target "$role" "$lead_target")"
-      fi
-      if [ -n "$verify_target" ] && [ "$verify_target" != "$lead_target" ]; then
-        append_unique_task_target "$verify_target" "verify"
-      fi
-      TASK_EXEC_MANAGER_STUB="verify"
-      ;;
-    independent_compare)
-      compare_csv="$owner_lanes"
-      if [ -z "$compare_csv" ]; then
-        compare_csv="${role}-claude,${role}-codex"
-      fi
-      for compare_target in $compare_csv; do
-        compare_target="$(_task_trim "$compare_target")"
-        append_unique_task_target "$compare_target" "compare"
-      done
-      TASK_EXEC_MANAGER_STUB="compare"
-      ;;
-  esac
-
-  TASK_EXEC_PATTERN="$pattern"
-}
-
 task_subject_and_message() {
   local task="$1"
   local _tsm_subject_var="$2"
@@ -2045,6 +1860,9 @@ expire_stale_assignments() {
   af="$(project_dir "$project")/memory/manager/assignments.md"
   [ -f "$af" ] || return 0
 
+  # 파일 잠금 (NEW-04 수정: 다른 writers와 동일한 lock 패턴)
+  runtime_acquire_path_lock "$af" || return 0
+
   local now_epoch
   now_epoch=$(date +%s)
 
@@ -2069,6 +1887,8 @@ expire_stale_assignments() {
     echo "$line"
   done < "$af" > "$tmp"
   mv "$tmp" "$af"
+
+  runtime_release_path_lock "$af"
 }
 
 # 에이전트의 현재 active 태스크 경로 반환
@@ -2652,6 +2472,7 @@ boot_single_agent() {
   # bracketed paste / raw mode를 설정하지 못해 전달 실패할 수 있다.
   sleep 2
 
+  # boot_msg 전송: paste → 실패 시 submit_tmux_prompt_when_ready fallback (이중 전송 방지)
   local prompt_ok=0
   for i in 1 2 3 4 5; do
     if tmux_submit_pasted_payload "$tmux_target" "$boot_msg" "${window_name}-boot"; then
@@ -2661,17 +2482,13 @@ boot_single_agent() {
     sleep 2
   done
   if [ "$prompt_ok" -ne 1 ]; then
-    echo "Warning: ${window_name} 온보딩 프롬프트 전달 실패." >&2
-    python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot_fail "$window_name" --detail reason="온보딩 프롬프트 전달 실패" || true
-    tmux kill-window -t "$tmux_target" 2>/dev/null || true
-    return 1
-  fi
-
-  if ! submit_tmux_prompt_when_ready "$tmux_target" "$boot_msg" "${window_name}-boot"; then
-    echo "Warning: ${window_name} 온보딩 프롬프트 전달 실패." >&2
-    kill_windows_by_name "$sess" "$window_name"
-    python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot_fail "$window_name" --detail reason="온보딩 프롬프트 전달 실패" || true
-    return 1
+    # paste 실패 → submit_tmux_prompt_when_ready로 fallback
+    if ! submit_tmux_prompt_when_ready "$tmux_target" "$boot_msg" "${window_name}-boot"; then
+      echo "Warning: ${window_name} 온보딩 프롬프트 전달 실패." >&2
+      kill_windows_by_name "$sess" "$window_name"
+      python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot_fail "$window_name" --detail reason="온보딩 프롬프트 전달 실패" || true
+      return 1
+    fi
   fi
   if [ -n "$pending_task" ] && ! wait_for_visible_task_prompt "$tmux_target" "$pending_task" 4 1; then
     if ! submit_tmux_prompt_when_ready "$tmux_target" "$boot_msg" "${window_name}-boot-redeliver" 4 20 1; then

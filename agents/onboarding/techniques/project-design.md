@@ -330,7 +330,6 @@ projects/{name}/
     knowledge/
       lessons/
       docs/
-      discussions/
       index.md
   reports/
 ```

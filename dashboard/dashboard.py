@@ -57,10 +57,15 @@ _RECENT_ACTIVITY_WINDOW_SEC = 180
 # ──────────────────────────────────────────────
 
 def _repo_root() -> str:
-    return subprocess.check_output(
-        ["git", "rev-parse", "--show-toplevel"],
-        text=True,
-    ).strip()
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("Error: git not found or not in a git repository.", file=sys.stderr)
+        sys.exit(1)
 
 
 def _now_kst() -> datetime:
@@ -696,6 +701,8 @@ def parse_assignments_md(project_dir: str) -> dict[str, dict]:
 
 
 def resolve_task_report(project_dir: str, task_ref: str, authors: list[str]) -> dict[str, str]:
+    if not authors:
+        return {"path": "", "status": "missing"}
     for author in authors:
         report_path = _task_report_path(project_dir, task_ref, author)
         if os.path.isfile(report_path):
@@ -1351,7 +1358,8 @@ def main() -> None:
                 state = collect(project_dir, session_name, project_info)
                 live.update(render(state, interval))
             except Exception:
-                pass  # 수집/렌더 오류 무시 — 다음 사이클에서 재시도
+                import traceback
+                print(traceback.format_exc(), file=sys.stderr)
 
 
 if __name__ == "__main__":
