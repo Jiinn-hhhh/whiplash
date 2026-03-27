@@ -468,21 +468,40 @@ check_claude_auth_blocked() {
       if [ "$previous_state" != "AUTH_BLOCKED" ]; then
         python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor auth_blocked_detected "$win_name" \
           --detail backend="$backend" role="$role" session="$session_id" reason="${detail:-pane-login-required}" || true
+      fi
 
-        # 자동 세션 재시작 1회 시도 (최초 감지 시에만)
+      # 자동 세션 재시작 1회 시도 (별도 플래그로 재시도 방지)
+      # env var는 cmd.sh 프로세스에만 적용됨 (command-scoped, export 아님)
+      local restart_flag="auth_restart_attempted_${win_name}"
+      local already_attempted
+      already_attempted="$(runtime_get_manager_state "$PROJECT" "$restart_flag" "" 2>/dev/null || true)"
+      if [ -z "$already_attempted" ]; then
+        runtime_set_manager_state "$PROJECT" "$restart_flag" "$(date +%s)" || true
         python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor auth_restart_attempt "$win_name" \
           --detail backend="$backend" role="$role" || true
         if WHIPLASH_AUTH_RESTART_BYPASS=1 bash "$TOOLS_DIR/cmd.sh" reboot "$win_name" "$PROJECT" 2>&1; then
-          # 재시작 후 auth 상태 재확인
-          sleep 5
-          local recheck
-          recheck="$(agent_classify_window_health "$PROJECT" "$SESSION" "$win_name" "$backend")"
-          local recheck_state="${recheck%%|*}"
-          if [ "$recheck_state" != "AUTH_BLOCKED" ]; then
+          # 재시작 후 auth 상태 재확인 (2초 간격, 최대 20초 폴링)
+          # healthy만 성공으로 인정. offline은 아직 부팅 중일 수 있으므로 대기.
+          local poll_ok=0
+          for _poll_i in 1 2 3 4 5 6 7 8 9 10; do
+            sleep 2
+            local recheck
+            recheck="$(agent_classify_window_health "$PROJECT" "$SESSION" "$win_name" "$backend")"
+            local recheck_state="${recheck%%|*}"
+            if [ "$recheck_state" = "healthy" ]; then
+              poll_ok=1
+              break
+            elif [ "$recheck_state" = "AUTH_BLOCKED" ]; then
+              break
+            fi
+            # offline 등 → 아직 부팅 중, 계속 대기
+          done
+          if [ "$poll_ok" -eq 1 ]; then
             python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor auth_restart_success "$win_name" \
               --detail backend="$backend" role="$role" || true
             runtime_clear_agent_health_state "$PROJECT" "$win_name" || true
             runtime_clear_agent_health_alert_ts "$PROJECT" "$win_name" || true
+            runtime_clear_manager_state "$PROJECT" "$restart_flag" || true
             continue
           fi
         fi
@@ -501,6 +520,7 @@ check_claude_auth_blocked() {
     if [ "$previous_state" = "AUTH_BLOCKED" ]; then
       python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor auth_blocked_cleared "$win_name" \
         --detail backend="$backend" role="$role" session="$session_id" || true
+      runtime_clear_manager_state "$PROJECT" "auth_restart_attempted_${win_name}" || true
     fi
     if [[ "${previous_alert:-}" =~ ^[0-9]+$ ]]; then
       runtime_clear_agent_health_alert_ts "$PROJECT" "$win_name" || true
