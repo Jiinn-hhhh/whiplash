@@ -162,7 +162,9 @@ def cmd_system(args: argparse.Namespace) -> None:
         msg = f"{args.event} {args.target}"
 
     if args.detail:
-        msg += " " + " ".join(args.detail)
+        # L-06: detail 값의 뉴라인을 공백으로 치환
+        sanitized = [d.replace("\n", " ").replace("\r", " ") for d in args.detail]
+        msg += " " + " ".join(sanitized)
 
     parts = [_now_kst(), f"[{level}]", msg]
 

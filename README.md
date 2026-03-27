@@ -548,7 +548,7 @@ whiplash/
         │   └── teams/           #     역할별 작업 디렉토리
         ├── memory/              #   축적된 상태
         │   ├── discussion/      #     전략 토론 메모, manager handoff
-        │   ├── knowledge/       #     공유 지식 (index, 교훈, 아카이브, change-authority)
+        │   ├── knowledge/       #     공유 지식 (index, 교훈, docs, change-authority)
         │   ├── manager/         #     sessions.md, assignments.md
         │   └── {role}/          #     역할별 개인 메모리
         ├── runtime/             #   런타임 상태 파일 (manager-state.tsv, reboot-state.tsv, queue/lock)

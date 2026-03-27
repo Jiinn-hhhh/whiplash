@@ -116,8 +116,9 @@ ensure_packages() {
     fail "일부 패키지 설치에 실패했다. 위 안내를 참고하여 수동 설치 후 재시도."
   fi
 
-  # 마커 생성
+  # 마커 생성 (L-01: 소유자만 읽기/쓰기)
   date -u '+%Y-%m-%dT%H:%M:%SZ' > "$MARKER"
+  chmod 600 "$MARKER"
   info "패키지 검증 통과. 마커 생성됨."
 }
 

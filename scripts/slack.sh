@@ -127,7 +127,7 @@ fi
 
 curl -fsS -X POST \
   -H 'Content-Type: application/json; charset=utf-8' \
-  --data "$payload" \
+  --data-raw "$payload" \
   "$webhook" >/dev/null
 
 echo "Slack 전송 완료: ${project} | ${level} | ${title}"

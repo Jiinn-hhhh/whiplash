@@ -54,9 +54,9 @@ PY
 
 if [ "$has_slack" = "1" ]; then
   if [ "$level" = "urgent" ] || [ "$level" = "failure" ]; then
-    bash "$SCRIPT_DIR/slack.sh" "$project" "$title" "$message" "$level" >/dev/null 2>&1 || true
+    bash "$SCRIPT_DIR/slack.sh" "$project" "$title" "$message" "$level" >/dev/null 2>&1 || echo "[user-notify] Warning: Slack 전송 실패 (level=$level)" >&2
   else
-    bash "$SCRIPT_DIR/slack.sh" --no-mention "$project" "$title" "$message" "$level" >/dev/null 2>&1 || true
+    bash "$SCRIPT_DIR/slack.sh" --no-mention "$project" "$title" "$message" "$level" >/dev/null 2>&1 || echo "[user-notify] Warning: Slack 전송 실패 (level=$level)" >&2
   fi
 fi
 

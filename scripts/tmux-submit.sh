@@ -350,7 +350,7 @@ tmux_submit__enter_until_cleared() {
 
   while :; do
     if tmux_submit__wait_for_payload_state "$tmux_target" "$payload" cleared "$settle_attempts" "$settle_delay"; then
-      local confirm_capture lines confirm_attempts
+      local confirm_capture="" lines confirm_attempts
       confirm_attempts=3
       lines="$(tmux_submit__capture_lines "$payload")"
       while [ "$confirm_attempts" -gt 0 ]; do
