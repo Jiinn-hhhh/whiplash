@@ -41,5 +41,59 @@ class DashboardProcessAliveTest(unittest.TestCase):
             self.assertFalse(dashboard_module._agent_process_alive(1000, "-zsh", "codex"))
 
 
+class ParseSessionsMdTest(unittest.TestCase):
+    def _sessions_md_content(self, rows: list[str]) -> str:
+        header = "| 역할 | 백엔드 | 세션ID | tmux대상 | 상태 | 시작일 | 모델 |"
+        sep = "| --- | --- | --- | --- | --- | --- | --- |"
+        return "\n".join([header, sep] + rows)
+
+    def test_parses_valid_row(self) -> None:
+        content = self._sessions_md_content([
+            "| developer | claude | s1 | whiplash-p:dev | active | 2025-01-01 | claude-3 |",
+        ])
+        with patch.object(dashboard_module, "_read_file", return_value=content):
+            agents = dashboard_module.parse_sessions_md("/fake/project")
+        self.assertEqual(len(agents), 1)
+        self.assertEqual(agents[0]["role"], "developer")
+
+    def test_drops_row_with_fewer_than_7_cols_and_warns(self) -> None:
+        content = self._sessions_md_content([
+            "| developer | claude | s1 | whiplash-p:dev | active |",  # only 5 cols
+        ])
+        import io
+        with patch.object(dashboard_module, "_read_file", return_value=content):
+            with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                agents = dashboard_module.parse_sessions_md("/fake/project")
+                warning = mock_err.getvalue()
+        self.assertEqual(agents, [])
+        self.assertIn("sessions.md", warning)
+
+    def test_deduplicates_by_tmux_target(self) -> None:
+        content = self._sessions_md_content([
+            "| developer | claude | s1 | whiplash-p:dev | active | 2025-01-01 | claude-3 |",
+            "| developer | claude | s2 | whiplash-p:dev | active | 2025-01-02 | claude-3 |",
+        ])
+        with patch.object(dashboard_module, "_read_file", return_value=content):
+            agents = dashboard_module.parse_sessions_md("/fake/project")
+        self.assertEqual(len(agents), 1)
+        self.assertEqual(agents[0]["session_id"], "s2")
+
+
+class CellLenTest(unittest.TestCase):
+    def test_ascii_only(self) -> None:
+        self.assertEqual(dashboard_module.cell_len("hello"), 5)
+
+    def test_korean_chars_count_as_two(self) -> None:
+        # "안녕" = 2 Korean chars → display width 4
+        self.assertEqual(dashboard_module.cell_len("안녕"), 4)
+
+    def test_mixed_ascii_and_korean(self) -> None:
+        # "Hi안녕" = 2 ASCII (2) + 2 Korean (4) = 6
+        self.assertEqual(dashboard_module.cell_len("Hi안녕"), 6)
+
+    def test_empty_string(self) -> None:
+        self.assertEqual(dashboard_module.cell_len(""), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

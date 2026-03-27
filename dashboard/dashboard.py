@@ -9,10 +9,12 @@ Usage:
 import argparse
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
 import time
+import unicodedata
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from glob import glob
@@ -47,7 +49,7 @@ _ROLE_ABBR = {
 
 _ROLE_FULL = {
     "mgr": "manager", "dis": "discussion", "dev": "developer", "res": "researcher",
-    "sys": "systems-engineer", "mon": "monitoring", "orc": "orchestrator",
+    "sys": "systems-engineer", "mon": "monitoring",
 }
 
 _RECENT_ACTIVITY_WINDOW_SEC = 180
@@ -55,6 +57,18 @@ _RECENT_ACTIVITY_WINDOW_SEC = 180
 # ──────────────────────────────────────────────
 # 유틸리티
 # ──────────────────────────────────────────────
+
+def cell_len(s: str) -> int:
+    """동아시아 넓은 문자(W/F)를 2로, 나머지를 1로 계산한 표시 폭 반환."""
+    width = 0
+    for ch in s:
+        eaw = unicodedata.east_asian_width(ch)
+        width += 2 if eaw in ("W", "F") else 1
+    return width
+
+
+# mtime 캐시: path -> (mtime, parsed_data)
+_task_file_cache: dict[str, tuple[float, Any]] = {}
 
 def _repo_root() -> str:
     try:
@@ -291,6 +305,10 @@ def parse_sessions_md(project_dir: str) -> list[dict[str, str]]:
         cols = [c.strip() for c in line.split("|")]
         cols = [c for c in cols if c]
         if len(cols) < 7:
+            print(
+                f"[dashboard] sessions.md: 7컬럼 미달 행 무시 ({len(cols)}열): {line!r}",
+                file=sys.stderr,
+            )
             continue
         if cols[0] in ("역할", "------", "---") or cols[0].startswith("-"):
             continue
@@ -606,10 +624,25 @@ def _resolve_task_path(project_dir: str, task_path: str) -> str:
     return os.path.join(project_dir, task_path)
 
 
+def _read_file_cached(path: str) -> str | None:
+    """mtime 기반 캐싱으로 태스크 파일 읽기 — 변경 시에만 재읽음."""
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        _task_file_cache.pop(path, None)
+        return None
+    cached = _task_file_cache.get(path)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]  # type: ignore[return-value]
+    content = _read_file(path)
+    _task_file_cache[path] = (mtime, content)
+    return content
+
+
 def _read_task_title(project_dir: str, task_path: str) -> str:
     """태스크 파일 첫 줄에서 제목 추출."""
     full = _resolve_task_path(project_dir, task_path)
-    content = _read_file(full)
+    content = _read_file_cached(full)
     if not content:
         return ""
     first = content.splitlines()[0]
@@ -620,7 +653,7 @@ def _read_task_title(project_dir: str, task_path: str) -> str:
 def _read_task_background(project_dir: str, task_path: str) -> str:
     """태스크 파일에서 목표/배경 첫 의미줄 추출."""
     full = _resolve_task_path(project_dir, task_path)
-    content = _read_file(full)
+    content = _read_file_cached(full)
     if not content:
         return ""
     in_section = False
@@ -980,8 +1013,9 @@ def _render_header(state: dict) -> Panel:
 
     # 시간 우정렬
     time_str = now.strftime("%H:%M:%S")
-    current_len = len(line1.plain)
-    padding = max(1, 76 - current_len - len(time_str))
+    term_width = shutil.get_terminal_size().columns
+    current_len = cell_len(line1.plain)
+    padding = max(1, term_width - current_len - len(time_str))
     line1.append(" " * padding)
     line1.append(time_str, style="dim")
 
