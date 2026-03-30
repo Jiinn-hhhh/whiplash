@@ -43,6 +43,8 @@ source "$TOOLS_DIR/assignment-state.sh"
 source "$TOOLS_DIR/message-queue.sh"
 # shellcheck source=/dev/null
 source "$TOOLS_DIR/notify-format.sh"
+# shellcheck source=/dev/null
+source "$TOOLS_DIR/execution-config.sh"
 whiplash_activate_tmux_project "$PROJECT"
 HEALTH_CHECK_INTERVAL=30
 MAX_REBOOT=3
@@ -162,9 +164,13 @@ get_window_backend() {
   local win_name="$1"
   case "$win_name" in
     *-codex|*-codex-*)
-    echo "codex"
-    return
-    ;;
+      echo "codex"
+      return
+      ;;
+    *-claude|*-claude-*)
+      echo "claude"
+      return
+      ;;
   esac
 
   local sessions_file="$REPO_ROOT/projects/$PROJECT/memory/manager/sessions.md"
@@ -182,6 +188,17 @@ get_window_backend() {
       return
     fi
   fi
+
+  case "$win_name" in
+    onboarding|manager|discussion|developer|researcher|systems-engineer|monitoring)
+      local backend
+      backend="$(execution_config_role_backend "$PROJECT" "$win_name" 2>/dev/null || true)"
+      if [ "$backend" = "claude" ] || [ "$backend" = "codex" ]; then
+        echo "$backend"
+        return
+      fi
+      ;;
+  esac
 
   echo "claude"
 }

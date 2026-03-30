@@ -203,8 +203,12 @@ def _parse_project_field(line: str) -> tuple[str, str] | None:
     value = _clean_project_value(match.group(2))
     if "domain" in key or "도메인" in key:
         return "domain", value
+    if "execution preset" in key or "실행 프리셋" in key:
+        return "preset", value
     if "execution mode" in key or "실행 모드" in key:
         return "mode", value
+    if "control-plane backend" in key or "control-plane 백엔드" in key:
+        return "control_plane_backend", value
     if "loop mode" in key or "작업 루프" in key:
         return "loop_mode", value
     return None
@@ -234,9 +238,11 @@ def parse_project_md(project_dir: str) -> dict[str, str]:
     content = _read_file(os.path.join(project_dir, "project.md"))
     info: dict[str, str] = {
         "name": os.path.basename(os.path.normpath(project_dir)),
+        "preset": "",
         "mode": "pending",
         "loop_mode": "guided",
         "domain": "general",
+        "control_plane_backend": "",
     }
     if not content:
         return info
@@ -250,13 +256,27 @@ def parse_project_md(project_dir: str) -> dict[str, str]:
         if not field:
             continue
         key, value = field
-        if key == "mode":
+        if key == "preset":
+            lowered = value.lower()
+            if "pending" in lowered or "미정" in value:
+                info["preset"] = "pending"
+            else:
+                info["preset"] = lowered.replace("_", "-").replace(" ", "-")
+        elif key == "mode":
             if "dual" in value.lower():
                 info["mode"] = "dual"
             elif "pending" in value.lower() or "미정" in value:
                 info["mode"] = "pending"
             else:
                 info["mode"] = "solo"
+        elif key == "control_plane_backend":
+            lowered = value.lower()
+            if "claude" in lowered:
+                info["control_plane_backend"] = "claude"
+            elif "codex" in lowered:
+                info["control_plane_backend"] = "codex"
+            elif "pending" in lowered or "미정" in value:
+                info["control_plane_backend"] = "pending"
         elif key == "loop_mode":
             lowered = value.lower()
             if "ralph" in lowered:
@@ -990,7 +1010,7 @@ def _render_header(state: dict) -> Panel:
     line1.append(proj.get("name", "?"), style="bold cyan")
     line1.append("  ", style="")
 
-    mode = proj.get("mode", "solo")
+    mode = proj.get("preset") or proj.get("mode", "solo")
     loop = proj.get("loop_mode", "guided")
     line1.append(mode, style="bold magenta")
     line1.append("/", style="dim")
@@ -1021,8 +1041,13 @@ def _render_header(state: dict) -> Panel:
 
     # 둘째 줄: 프로젝트 단계
     line2 = Text()
-    if phase:
+    control_plane_backend = proj.get("control_plane_backend", "")
+    if control_plane_backend:
         line2.append("  ", style="")
+        line2.append(f"ctrl:{control_plane_backend}", style="dim")
+        if phase:
+            line2.append("  ", style="")
+    if phase:
         line2.append(phase, style="italic dim")
 
     body = Text()
@@ -1372,13 +1397,12 @@ def main() -> None:
         print(f"프로젝트 디렉토리 없음: {project_dir}", file=sys.stderr)
         sys.exit(1)
 
-    project_info = parse_project_md(project_dir)
-    if not project_info["name"]:
-        project_info["name"] = project
-
     signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
 
     console = _build_console()
+    project_info = parse_project_md(project_dir)
+    if not project_info["name"]:
+        project_info["name"] = project
     initial = collect(project_dir, session_name, project_info)
     with Live(
         render(initial, interval),
@@ -1389,6 +1413,9 @@ def main() -> None:
         while True:
             time.sleep(interval)
             try:
+                project_info = parse_project_md(project_dir)
+                if not project_info["name"]:
+                    project_info["name"] = project
                 state = collect(project_dir, session_name, project_info)
                 live.update(render(state, interval))
             except Exception:

@@ -19,6 +19,7 @@
 #   refresh        {target} {project}          -- 에이전트 맥락 리프레시 (target: role 또는 role-backend)
 #   merge-worktree {role} {winner} {project}     -- 듀얼 모드 합의 후 winner를 main에 merge + worktree 정리
 #   monitor-check  {project}                   -- monitor.sh 상태 확인 + 자동 재시작
+#   execution-config {project} [--scope current|baseline] {preset|role override} -- 실행 backend/model 설정
 
 set -euo pipefail
 
@@ -42,6 +43,8 @@ source "$TOOLS_DIR/runtime-paths.sh"
 source "$TOOLS_DIR/agent-health.sh"
 # shellcheck source=/dev/null
 source "$TOOLS_DIR/assignment-state.sh"
+# shellcheck source=/dev/null
+source "$TOOLS_DIR/execution-config.sh"
 
 # ──────────────────────────────────────────────
 # 유틸리티 함수
@@ -237,6 +240,7 @@ write_onboarding_bootstrap_project_md() {
 온보딩 전. 유저와 합의 후 작성.
 
 ## 운영 방식
+- **실행 프리셋**: pending
 - **실행 모드**: pending
 - **control-plane 백엔드**: pending
 - **작업 루프**: pending
@@ -371,6 +375,22 @@ get_allowed_tools() {
   parse_agent_meta "$role" "allowed-tools"
 }
 
+is_canonical_role() {
+  local role="$1"
+  case "$role" in
+    onboarding|manager|discussion|developer|researcher|systems-engineer|monitoring) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_worker_role() {
+  local role="$1"
+  case "$role" in
+    developer|researcher|systems-engineer|monitoring) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 role_supports_dual() {
   local role="$1"
   case "$role" in
@@ -472,6 +492,200 @@ role_supports_native_subagents() {
     manager|discussion|developer|researcher|systems-engineer) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+canonical_role_from_window_name() {
+  local window_name="$1"
+  case "$window_name" in
+    onboarding|manager|discussion|developer|researcher|systems-engineer|monitoring)
+      printf '%s\n' "$window_name"
+      return 0
+      ;;
+    *-claude)
+      local role="${window_name%-claude}"
+      if is_canonical_role "$role"; then
+        printf '%s\n' "$role"
+        return 0
+      fi
+      ;;
+    *-codex)
+      local role="${window_name%-codex}"
+      if is_canonical_role "$role"; then
+        printf '%s\n' "$role"
+        return 0
+      fi
+      ;;
+  esac
+  return 1
+}
+
+session_role_for_window() {
+  local project="$1" window_name="$2"
+  local sf sess target
+  sf="$(sessions_file "$project")"
+  [ -f "$sf" ] || return 1
+  sess="$(session_name "$project")"
+  target="${sess}:${window_name}"
+  awk -F'|' -v target="$target" '
+    function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+    trim($5) == target && trim($6) == "active" { role = trim($2) }
+    END {
+      if (role != "") {
+        print role
+      }
+    }
+  ' "$sf"
+}
+
+session_backend_for_window() {
+  local project="$1" window_name="$2"
+  local sf sess target
+  sf="$(sessions_file "$project")"
+  [ -f "$sf" ] || return 1
+  sess="$(session_name "$project")"
+  target="${sess}:${window_name}"
+  awk -F'|' -v target="$target" '
+    function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+    trim($5) == target && trim($6) == "active" { backend = trim($3) }
+    END {
+      if (backend != "") {
+        print backend
+      }
+    }
+  ' "$sf"
+}
+
+get_current_preset() {
+  local project="$1"
+  local preset
+  preset="$(execution_config_current_preset "$project" 2>/dev/null || true)"
+  if [ -n "$preset" ]; then
+    printf '%s\n' "$preset"
+    return 0
+  fi
+
+  if [ "$(get_exec_mode "$project")" = "dual" ]; then
+    printf 'dual\n'
+  else
+    printf 'default\n'
+  fi
+}
+
+resolve_role_backend() {
+  local project="$1" role="$2"
+  local backend
+
+  if [ "$role" = "manager" ] && [ -n "${WHIPLASH_MANAGER_BACKEND:-}" ]; then
+    case "${WHIPLASH_MANAGER_BACKEND}" in
+      claude|codex)
+        printf '%s\n' "$WHIPLASH_MANAGER_BACKEND"
+        return 0
+        ;;
+    esac
+  fi
+
+  backend="$(execution_config_role_backend "$project" "$role" 2>/dev/null || true)"
+  case "$backend" in
+    claude|codex)
+      printf '%s\n' "$backend"
+      return 0
+      ;;
+  esac
+
+  case "$role" in
+    onboarding|manager|discussion) printf 'codex\n' ;;
+    *) printf 'claude\n' ;;
+  esac
+}
+
+resolve_role_model() {
+  local project="$1" role="$2" backend="$3"
+  local model=""
+
+  if [ "$backend" = "codex" ] && [ -n "${WHIPLASH_CODEX_MODEL:-}" ]; then
+    printf '%s\n' "$WHIPLASH_CODEX_MODEL"
+    return 0
+  fi
+
+  model="$(execution_config_role_model "$project" "$role" "$backend" 2>/dev/null || true)"
+  if [ -n "$model" ]; then
+    printf '%s\n' "$model"
+    return 0
+  fi
+
+  if [ "$backend" = "codex" ]; then
+    get_codex_model
+  else
+    get_model "$role"
+  fi
+}
+
+role_runs_dual_now() {
+  local project="$1" role="$2"
+  local dual_flag
+  dual_flag="$(execution_config_role_runs_dual "$project" "$role" 2>/dev/null || true)"
+  if [ "$dual_flag" = "true" ]; then
+    return 0
+  fi
+  return 1
+}
+
+role_window_plan_lines() {
+  local project="$1" role="$2"
+  local lines
+  lines="$(execution_config_role_window_lines "$project" "$role" 2>/dev/null || true)"
+  if [ -n "$lines" ]; then
+    printf '%s\n' "$lines"
+    return 0
+  fi
+
+  if role_supports_dual "$role" && [ "$(get_exec_mode "$project")" = "dual" ]; then
+    printf '%s\n' "${role}-claude|claude|$(get_model "$role")"
+    printf '%s\n' "${role}-codex|codex|$(get_codex_model)"
+    return 0
+  fi
+
+  local backend
+  backend="$(resolve_role_backend "$project" "$role")"
+  printf '%s|%s|%s\n' "$role" "$backend" "$(resolve_role_model "$project" "$role" "$backend")"
+}
+
+resolve_window_backend() {
+  local project="$1" window_name="$2" role_hint="${3:-}"
+  local backend role
+
+  case "$window_name" in
+    *-codex|*-codex-*)
+      printf 'codex\n'
+      return 0
+      ;;
+    *-claude|*-claude-*)
+      printf 'claude\n'
+      return 0
+      ;;
+  esac
+
+  backend="$(session_backend_for_window "$project" "$window_name" 2>/dev/null || true)"
+  case "$backend" in
+    claude|codex)
+      printf '%s\n' "$backend"
+      return 0
+      ;;
+  esac
+
+  role="$role_hint"
+  if [ -z "$role" ]; then
+    role="$(session_role_for_window "$project" "$window_name" 2>/dev/null || true)"
+  fi
+  if [ -z "$role" ]; then
+    role="$(canonical_role_from_window_name "$window_name" 2>/dev/null || true)"
+  fi
+  if [ -n "$role" ] && is_canonical_role "$role"; then
+    resolve_role_backend "$project" "$role"
+    return 0
+  fi
+
+  printf 'claude\n'
 }
 
 native_subagent_runtime_triage_lines() {
@@ -619,36 +833,14 @@ kill_windows_by_name() {
 
 get_manager_backend() {
   local project="${1:-}"
-  local backend="${WHIPLASH_MANAGER_BACKEND:-}"
-
-  if [ -n "$backend" ]; then
-    case "$backend" in
-      claude|codex)
-        echo "$backend"
-        return
-        ;;
-    esac
+  if [ -z "$project" ]; then
+    project="${WHIPLASH_TMUX_PROJECT:-}"
   fi
-
   if [ -n "$project" ]; then
-    local project_md parsed
-    project_md="$(project_dir "$project")/project.md"
-    parsed=$({ grep -i "control-plane backend\|control-plane 백엔드" "$project_md" 2>/dev/null || true; } \
-      | head -1 \
-      | sed 's/.*: *//' \
-      | sed 's/ *(.*)//' \
-      | tr -d '[:space:]' \
-      | tr -d '*|' \
-      | tr '[:upper:]' '[:lower:]')
-    case "$parsed" in
-      claude|codex)
-        echo "$parsed"
-        return
-        ;;
-    esac
+    resolve_role_backend "$project" "manager"
+    return 0
   fi
-
-  echo "codex"
+  printf 'codex\n'
 }
 
 get_codex_model() {
@@ -747,16 +939,13 @@ get_domain() {
 # project.md에서 실행 모드 추출 (solo | dual, 기본값 solo)
 get_exec_mode() {
   local project="$1"
-  local project_md="$(project_dir "$project")/project.md"
   local mode
-  mode=$({ grep -i "실행 모드" "$project_md" 2>/dev/null || true; } \
-    | head -1 \
-    | sed 's/.*: *//' \
-    | sed 's/ *(.*)//' \
-    | tr -d '[:space:]' \
-    | tr -d '*|' \
-    | tr '[:upper:]' '[:lower:]')
-  if [ "$mode" = "dual" ]; then echo "dual"; else echo "solo"; fi
+  mode="$(execution_config_exec_mode "$project" 2>/dev/null || true)"
+  if [ "$mode" = "dual" ]; then
+    printf 'dual\n'
+  else
+    printf 'solo\n'
+  fi
 }
 
 # project.md에서 작업 루프 추출 (guided | ralph, 기본값 guided)
@@ -1917,6 +2106,282 @@ resume_pending_task_for_window() {
   printf '%s\n' "$pending_task"
 }
 
+mark_assignment_status_for_agent() {
+  local project="$1" agent="$2" old_status="$3" new_status="$4"
+  local af
+  af="$(assignments_file_for_project "$project")"
+  [ -f "$af" ] || return 0
+  runtime_acquire_path_lock "$af" || return 1
+  _assignment_state_transition "$af" "$agent" "$old_status" "$new_status"
+  runtime_release_path_lock "$af"
+}
+
+unique_active_tasks_for_agents() {
+  local project="$1"
+  shift
+  local agent task seen="" unique=()
+  for agent in "$@"; do
+    [ -n "$agent" ] || continue
+    task="$(get_active_task "$project" "$agent")" || task=""
+    [ -n "$task" ] || continue
+    case "|${seen}|" in
+      *"|${task}|"*) ;;
+      *)
+        unique+=("$task")
+        seen="${seen:+${seen}|}${task}"
+        ;;
+    esac
+  done
+  printf '%s\n' "${unique[@]}"
+}
+
+collapse_target_task_for_role() {
+  local project="$1" role="$2"
+  shift 2
+  local tasks
+  tasks="$(unique_active_tasks_for_agents "$project" "$role" "$@")"
+  local count
+  count="$(printf '%s\n' "$tasks" | sed '/^$/d' | wc -l | tr -d ' ')"
+  if [ "${count:-0}" -gt 1 ]; then
+    echo "Error: ${role}는 서로 다른 active task가 여러 lane에 걸려 있어 single lane으로 축소할 수 없다." >&2
+    printf '%s\n' "$tasks" | sed '/^$/d' >&2
+    return 1
+  fi
+  printf '%s\n' "$tasks" | sed -n '1p'
+}
+
+project_has_active_role() {
+  local project="$1" target_role="$2"
+  local role
+  while IFS= read -r role; do
+    [ "$role" = "$target_role" ] && return 0
+  done < <(get_active_agents "$project")
+  return 1
+}
+
+current_windows_for_role() {
+  local project="$1" role="$2"
+  get_active_session_entries "$project" | awk -F'|' -v target_role="$role" '
+    $3 == target_role && ($1 == target_role || $1 == target_role "-claude" || $1 == target_role "-codex") {
+      print $1 "|" $2
+    }
+  '
+}
+
+kill_window_for_reconcile() {
+  local project="$1" sess="$2" window_name="$3"
+  if window_indices_by_name "$sess" "$window_name" | grep -q .; then
+    tmux send-keys -t "${sess}:${window_name}" "/exit" Enter 2>/dev/null || true
+    sleep 1
+    kill_windows_by_name "$sess" "$window_name"
+  fi
+  mark_window_status "$project" "$window_name" "active" "closed"
+}
+
+reconcile_worker_role() {
+  local project="$1" role="$2"
+  local sess loop_mode
+  sess="$(session_name "$project")"
+  loop_mode="$(get_loop_mode "$project")"
+
+  if ! project_has_active_role "$project" "$role"; then
+    return 0
+  fi
+
+  local desired_lines current_lines desired_count=0 desired_window=""
+  desired_lines="$(role_window_plan_lines "$project" "$role")"
+  current_lines="$(current_windows_for_role "$project" "$role")"
+
+  while IFS='|' read -r _window_name _backend _model; do
+    [ -n "${_window_name:-}" ] || continue
+    desired_count=$((desired_count + 1))
+    if [ -z "$desired_window" ]; then
+      desired_window="$_window_name"
+    fi
+  done <<< "$desired_lines"
+
+  local needs_collapse_migration=0 current_window current_backend carry_task=""
+  if [ "$desired_count" -eq 1 ] && [ "$desired_window" = "$role" ]; then
+    while IFS='|' read -r current_window current_backend; do
+      [ -n "$current_window" ] || continue
+      if [ "$current_window" != "$desired_window" ]; then
+        needs_collapse_migration=1
+        break
+      fi
+    done <<< "$current_lines"
+  fi
+
+  if [ "$needs_collapse_migration" -eq 1 ]; then
+    local current_agents=()
+    while IFS='|' read -r current_window current_backend; do
+      [ -n "$current_window" ] || continue
+      current_agents+=("$current_window")
+    done <<< "$current_lines"
+    carry_task="$(collapse_target_task_for_role "$project" "$role" "${current_agents[@]}")" || return 1
+    if [ -n "$carry_task" ]; then
+      record_assignment "$project" "$role" "$carry_task"
+    fi
+    for current_window in "${current_agents[@]}"; do
+      mark_assignment_status_for_agent "$project" "$current_window" "active" "superseded" || true
+    done
+  fi
+
+  while IFS='|' read -r current_window current_backend; do
+    [ -n "$current_window" ] || continue
+    kill_window_for_reconcile "$project" "$sess" "$current_window"
+  done <<< "$current_lines"
+
+  if role_runs_dual_now "$project" "$role"; then
+    create_worktrees "$project" "$role"
+  elif [ "$loop_mode" = "ralph" ] && role_uses_ralph_worktree "$role"; then
+    create_ralph_worktree "$project" "$role" || true
+  fi
+
+  while IFS='|' read -r desired_window current_backend _model; do
+    [ -n "$desired_window" ] || continue
+    local pending_task=""
+    if [ -n "$carry_task" ] && [ "$desired_window" = "$role" ]; then
+      pending_task="$carry_task"
+    else
+      pending_task="$(resume_pending_task_for_window "$project" "$role" "$desired_window")" || pending_task=""
+    fi
+    boot_agent_with_backend "$role" "$project" "$desired_window" "$current_backend" "" "$pending_task" || {
+      echo "Error: ${desired_window} 재구성 실패." >&2
+      return 1
+    }
+  done <<< "$desired_lines"
+}
+
+ensure_preset_collapse_safe() {
+  local project="$1" preset="$2"
+  case "$preset" in
+    dual) return 0 ;;
+  esac
+
+  local role current_window current_backend current_agents carry_task
+  for role in developer researcher; do
+    role_runs_dual_now "$project" "$role" || continue
+    current_agents=()
+    while IFS='|' read -r current_window current_backend; do
+      [ -n "$current_window" ] || continue
+      current_agents+=("$current_window")
+    done < <(current_windows_for_role "$project" "$role")
+    [ "${#current_agents[@]}" -gt 0 ] || continue
+    carry_task="$(collapse_target_task_for_role "$project" "$role" "${current_agents[@]}")" || return 1
+    :
+  done
+}
+
+cmd_execution_config() {
+  local project="$1"
+  shift
+  validate_project_name "$project"
+
+  local scope="current"
+  if [ "${1:-}" = "--scope" ]; then
+    scope="${2:-current}"
+    shift 2
+  fi
+
+  if [ $# -lt 1 ]; then
+    echo "Usage: cmd.sh execution-config {project} [--scope current|baseline] {default|claude only|codex only|dual|<role> ...}" >&2
+    exit 1
+  fi
+
+  local stage sess has_live_session=0
+  stage="$(get_project_stage "$project")"
+  sess="$(session_name "$project")"
+  if tmux has-session -t "$sess" 2>/dev/null; then
+    has_live_session=1
+  fi
+
+  local lowered
+  lowered="$(printf '%s ' "$@" | tr '[:upper:]' '[:lower:]' | sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//')"
+
+  local preset_candidate=""
+  case "$lowered" in
+    default|dual|claude|claude-only|claude\ only|codex|codex-only|codex\ only)
+      preset_candidate="$lowered"
+      ;;
+  esac
+
+  if [ -n "$preset_candidate" ]; then
+    if [ "$scope" != "current" ]; then
+      echo "Error: preset 변경은 current scope에서만 지원한다." >&2
+      exit 1
+    fi
+    if [ "$has_live_session" -eq 1 ] && [ "$stage" = "active" ]; then
+      ensure_preset_collapse_safe "$project" "$preset_candidate"
+    fi
+    execution_config_set_preset "$project" "$preset_candidate" >/dev/null
+    python3 "$TOOLS_DIR/log.py" system "$project" orchestrator execution_config_preset "$project" \
+      --detail preset="$preset_candidate" scope="$scope" || true
+    if [ "$has_live_session" -eq 1 ] && [ "$stage" = "active" ]; then
+      local worker_role
+      for worker_role in developer researcher systems-engineer monitoring; do
+        project_has_active_role "$project" "$worker_role" || continue
+        reconcile_worker_role "$project" "$worker_role"
+      done
+      echo "execution-config 적용 완료: preset=${preset_candidate} (worker 즉시 반영, control-plane은 다음 reboot/boot부터)"
+    else
+      echo "execution-config 저장 완료: preset=${preset_candidate} (다음 boot/reboot부터 반영)"
+    fi
+    return 0
+  fi
+
+  local role="$1"
+  shift
+  if ! is_canonical_role "$role"; then
+    echo "Error: 지원하지 않는 role: ${role}" >&2
+    exit 1
+  fi
+  [ $# -ge 1 ] || { echo "Error: ${role} 뒤에 backend/model/reset 지시가 필요하다." >&2; exit 1; }
+
+  local action="$1"
+  shift
+
+  if [ "$action" = "reset" ]; then
+    execution_config_reset_role "$project" "$role" "$scope" >/dev/null
+  elif [ "$action" = "model" ]; then
+    [ $# -ge 1 ] || { echo "Error: ${role} model 뒤에 model 값이 필요하다." >&2; exit 1; }
+    local backend
+    if [ "$scope" = "baseline" ]; then
+      backend="$(execution_config_baseline_role_backend "$project" "$role" 2>/dev/null || true)"
+      [ -z "$backend" ] && backend="$(resolve_role_backend "$project" "$role")"
+    else
+      backend="$(execution_config_role_backend "$project" "$role" 2>/dev/null || true)"
+      [ "$backend" = "dual" ] && backend=""
+      [ -z "$backend" ] && backend="$(resolve_role_backend "$project" "$role")"
+    fi
+    if [ "$backend" != "claude" ] && [ "$backend" != "codex" ]; then
+      echo "Error: ${role} model은 현재 effective backend가 단일일 때만 설정할 수 있다." >&2
+      exit 1
+    fi
+    execution_config_set_role_model "$project" "$role" "$backend" "$1" "$scope" >/dev/null
+  elif [ "$action" = "claude" ] || [ "$action" = "codex" ]; then
+    local backend="$action"
+    execution_config_set_role_backend "$project" "$role" "$backend" "$scope" >/dev/null
+    if [ $# -ge 1 ]; then
+      execution_config_set_role_model "$project" "$role" "$backend" "$1" "$scope" >/dev/null
+    fi
+  else
+    echo "Error: 지원하지 않는 execution-config 지시: ${action}" >&2
+    exit 1
+  fi
+
+  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator execution_config_role "$role" \
+    --detail scope="$scope" action="$action" || true
+
+  if [ "$scope" = "current" ] && [ "$has_live_session" -eq 1 ] && [ "$stage" = "active" ] && is_worker_role "$role"; then
+    reconcile_worker_role "$project" "$role"
+    echo "execution-config 적용 완료: ${role} (worker 즉시 반영)"
+  elif [ "$scope" = "current" ] && is_worker_role "$role"; then
+    echo "execution-config 저장 완료: ${role} (다음 boot/reboot부터 반영)"
+  else
+    echo "execution-config 저장 완료: ${role} (control-plane은 다음 reboot/boot부터 반영)"
+  fi
+}
+
 validate_task_report_ready() {
   local project="$1" agent="$2" task_ref="$3"
   local report_path report_rel
@@ -2363,16 +2828,26 @@ resolve_reboot_or_refresh_target() {
     resolved_backend="codex"
     resolved_window="$target"
   else
-    resolved_role="$target"
-    resolved_window="$target"
-    case "$resolved_role" in
-      onboarding|manager|discussion)
-        resolved_backend="$(get_manager_backend "$project")"
-        ;;
-      *)
-        resolved_backend="claude"
-        ;;
-    esac
+    if is_canonical_role "$target"; then
+      resolved_role="$target"
+      if role_runs_dual_now "$project" "$resolved_role"; then
+        resolved_backend="codex"
+        resolved_window="${resolved_role}-codex"
+      else
+        resolved_window="$target"
+        resolved_backend="$(resolve_role_backend "$project" "$resolved_role")"
+      fi
+    else
+      resolved_window="$target"
+      resolved_role="$(session_role_for_window "$project" "$target" 2>/dev/null || true)"
+      if [ -z "$resolved_role" ]; then
+        resolved_role="$(canonical_role_from_window_name "$target" 2>/dev/null || true)"
+      fi
+      if [ -z "$resolved_role" ]; then
+        resolved_role="$target"
+      fi
+      resolved_backend="$(resolve_window_backend "$project" "$target" "$resolved_role")"
+    fi
   fi
 
   printf '%s|%s|%s\n' "$resolved_role" "$resolved_backend" "$resolved_window"
@@ -2412,7 +2887,7 @@ boot_single_agent() {
   fi
 
   local model
-  model="$(get_model "$role")"
+  model="$(resolve_role_model "$project" "$role" "claude")"
   local tools
   tools="$(get_allowed_tools "$role")"
   local agent_id="$window_name"
@@ -2527,7 +3002,7 @@ boot_codex_agent() {
   local agent_id="$window_name"
   local tmux_target="${sess}:${window_name}"
   local codex_model
-  codex_model="$(get_codex_model)"
+  codex_model="$(resolve_role_model "$project" "$role" "codex")"
   local codex_effort
   codex_effort="$(get_reasoning_effort "$role")"
   local codex_env
@@ -2659,70 +3134,11 @@ boot_manager_window() {
   local project="$1"
   local extra_boot_msg="${2:-}"
   local manager_backend
-  manager_backend="$(get_manager_backend "$project")"
-
-  if [ "$manager_backend" = "codex" ]; then
-    boot_agent_with_backend "manager" "$project" "manager" "codex" "$extra_boot_msg" "" "user" || {
-      echo "Error: Manager codex 부팅 실패." >&2
-      return 1
-    }
-  else
-    local model
-    model="$(get_model "manager")"
-    local mgr_tools
-    mgr_tools="$(get_allowed_tools "manager")"
-    local manager_env_script
-    manager_env_script="$(write_agent_env_script "$project" "manager" "manager")"
-    local bootstrap_msg
-    bootstrap_msg=$'너는 Whiplash manager 세션의 bootstrap 단계다.\n지금은 session_id만 만들기 위한 초기 호출이다.\n도구를 사용하지 말고, 파일도 읽지 말고, 명령도 실행하지 말고, 한 줄로 READY만 답해라.'
-    local boot_msg
-    boot_msg="$(build_boot_message "manager" "$project" "$extra_boot_msg" "manager" "" "user")"
-    local model_flag result session_id tmux_target mgr_resume_flag boot_pane_pid attempt
-
-    model_flag=""
-    [ -n "$mgr_tools" ] && model_flag="--allowedTools $mgr_tools"
-    result=$(run_with_agent_env "$project" "manager" "manager" env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude -p "$bootstrap_msg" \
-      --model "$model" \
-      --output-format json \
-      --dangerously-skip-permissions $model_flag) || {
-      echo "Error: Manager claude -p 실행 실패." >&2
-      return 1
-    }
-
-    session_id=$(echo "$result" | jq -r '.session_id' 2>/dev/null) || session_id=""
-    if [ -z "$session_id" ] || [ "$session_id" = "null" ]; then
-      echo "Error: Manager session_id 획득 실패." >&2
-      return 1
-    fi
-
-    tmux new-window -d -t "$(session_name "$project")" -n manager
-    tmux_target="$(session_name "$project"):manager"
-    mgr_resume_flag=""
-    [ -n "$mgr_tools" ] && mgr_resume_flag=" --allowedTools $mgr_tools"
-    tmux send-keys -t "$tmux_target" "cd $(printf '%q' "$REPO_ROOT") && . $(printf '%q' "$manager_env_script") && env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude --resume $session_id --dangerously-skip-permissions${mgr_resume_flag}" Enter
-
-    boot_pane_pid=$(tmux list-panes -t "$tmux_target" -F '#{pane_pid}' 2>/dev/null | head -1)
-    if [ -n "$boot_pane_pid" ]; then
-      for attempt in $(seq 1 10); do
-        process_or_child_named "$boot_pane_pid" claude && break
-        sleep 1
-      done
-    fi
-    if [ -z "$boot_pane_pid" ] || ! process_or_child_named "$boot_pane_pid" claude; then
-      echo "Error: Manager claude --resume 프로세스 시작 실패." >&2
-      return 1
-    fi
-
-    if ! submit_tmux_prompt_when_ready "$tmux_target" "$boot_msg" "manager-boot"; then
-      echo "Error: Manager 온보딩 프롬프트 전달 실패." >&2
-      kill_windows_by_name "$(session_name "$project")" "manager"
-      return 1
-    fi
-
-    # sessions.md는 prompt 전달 성공 후에만 기록 (2-A: phantom active 방지)
-    add_session_row "$project" "manager" "$session_id" "$tmux_target" "$model"
-    python3 "$TOOLS_DIR/log.py" system "$project" orchestrator manager_boot manager --detail session="$session_id" || true
-  fi
+  manager_backend="$(resolve_role_backend "$project" "manager")"
+  boot_agent_with_backend "manager" "$project" "manager" "$manager_backend" "$extra_boot_msg" "" "user" || {
+    echo "Error: Manager 부팅 실패." >&2
+    return 1
+  }
 
   return 0
 }
@@ -2731,7 +3147,7 @@ boot_onboarding_window() {
   local project="$1"
   local extra_boot_msg="${2:-}"
   local backend
-  backend="$(get_manager_backend "$project")"
+  backend="$(resolve_role_backend "$project" "onboarding")"
   boot_agent_with_backend "onboarding" "$project" "onboarding" "$backend" "$extra_boot_msg" "" "user" || {
     echo "Error: Onboarding 부팅 실패." >&2
     return 1
@@ -2762,6 +3178,8 @@ normalize_spawn_role() {
 resolve_spawn_backend() {
   local requested_role="$1"
   local window_name="$2"
+  local project="${3:-}"
+  local canonical_role="${4:-}"
 
   case "$requested_role" in
     *-codex) echo "codex"; return ;;
@@ -2772,6 +3190,11 @@ resolve_spawn_backend() {
     *codex*) echo "codex"; return ;;
     *claude*) echo "claude"; return ;;
   esac
+
+  if [ -n "$project" ] && [ -n "$canonical_role" ]; then
+    resolve_role_backend "$project" "$canonical_role"
+    return 0
+  fi
 
   echo "claude"
 }
@@ -2784,7 +3207,7 @@ cmd_spawn() {
   local role
   role="$(normalize_spawn_role "$requested_role")"
   local backend
-  backend="$(resolve_spawn_backend "$requested_role" "$window_name")"
+  backend="$(resolve_spawn_backend "$requested_role" "$window_name" "$project" "$role")"
   validate_project_name "$project"
   validate_window_name "$window_name"
   local stage
@@ -2822,17 +3245,10 @@ ${extra_msg}"
 $(build_onboarding_helper_spawn_note "$project" "$window_name")"
     ready_target_override="onboarding"
   fi
-  if [ "$backend" = "codex" ]; then
-    boot_codex_agent "$role" "$project" "$window_name" "$spawn_note" "$ready_target_override" || {
-      echo "Error: ${window_name} 스폰 실패." >&2
-      exit 1
-    }
-  else
-    boot_single_agent "$role" "$project" "$spawn_note" "$window_name" "" "$ready_target_override" || {
-      echo "Error: ${window_name} 스폰 실패." >&2
-      exit 1
-    }
-  fi
+  boot_agent_with_backend "$role" "$project" "$window_name" "$backend" "$spawn_note" "" "$ready_target_override" || {
+    echo "Error: ${window_name} 스폰 실패." >&2
+    exit 1
+  }
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_spawn "$window_name" --detail role="$role" backend="$backend" || true
   echo "=== ${window_name} 스폰 완료 ==="
 }
@@ -2889,7 +3305,8 @@ cmd_boot_onboarding() {
   local exec_mode
   exec_mode="$(get_exec_mode "$project")"
 
-  bash "$TOOLS_DIR/preflight.sh" "$project" --mode "$exec_mode" --skip-project-check || exit 1
+  WHIPLASH_PREFLIGHT_INCLUDE_ONBOARDING=1 \
+    bash "$TOOLS_DIR/preflight.sh" "$project" --mode "$exec_mode" --skip-project-check || exit 1
 
   local sess
   sess="$(session_name "$project")"
@@ -3139,7 +3556,7 @@ cmd_boot() {
   fi
 
   local discussion_backend
-  discussion_backend="$(get_manager_backend "$project")"
+  discussion_backend="$(resolve_role_backend "$project" "discussion")"
   local failed_agents=""
   boot_agent_with_backend "discussion" "$project" "discussion" "$discussion_backend" "" "" "user" || {
     echo "Warning: discussion 부팅 실패. 건너뜀." >&2
@@ -3160,32 +3577,21 @@ cmd_boot() {
       continue
     fi
 
-    if [ "$exec_mode" = "dual" ] && role_supports_dual "$role"; then
-      local pending_task_claude=""
-      local pending_task_codex=""
-      # dual 모드: worktree 생성 + claude + codex 양쪽 부팅
+    if role_runs_dual_now "$project" "$role"; then
       create_worktrees "$project" "$role"
-      pending_task_claude="$(resume_pending_task_for_window "$project" "$role" "${role}-claude")" || pending_task_claude=""
-      pending_task_codex="$(resume_pending_task_for_window "$project" "$role" "${role}-codex")" || pending_task_codex=""
-      boot_single_agent "$role" "$project" "" "${role}-claude" "$pending_task_claude" || {
-        echo "Warning: ${role}-claude 부팅 실패. 건너뜀." >&2
-        failed_agents="${failed_agents:+${failed_agents},}${role}-claude"
-      }
-      boot_codex_agent "$role" "$project" "${role}-codex" "" "$pending_task_codex" || {
-        echo "Warning: ${role}-codex 부팅 실패. 건너뜀." >&2
-        failed_agents="${failed_agents:+${failed_agents},}${role}-codex"
-      }
-    else
-      # solo 모드 (기존 동작)
-      if [ "$loop_mode" = "ralph" ] && role_uses_ralph_worktree "$role"; then
-        create_ralph_worktree "$project" "$role" || true
-      fi
-      boot_single_agent "$role" "$project" || {
-        echo "Warning: ${role} 부팅 실패. 건너뜀." >&2
-        failed_agents="${failed_agents:+${failed_agents},}${role}"
-        continue
-      }
+    elif [ "$loop_mode" = "ralph" ] && role_uses_ralph_worktree "$role"; then
+      create_ralph_worktree "$project" "$role" || true
     fi
+
+    while IFS='|' read -r window_name backend _model; do
+      [ -n "$window_name" ] || continue
+      local pending_task=""
+      pending_task="$(resume_pending_task_for_window "$project" "$role" "$window_name")" || pending_task=""
+      boot_agent_with_backend "$role" "$project" "$window_name" "$backend" "" "$pending_task" || {
+        echo "Warning: ${window_name} 부팅 실패. 건너뜀." >&2
+        failed_agents="${failed_agents:+${failed_agents},}${window_name}"
+      }
+    done < <(role_window_plan_lines "$project" "$role")
   done
 
   # 4. post-boot liveness gate (2-C): 부팅 직후 모든 에이전트 최종 생존 확인
@@ -3197,8 +3603,7 @@ cmd_boot() {
     case "$win_name" in
       manager|dashboard|discussion) continue ;;
     esac
-    win_backend="claude"
-    case "$win_name" in *-codex) win_backend="codex" ;; esac
+    win_backend="$(resolve_window_backend "$project" "$win_name")"
     if ! agent_window_has_live_backend "$sess" "$win_name" "$win_backend" 2>/dev/null; then
       echo "Warning: post-boot check — ${win_name} 프로세스 사망 감지." >&2
       python3 "$TOOLS_DIR/log.py" system "$project" orchestrator post_boot_dead "$win_name" || true
@@ -3421,19 +3826,11 @@ cmd_reboot() {
   pending_task="$(resume_pending_task_for_window "$project" "$role" "$window_name")" || pending_task=""
 
   # 4. backend에 따라 적절한 부팅 함수 호출
-  if [ "$backend" = "codex" ]; then
-    boot_codex_agent "$role" "$project" "$window_name" "" "$pending_task" || {
-      echo "Error: ${window_name} 리부팅 실패." >&2
-      runtime_clear_reboot_lock_ts "$project" "$window_name"
-      exit 1
-    }
-  else
-    boot_single_agent "$role" "$project" "" "$window_name" "$pending_task" || {
-      echo "Error: ${window_name} 리부팅 실패." >&2
-      runtime_clear_reboot_lock_ts "$project" "$window_name"
-      exit 1
-    }
-  fi
+  boot_agent_with_backend "$role" "$project" "$window_name" "$backend" "" "$pending_task" || {
+    echo "Error: ${window_name} 리부팅 실패." >&2
+    runtime_clear_reboot_lock_ts "$project" "$window_name"
+    exit 1
+  }
 
   # reboot lock 해제
   runtime_clear_reboot_lock_ts "$project" "$window_name"
@@ -3527,17 +3924,10 @@ cmd_refresh() {
     extra_msg="10. memory/${role}/handoff.md를 읽어라. 이전 세션에서 인수인계한 맥락이다."
   fi
 
-  if [ "$backend" = "codex" ]; then
-    boot_codex_agent "$role" "$project" "$window_name" "$extra_msg" "$pending_task" || {
-      echo "Error: ${window_name} 리프레시 후 부팅 실패." >&2
-      exit 1
-    }
-  else
-    boot_single_agent "$role" "$project" "$extra_msg" "$window_name" "$pending_task" || {
-      echo "Error: ${window_name} 리프레시 후 부팅 실패." >&2
-      exit 1
-    }
-  fi
+  boot_agent_with_backend "$role" "$project" "$window_name" "$backend" "$extra_msg" "$pending_task" || {
+    echo "Error: ${window_name} 리프레시 후 부팅 실패." >&2
+    exit 1
+  }
 
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_refresh_end "$window_name" || true
   echo "=== ${window_name} 리프레시 완료 ==="
@@ -3880,6 +4270,7 @@ if [ $# -lt 2 ]; then
   echo "  cmd.sh refresh        {target} {project}" >&2
   echo "  cmd.sh merge-worktree {role} {winner} {project}" >&2
   echo "  cmd.sh monitor-check  {project}" >&2
+  echo "  cmd.sh execution-config {project} [--scope current|baseline] {default|claude only|codex only|dual|<role> ...}" >&2
   exit 1
 fi
 
@@ -3956,6 +4347,13 @@ case "$command" in
     activate_project_tmux_context "$1"
     cmd_monitor_check "$1"
     ;;
+  execution-config)
+    [ $# -lt 2 ] && { echo "Usage: cmd.sh execution-config {project} [--scope current|baseline] {default|claude only|codex only|dual|<role> ...}" >&2; exit 1; }
+    activate_project_tmux_context "$1"
+    project_name="$1"
+    shift
+    cmd_execution_config "$project_name" "$@"
+    ;;
   complete)
     [ $# -lt 2 ] && { echo "Usage: cmd.sh complete {agent} {project}" >&2; exit 1; }
     activate_project_tmux_context "$2"
@@ -3973,7 +4371,7 @@ case "$command" in
     ;;
   *)
     echo "Unknown command: $command" >&2
-    echo "Available: boot-onboarding, boot-manager, boot, dispatch, dual-dispatch, assign, spawn, kill-agent, shutdown, status, reboot, refresh, merge-worktree, monitor-check, complete, expire-stale" >&2
+    echo "Available: boot-onboarding, boot-manager, boot, dispatch, dual-dispatch, assign, spawn, kill-agent, shutdown, status, reboot, refresh, merge-worktree, monitor-check, execution-config, complete, expire-stale" >&2
     exit 1
     ;;
 esac

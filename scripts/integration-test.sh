@@ -3952,8 +3952,141 @@ EOF
 }
 
 # ──────────────────────────────────────────────
+# 시나리오 47: execution-config는 preset/role override를 project 설정에 저장한다
+# ──────────────────────────────────────────────
+
+test_scenario_47() {
+  echo ""
+  echo "=== 시나리오 47: execution-config persistence ==="
+  cleanup
+  setup_test_project
+
+  assert_true "codex only preset 저장" \
+    bash "$TOOLS_DIR/cmd.sh" execution-config "$PROJECT" codex only
+
+  local preset developer_plan manager_backend
+  preset="$(python3 "$TOOLS_DIR/execution_config.py" --repo-root "$REPO_ROOT" show --project "$PROJECT" | jq -r '.current_preset')"
+  assert_eq "execution-config helper가 codex-only 저장" "codex-only" "$preset"
+
+  developer_plan="$(invoke_cmd_function role_window_plan_lines "$PROJECT" developer)"
+  assert_eq "codex-only에서 developer는 bare codex window" "developer|codex|gpt-5.4" "$developer_plan"
+
+  manager_backend="$(invoke_cmd_function get_manager_backend "$PROJECT")"
+  assert_eq "codex-only에서 manager backend는 codex" "codex" "$manager_backend"
+
+  assert_file_contains "project.md 실행 프리셋 요약 저장" "$PROJECT_DIR/project.md" "실행 프리셋.*codex-only"
+  assert_file_contains "project.md execution config block 저장" "$PROJECT_DIR/project.md" "WHIPLASH_EXECUTION_CONFIG:START"
+
+  assert_true "default preset 복귀" \
+    bash "$TOOLS_DIR/cmd.sh" execution-config "$PROJECT" default
+
+  assert_true "role override 저장" \
+    bash "$TOOLS_DIR/cmd.sh" execution-config "$PROJECT" developer claude haiku
+
+  developer_plan="$(invoke_cmd_function role_window_plan_lines "$PROJECT" developer)"
+  assert_eq "role override가 developer backend/model에 반영" "developer|claude|haiku" "$developer_plan"
+
+  echo "  시나리오 47 완료"
+}
+
+# ──────────────────────────────────────────────
+# 시나리오 48: runtime execution-config는 worker를 즉시 재구성한다
+# ──────────────────────────────────────────────
+
+test_scenario_48() {
+  echo ""
+  echo "=== 시나리오 48: runtime execution-config reconcile ==="
+  cleanup
+  setup_test_project
+
+  python3 - "$PROJECT_DIR/project.md" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+content = path.read_text(encoding="utf-8")
+content = content.replace("developer, researcher", "developer", 1)
+path.write_text(content, encoding="utf-8")
+PY
+
+  assert_true "dual preset 저장" \
+    bash "$TOOLS_DIR/cmd.sh" execution-config "$PROJECT" dual
+
+  mkdir -p "$PROJECT_DIR/workspace/tasks"
+  cat > "$PROJECT_DIR/workspace/tasks/TASK-017.md" <<'EOF'
+# TASK-017: execution-config reconcile smoke
+EOF
+
+  tmux new-session -d -s "$SESSION" -n manager
+  tmux new-window -d -t "$SESSION" -n developer-claude
+  tmux new-window -d -t "$SESSION" -n developer-codex
+  register_fake_agent "developer-claude" "developer"
+  register_fake_codex_agent "developer-codex" "developer"
+
+  bash "$TOOLS_DIR/cmd.sh" assign developer-claude "workspace/tasks/TASK-017.md" "$PROJECT" >/dev/null
+  bash "$TOOLS_DIR/cmd.sh" assign developer-codex "workspace/tasks/TASK-017.md" "$PROJECT" >/dev/null
+
+  assert_true "runtime codex-only 전환" \
+    bash <<EOF
+export WHIPLASH_SOURCE_ONLY=1
+source "$TOOLS_DIR/cmd.sh"
+boot_agent_with_backend() {
+  local role="\$1" project="\$2" window_name="\$3" backend="\$4"
+  tmux new-window -d -t "$SESSION" -n "\$window_name" 2>/dev/null || true
+  add_session_row "\$project" "\$role" "fake-\${backend}" "$SESSION:\${window_name}" "test" "\$backend"
+}
+cmd_execution_config "$PROJECT" codex only
+EOF
+
+  local windows developer_active old_claude_active old_codex_active role_assignment
+  windows="$(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null || true)"
+  TOTAL=$((TOTAL + 1))
+  if printf '%s\n' "$windows" | grep -qx 'developer' \
+     && ! printf '%s\n' "$windows" | grep -qx 'developer-claude' \
+     && ! printf '%s\n' "$windows" | grep -qx 'developer-codex'; then
+    echo "  PASS: canonical worker windows가 single codex로 재구성됨"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: canonical worker windows 재구성이 잘못됨"
+    FAIL=$((FAIL + 1))
+  fi
+
+  developer_active="$(awk -F'|' '
+    function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+    trim($2) == "developer" && trim($3) == "codex" && trim($5) ~ /:developer$/ && trim($6) == "active" { c++ }
+    END { print c + 0 }
+  ' "$PROJECT_DIR/memory/manager/sessions.md")"
+  old_claude_active="$(awk -F'|' '
+    function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+    trim($5) ~ /:developer-claude$/ && trim($6) == "active" { c++ }
+    END { print c + 0 }
+  ' "$PROJECT_DIR/memory/manager/sessions.md")"
+  old_codex_active="$(awk -F'|' '
+    function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+    trim($5) ~ /:developer-codex$/ && trim($6) == "active" { c++ }
+    END { print c + 0 }
+  ' "$PROJECT_DIR/memory/manager/sessions.md")"
+  assert_eq "새 developer codex active row 생성" "1" "$developer_active"
+  assert_eq "old claude active row 제거" "0" "$old_claude_active"
+  assert_eq "old codex active row 제거" "0" "$old_codex_active"
+
+  role_assignment="$(awk -F'|' '
+    function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+    trim($2) == "developer" && trim($3) == "workspace/tasks/TASK-017.md" && trim($5) == "active" { c++ }
+    END { print c + 0 }
+  ' "$PROJECT_DIR/memory/manager/assignments.md")"
+  assert_eq "collapsed role assignment를 bare developer로 이관" "1" "$role_assignment"
+
+  echo "  시나리오 48 완료"
+}
+
+# ──────────────────────────────────────────────
 # 메인
 # ──────────────────────────────────────────────
+
+if [ "${WHIPLASH_SOURCE_ONLY:-0}" = "1" ]; then
+  return 0 2>/dev/null || exit 0
+fi
 
 echo "============================================"
 echo "  Whiplash 안정성 통합 테스트"
@@ -4011,6 +4144,8 @@ test_scenario_43
 test_scenario_44
 test_scenario_45
 test_scenario_46
+test_scenario_47
+test_scenario_48
 
 echo ""
 echo "============================================"

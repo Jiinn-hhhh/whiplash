@@ -53,7 +53,7 @@ Onboarding 에이전트는 Manager 부팅 확인 후 종료한다.
 2. onboarding이 분석과 토론을 진행한다.
 3. 준비가 끝나면 onboarding이 내부적으로 `cmd.sh boot-manager {project}`를 실행해 Manager에게 넘긴다.
 
-새 프로젝트라 `projects/{project}/project.md`가 아직 없더라도 `cmd.sh boot-onboarding`이 bootstrap 초안과 기본 디렉토리를 먼저 만든다. 이 초안은 `실행 모드: pending`, `control-plane 백엔드: pending`, `활성 에이전트: 미정` 상태일 수 있으며, onboarding이 사전 질문과 Phase 0-7을 거치며 확정한다.
+새 프로젝트라 `projects/{project}/project.md`가 아직 없더라도 `cmd.sh boot-onboarding`이 bootstrap 초안과 기본 디렉토리를 먼저 만든다. 이 초안은 `실행 프리셋: pending`, `실행 모드: pending`, `control-plane 백엔드: pending`, `활성 에이전트: 미정` 상태일 수 있으며, onboarding이 사전 질문과 Phase 0-7을 거치며 확정한다.
 
 ### 사전 질문 1: 프레임워크 디버깅
 
@@ -64,17 +64,21 @@ Onboarding 에이전트는 Manager 부팅 확인 후 종료한다.
 - **켜기**: project.md `운영 방식`에 `프레임워크 디버깅: on` 기록
 - **끄기**: 기록하지 않음 (기본값)
 
-### 사전 질문 2: 에이전트 실행 모드
+### 사전 질문 2: 실행 프리셋
 
-**질문**: "클로드 코드만 사용할 건지, 멀티 백엔드(Claude Code + Codex)를 사용할 건지?"
+**질문**: "이번 프로젝트의 현재 실행 프리셋을 어떻게 둘까? `default`, `claude only`, `codex only`, `dual` 중에서 고르자."
 
-- **클로드 코드만** 또는 **코덱스만** → `solo` 모드 선택
-- **멀티 백엔드** → `dual` 모드 선택
+- **default**: 저장된 baseline 표를 그대로 사용
+- **claude only**: 모든 역할을 Claude 단일 backend로 실행
+- **codex only**: 모든 역할을 Codex 단일 backend로 실행
+- **dual**: `developer`, `researcher`만 Claude/Codex 양쪽 lane을 동시에 띄우고, 나머지는 baseline 단일 backend 유지
 
-| 모드 | 설명 | 장점 | 단점 |
+| 프리셋 | 설명 | 장점 | 단점 |
 |------|------|------|------|
-| solo | Manager가 역할별 에이전트를 하나씩 실행 (tmux 기반). control-plane 백엔드는 별도 선택 가능 | 비용 최소, 안정적 | 에이전트 동시 실행 불가 |
-| dual | 두 백엔드 병렬 운용. Manager가 태스크 성격에 따라 이중 실행(비교/검증) 또는 분업(각자 다른 태스크)을 유기적으로 판단 | 다양한 관점, 유연한 자원 활용 | 비용 ↑, 인프라 복잡 |
+| default | 프로젝트별 baseline backend/model 표를 따른다 | 유연, 역할별 정책 유지 | baseline 설계가 필요 |
+| claude-only | 모든 역할 단일 Claude | 환경 단순화, Claude 중심 운영 | Codex lane 활용 불가 |
+| codex-only | 모든 역할 단일 Codex | Codex-only 운영 가능 | Claude lane 활용 불가 |
+| dual | `developer`, `researcher`만 양쪽 lane 동시 운용 | 비교/검증/분업 유연 | 비용 ↑, 인프라 복잡 |
 
 **참고**: Claude Code를 쓰는 개별 에이전트는 자기 판단으로 Agent Teams를 하위에 활용할 수 있다 (프레임워크 모드가 아닌 개별 도구).
 
@@ -83,23 +87,20 @@ Onboarding 에이전트는 Manager 부팅 확인 후 종료한다.
 
 ```
 → projects/{name}/ 디렉토리 구조 생성 (디렉토리 생성 목록 참조)
-→ projects/{name}/project.md 초안 작성 (실행 모드만 기록)
+→ projects/{name}/project.md 초안 작성 (실행 프리셋/실행 모드 요약 포함)
 → projects/{name}/memory/knowledge/index.md 초기화
 ```
 
-### 사전 질문 3: control-plane 백엔드
+### 사전 질문 3: baseline 표
 
-**질문**: "control-plane(Onboarding / Manager / Discussion)은 기본값인 Codex로 돌릴까, 아니면 Claude로 바꿀까?"
+`default`가 의미 있으려면 baseline이 필요하다. onboarding은 아래를 최소로 확정한다.
 
-- **기본값**: `codex`
-- **Claude 선호 / Codex 미설치 / Codex를 쓰기 싫음** → `claude`
+- control-plane(`onboarding`, `manager`, `discussion`) 기본 backend/model
+- worker(`developer`, `researcher`, `systems-engineer`, `monitoring`)의 solo backend/model
 
-| 선택 | 설명 |
-|------|------|
-| codex | 기본값. onboarding / manager / discussion을 Codex CLI로 실행 |
-| claude | control-plane을 Claude Code로 실행. 실무 역할은 기존 실행 모드 규칙(solo/dual)을 그대로 따름 |
+기본 seed는 `control-plane = codex`, worker = Claude다. 유저가 특정 역할만 바꾸고 싶다면 그 역할만 baseline override를 기록한다.
 
-**파일 작업**: project.md `운영 방식`에 `control-plane 백엔드`를 기록한다.
+**파일 작업**: project.md execution config block의 `baseline`을 갱신한다. 사람이 읽는 요약에는 `실행 프리셋`, `실행 모드`, `control-plane 백엔드`만 남긴다.
 
 ### 사전 질문 4: 작업 루프 정책
 

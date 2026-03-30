@@ -91,6 +91,8 @@ source "$TOOLS_DIR/agent-health.sh"
 source "$TOOLS_DIR/message-queue.sh"
 # shellcheck source=/dev/null
 source "$TOOLS_DIR/notify-format.sh"
+# shellcheck source=/dev/null
+source "$TOOLS_DIR/execution-config.sh"
 
 whiplash_activate_tmux_project "$project"
 
@@ -318,6 +320,10 @@ resolve_backend() {
       echo "codex"
       return
       ;;
+    *-claude|*-claude-*)
+      echo "claude"
+      return
+      ;;
   esac
 
   local sf="$repo_root/projects/$project/memory/manager/sessions.md"
@@ -335,6 +341,17 @@ resolve_backend() {
       return
     fi
   fi
+
+  case "$window_name" in
+    onboarding|manager|discussion|developer|researcher|systems-engineer|monitoring)
+      local backend
+      backend="$(execution_config_role_backend "$project" "$window_name" 2>/dev/null || true)"
+      if [ "$backend" = "claude" ] || [ "$backend" = "codex" ]; then
+        echo "$backend"
+        return
+      fi
+      ;;
+  esac
 
   echo "claude"
 }

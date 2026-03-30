@@ -6,19 +6,22 @@
 
 ---
 
-## 1. 실행 모드
+## 1. 실행 프리셋
 
-| 모드 | 설명 | 결정 시점 |
+| 프리셋 | 설명 | 결정 시점 |
 |------|------|-----------|
-| 단독 (solo) | Manager가 역할별 에이전트 1개씩 실행 | 온보딩 시 유저 선택 |
-| 멀티 (dual) | 두 백엔드(Claude Code + Codex CLI) 병렬 운용. Manager가 태스크 성격에 따라 **이중 실행(비교/검증)** 또는 **분업(각자 다른 태스크)**을 유기적으로 판단한다 | 온보딩 시 유저 선택 |
+| default | 저장된 baseline 표를 그대로 사용 | 온보딩 baseline 확정 후 기본값 |
+| claude-only | 모든 역할 단일 Claude | 온보딩 또는 runtime |
+| codex-only | 모든 역할 단일 Codex | 온보딩 또는 runtime |
+| dual | `developer`, `researcher`만 Claude/Codex 병렬 lane, 나머지는 baseline 단일 backend | 온보딩 또는 runtime |
 
-- project.md `운영 방식`에 `실행 모드: solo | dual` 기록
-- Solo와 Dual 모드를 모두 지원한다. `cmd.sh boot` 시 project.md에서 실행 모드를 파싱하여 자동 분기한다.
-- **Dual ≠ 항상 이중 실행**. 양쪽 백엔드가 떠 있다는 것이지, 모든 태스크를 둘 다에 보내야 한다는 뜻이 아니다. Manager가 태스크 성격을 보고 모드를 유기적으로 결정한다.
-- `discussion`은 control-plane 역할이라 항상 단일 세션으로 부팅된다. dual 모드에서도 복제하지 않는다.
+- project.md `운영 방식`에는 `실행 프리셋`, 파생 `실행 모드`, 요약 `control-plane 백엔드`를 기록한다.
+- canonical source는 project.md execution config block의 `baseline/current_preset/current_overrides`다.
+- runtime 변경은 `bash scripts/cmd.sh execution-config {project} ...`로 수행한다.
+- **Dual ≠ 항상 이중 실행**. 양쪽 lane이 떠 있어도 dispatch 패턴은 task별로 다를 수 있다.
+- `discussion`은 control-plane 역할이라 항상 단일 세션으로 부팅된다. dual 프리셋에서도 복제하지 않는다.
 - 전략/설계/우선순위 토론은 `discussion`, 현재 실행 상태/블로커/작업자 현황의 source of truth는 `manager`가 맡는다.
-- Systems Engineer와 Monitoring은 dual 모드에서도 기본적으로 solo 실행이다.
+- Systems Engineer와 Monitoring은 dual 프리셋에서도 기본적으로 single lane이다.
 - 각 역할 에이전트는 Claude Code와 Codex CLI가 제공하는 네이티브 subagent / agent team / 병렬 기능을 우선 활용한다. tmux 수준 spawn은 역할 단위 격리나 추가 용량이 필요할 때 사용한다.
 
 ---

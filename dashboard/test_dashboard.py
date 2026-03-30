@@ -79,6 +79,35 @@ class ParseSessionsMdTest(unittest.TestCase):
         self.assertEqual(agents[0]["session_id"], "s2")
 
 
+class ParseProjectMdTest(unittest.TestCase):
+    def test_parses_execution_preset_and_control_plane_backend(self) -> None:
+        content = "\n".join([
+            "# Project: demo",
+            "- **실행 프리셋**: codex-only",
+            "- **실행 모드**: solo",
+            "- **control-plane 백엔드**: codex",
+            "- **작업 루프**: guided",
+            "- **도메인**: general",
+        ])
+        with patch.object(dashboard_module, "_read_file", return_value=content):
+            info = dashboard_module.parse_project_md("/fake/project")
+        self.assertEqual(info["preset"], "codex-only")
+        self.assertEqual(info["mode"], "solo")
+        self.assertEqual(info["control_plane_backend"], "codex")
+
+    def test_legacy_project_keeps_mode_when_preset_missing(self) -> None:
+        content = "\n".join([
+            "# Project: legacy",
+            "- **실행 모드**: dual",
+            "- **작업 루프**: ralph",
+        ])
+        with patch.object(dashboard_module, "_read_file", return_value=content):
+            info = dashboard_module.parse_project_md("/fake/project")
+        self.assertEqual(info["preset"], "")
+        self.assertEqual(info["mode"], "dual")
+        self.assertEqual(info["loop_mode"], "ralph")
+
+
 class CellLenTest(unittest.TestCase):
     def test_ascii_only(self) -> None:
         self.assertEqual(dashboard_module.cell_len("hello"), 5)

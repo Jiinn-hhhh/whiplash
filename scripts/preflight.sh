@@ -9,13 +9,15 @@
 #   - 이미 설치됨 → 조용히 통과
 #   - 자동 설치 불가 → 에러 메시지 + exit 1
 #   - 최초 성공 후 .preflight-ok 마커 → 이후 패키지 검사 건너뜀
-#   - claude 인증, codex(dual/control-plane), 프로젝트 구조 검증은 매번 실행
+#   - execution config 기준 backend/auth/project 구조 검증은 매번 실행
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 MARKER="$REPO_ROOT/.preflight-ok"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/execution-config.sh"
 
 # ── 인자 파싱 ──
 
@@ -42,6 +44,30 @@ done
 info()  { echo "[preflight] $*"; }
 fail()  { echo "[preflight] ERROR: $*" >&2; exit 1; }
 warn()  { echo "[preflight] WARNING: $*" >&2; }
+
+required_backends() {
+  local backends
+  if [ "${WHIPLASH_PREFLIGHT_INCLUDE_ONBOARDING:-0}" = "1" ]; then
+    backends="$(execution_config_required_backends "$PROJECT" --include-onboarding 2>/dev/null || true)"
+  else
+    backends="$(execution_config_required_backends "$PROJECT" 2>/dev/null || true)"
+  fi
+  if [ -n "$backends" ]; then
+    printf '%s\n' "$backends"
+    return 0
+  fi
+
+  if [ "$MODE" = "dual" ]; then
+    printf 'claude\ncodex\n'
+  else
+    printf 'claude\n'
+  fi
+}
+
+backend_required() {
+  local backend="$1"
+  required_backends | grep -qx "$backend"
+}
 
 detect_pkg_manager() {
   if [[ "$OSTYPE" == darwin* ]]; then
@@ -125,6 +151,10 @@ ensure_packages() {
 # ── 2. Claude CLI 인증 검증 (매번) ──
 
 check_claude_auth() {
+  if ! backend_required claude; then
+    return 0
+  fi
+
   if ! command -v claude &>/dev/null; then
     fail "claude CLI가 설치되어 있지 않다. https://docs.anthropic.com 참고."
   fi
@@ -143,64 +173,21 @@ check_claude_auth() {
   info "Claude CLI 인증 확인 완료."
 }
 
-# ── 3. Codex CLI 검증 (dual 모드 또는 codex control-plane, 매번) ──
-
-get_manager_backend() {
-  local backend="${WHIPLASH_MANAGER_BACKEND:-}"
-
-  if [ -n "$backend" ]; then
-    case "$backend" in
-      claude|codex)
-        echo "$backend"
-        return
-        ;;
-    esac
-  fi
-
-  local project_md="$REPO_ROOT/projects/$PROJECT/project.md"
-  local parsed
-  parsed=$({ grep -i "control-plane backend\|control-plane 백엔드" "$project_md" 2>/dev/null || true; } \
-    | head -1 \
-    | sed 's/.*: *//' \
-    | sed 's/ *(.*)//' \
-    | tr -d '[:space:]' \
-    | tr -d '*|' \
-    | tr '[:upper:]' '[:lower:]')
-  case "$parsed" in
-    claude|codex)
-      echo "$parsed"
-      return
-      ;;
-  esac
-
-  echo "claude"
-}
+# ── 3. Codex CLI 검증 (필요한 프로젝트만, 매번) ──
 
 check_codex() {
-  local requires_codex=0
-  if [ "$MODE" = "dual" ] || [ "$(get_manager_backend)" = "codex" ]; then
-    requires_codex=1
-  fi
-
-  if [ "$requires_codex" -ne 1 ]; then
+  if ! backend_required codex; then
     return 0
   fi
 
-  if [ "$MODE" = "dual" ]; then
-    info "Codex CLI 확인 중 (dual 모드)..."
-  else
-    info "Codex CLI 확인 중 (codex control-plane 기본 backend)..."
-  fi
+  info "Codex CLI 확인 중..."
 
   # 바이너리 존재 확인 (alias가 아닌 실제 실행파일)
   local codex_bin
   codex_bin=$(command -p which codex 2>/dev/null) || codex_bin=$(type -P codex 2>/dev/null) || codex_bin=""
 
   if [ -z "$codex_bin" ]; then
-    if [ "$MODE" = "dual" ]; then
-      fail "dual 모드이지만 codex CLI가 설치되어 있지 않다. codex CLI를 설치하거나 solo 모드로 전환해라."
-    fi
-    fail "manager/discussion/onboarding 기본 backend가 codex라 codex CLI가 필요하다. codex CLI를 설치하거나 WHIPLASH_MANAGER_BACKEND=claude 로 실행해라."
+    fail "이 프로젝트는 codex backend가 필요하지만 codex CLI가 설치되어 있지 않다."
   fi
 
   # --dangerously-bypass-approvals-and-sandbox 플래그 지원 확인
@@ -216,8 +203,12 @@ check_native_subagents() {
   info "repo-local native subagent pack 확인 중..."
 
   local requires_codex_pack=0
-  if [ "$MODE" = "dual" ] || [ "$(get_manager_backend)" = "codex" ]; then
+  local requires_claude_pack=0
+  if backend_required codex; then
     requires_codex_pack=1
+  fi
+  if backend_required claude; then
+    requires_claude_pack=1
   fi
 
   local required_agents=(
@@ -246,7 +237,9 @@ check_native_subagents() {
   )
   local agent_name
   for agent_name in "${required_agents[@]}"; do
-    [ -f "$REPO_ROOT/.claude/agents/${agent_name}.md" ] || fail "Claude subagent pack 누락: .claude/agents/${agent_name}.md"
+    if [ "$requires_claude_pack" -eq 1 ]; then
+      [ -f "$REPO_ROOT/.claude/agents/${agent_name}.md" ] || fail "Claude subagent pack 누락: .claude/agents/${agent_name}.md"
+    fi
     if [ "$requires_codex_pack" -eq 1 ]; then
       [ -f "$REPO_ROOT/.codex/agents/${agent_name}.toml" ] || fail "Codex subagent pack 누락: .codex/agents/${agent_name}.toml"
     fi
@@ -254,7 +247,7 @@ check_native_subagents() {
 
   if [ "$requires_codex_pack" -eq 1 ]; then
     [ -f "$REPO_ROOT/.codex/config.toml" ] || fail "Codex project config 누락: .codex/config.toml"
-    grep -q '^model = "gpt-5.4"$' "$REPO_ROOT/.codex/config.toml" || fail ".codex/config.toml 에 top-level model = \"gpt-5.4\" 설정이 없다."
+    grep -q '^model = "' "$REPO_ROOT/.codex/config.toml" || fail ".codex/config.toml 에 top-level model 설정이 없다."
     grep -q '^\[agents\]' "$REPO_ROOT/.codex/config.toml" || fail ".codex/config.toml 에 [agents] 섹션이 없다."
     grep -q '^max_threads = ' "$REPO_ROOT/.codex/config.toml" || fail ".codex/config.toml 에 max_threads 설정이 없다."
     grep -q '^max_depth = ' "$REPO_ROOT/.codex/config.toml" || fail ".codex/config.toml 에 max_depth 설정이 없다."

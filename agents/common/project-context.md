@@ -119,6 +119,7 @@ projects/{name}/
 구체적 조건. 가능하면 정량적으로.
 
 ## 운영 방식
+- **실행 프리셋**: {default | claude-only | codex-only | dual}
 - **실행 모드**: {solo | dual}
 - **control-plane 백엔드**: {codex | claude}
 - **작업 루프**: {guided | ralph}
@@ -134,7 +135,14 @@ projects/{name}/
 - **시스템 변경 권한**: {기본 금지 / systems-engineer 비활성 / team/systems-engineer.md + memory/knowledge/docs/change-authority.md 참조}
 - `작업 루프 = ralph`면 manager는 user 승인 입력을 기다리며 멈추지 않는다. 대신 blocker / scope 축소 / 최종 완료를 알림 채널에 남기고 계속 진행한다.
 - `랄프 종료 방식 = continue-until-no-improvement`이면 완료 기준 충족 후에도 개선 loop를 이어가며, 팀이 보수적으로 "더 이상 의미 있는 개선이 어렵다"고 판단할 때만 종료한다.
-- 기본값은 `codex`다. onboarding이 유저와 합의해 `claude`로 바꿀 수 있다.
+- `실행 프리셋`은 현재 유효 runtime 상태다.
+- `default`는 저장된 baseline 표를 뜻한다. 프리셋을 바꿔도 baseline 자체는 바뀌지 않는다.
+- worker/control-plane 역할별 backend/model 세부값은 `project.md`의 execution config block이 canonical source다.
+- runtime 변경은 `bash scripts/cmd.sh execution-config {project} ...`로 수행한다.
+- 예시:
+  - `bash scripts/cmd.sh execution-config {project} codex only`
+  - `bash scripts/cmd.sh execution-config {project} developer codex gpt-5.4`
+  - `bash scripts/cmd.sh execution-config {project} developer reset`
 
 ## 팀 구성
 - **활성 에이전트**: {이 프로젝트에 참여하는 에이전트 목록}
