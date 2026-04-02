@@ -99,7 +99,7 @@ allowed-tools: [허용 도구 — 쉼표 구분. 예: Read,Glob,Grep,Write,Edit,
 
 ### 기억
 - **배경 지식**: 이 에이전트가 작업 시작 시 반드시 읽어야 하는 파일을 나열한다.
-  - 모든 에이전트 공통: `memory/knowledge/index.md`, `common/README.md`
+  - 모든 에이전트 공통: `memory/{role}/`, `common/README.md`
   - 역할별 추가 항목을 여기에 기술한다.
 - **장기 기억**: `memory/{role}/` 폴더를 개인 메모 공간으로 사용한다.
 

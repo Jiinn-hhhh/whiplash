@@ -102,12 +102,12 @@ project_team_role_doc_path() {
   echo "$(project_team_dir "$project")/${role}.md"
 }
 
-project_knowledge_docs_dir() {
-  echo "$(project_dir "$1")/memory/knowledge/docs"
+project_se_memory_dir() {
+  echo "$(project_dir "$1")/memory/systems-engineer"
 }
 
-project_change_authority_doc_path() {
-  echo "$(project_knowledge_docs_dir "$1")/change-authority.md"
+project_se_team_md_path() {
+  echo "$(project_dir "$1")/team/systems-engineer.md"
 }
 
 ensure_onboarding_project_layout() {
@@ -117,7 +117,6 @@ ensure_onboarding_project_layout() {
 
   mkdir -p \
     "$base/team" \
-    "$base/workspace/shared/discussions" \
     "$base/workspace/teams/research" \
     "$base/workspace/teams/developer" \
     "$base/workspace/teams/systems-engineer" \
@@ -128,7 +127,6 @@ ensure_onboarding_project_layout() {
     "$base/memory/systems-engineer" \
     "$base/memory/monitoring" \
     "$base/memory/onboarding" \
-    "$base/memory/knowledge/docs" \
     "$base/runtime/message-queue" \
     "$base/runtime/message-locks" \
     "$base/runtime/manager" \
@@ -147,7 +145,7 @@ write_onboarding_systems_engineer_team_md() {
 이 파일은 \`agents/systems-engineer/profile.md\`를 보충한다.
 
 ## 이 프로젝트에서의 초점
-- 시스템 변경 전마다 \`memory/knowledge/docs/change-authority.md\`를 확인하고, 실제 표면과 근거를 최신 상태로 유지한다.
+- 시스템 변경 전마다 \`team/systems-engineer.md\`를 확인하고, 실제 표면과 근거를 최신 상태로 유지한다.
 
 ## 이 프로젝트에서의 제한
 - 문서에 없는 원격 시스템 write는 금지다.
@@ -158,7 +156,7 @@ write_onboarding_systems_engineer_team_md() {
 - Ralph 자율 실행: 미정 (온보딩 시 프로젝트별로 확정)
 - 판단 순서:
   1. 이 표의 환경별 정책 확인
-  2. \`memory/knowledge/docs/change-authority.md\`의 실제 표면/근거 확인
+  2. \`team/systems-engineer.md\`의 실제 표면/근거 확인
   3. 두 문서가 모두 허용할 때만 실행
 - \`read\` 성격의 조사/진단 명령은 허용. 단, secret 값은 저장하지 않는다.
 
@@ -173,7 +171,7 @@ EOF
 write_onboarding_change_authority_md() {
   local project="$1"
   local authority_md
-  authority_md="$(project_change_authority_doc_path "$project")"
+  authority_md="$(project_se_team_md_path "$project")"
 
   cat > "$authority_md" <<'EOF'
 # 시스템 변경 권한 근거
@@ -246,7 +244,7 @@ write_onboarding_bootstrap_project_md() {
 - **긴급 알림**: 미정
 - **프레임워크 디버깅**: off
 - **기술적 전제조건**: 미정
-- **시스템 변경 권한**: 기본 금지. 상세는 team/systems-engineer.md 와 memory/knowledge/docs/change-authority.md 참고
+- **시스템 변경 권한**: 기본 금지. 상세는 team/systems-engineer.md 와 team/systems-engineer.md 참고
 
 ## 팀 구성
 - **활성 에이전트**: 미정
@@ -264,7 +262,7 @@ ensure_onboarding_project_bootstrap() {
   base="$(project_dir "$project")"
   project_md="${base}/project.md"
   team_systems_md="$(project_team_role_doc_path "$project" "systems-engineer")"
-  change_authority_md="$(project_change_authority_doc_path "$project")"
+  change_authority_md="$(project_se_team_md_path "$project")"
 
   ensure_onboarding_project_layout "$project"
 
@@ -1210,15 +1208,14 @@ BOOTRULES
 [Layer 2 — 전략 대화 시작 시 읽기]
 4. memory/manager/activity.md 읽기 (있으면 최근 판단과 변경 이유 확인)
 5. memory/onboarding/handoff.md 읽기 (있으면 초기 설계 맥락 확인)
-6. memory/knowledge/index.md 읽기 (지도만, 전체 읽기 아님)
-7. 해당 대화에 필요한 agents/discussion/techniques/*.md 읽기
+6. 해당 대화에 필요한 agents/discussion/techniques/*.md 읽기
 ${discussion_layer2_domain_line}
 
 [Layer 3 — 필요할 때만 읽기]
 8. agents/common/project-context.md (경로 해석 등 필요 시)
 ${discussion_layer3_domain_line}
 10. (해당 시) projects/${project}/team/discussion.md
-11. 필요하면 memory/manager/sessions.md, memory/manager/assignments.md, workspace/shared/announcements/ 를 읽어라.
+11. 필요하면 memory/manager/sessions.md, memory/manager/assignments.md 를 읽어라.
     단, "지금 누가 뭘 하고 있는지"의 공식 source of truth는 manager다.
 
 12. discussion의 기본 산출물:
@@ -1273,7 +1270,7 @@ TASKMSG
     mutation_safety_note="$(cat <<BOOTRULES
 15. 외부 반영 안전 규칙:
     - 로컬 파일 수정, 테스트, 빌드, 로컬 git commit은 가능하다.
-    - 원격 시스템 변경 전에는 projects/${project}/team/systems-engineer.md 와 projects/${project}/memory/knowledge/docs/change-authority.md 를 다시 읽어라.
+    - 원격 시스템 변경 전에는 projects/${project}/team/systems-engineer.md 와 projects/${project}/team/systems-engineer.md 를 다시 읽어라.
     - 문서에 없는 변경이거나 애매하면 manager에게 escalation하고, manager가 프로젝트의 현재 loop 정책에 맞게 판단하게 해라.
 BOOTRULES
 )"
@@ -1301,7 +1298,7 @@ BOOTRULES
 3. projects/${project}/project.md 읽기
 
 [Layer 2 — 첫 태스크 수신 시 읽기]
-4. memory/knowledge/index.md 읽기 (지도만, 전체 읽기 아님)
+4. memory/${role}/ 읽기 (이전 세션 메모 확인)
 5. 해당 작업에 필요한 agents/${role}/techniques/*.md 읽기
 ${layer2_domain_line}
 
@@ -1310,10 +1307,7 @@ ${layer2_domain_line}
 ${layer3_domain_line}
 9. (해당 시) projects/${project}/team/${role}.md
 
-10. top-level task마다 결과 보고서를 작성해라.
-    - 경로 규칙: reports/tasks/{task-id}-${agent_id}.md
-    - manager가 task_assign를 보낼 때 해당 보고서 stub 경로를 같이 알려준다.
-    - task_complete 전에 보고서를 채우고 Status를 final로 바꿔라.
+10. 태스크 완료 시 핵심 메모를 memory/${role}/에 남겨라 (어떤 파일을 왜 고쳤는지, 주의할 점, 다음에 이어할 때 알아야 할 것).
 
 11. 알림 보내기 (상황별 예시. worktree 안에서도 아래 절대경로 명령을 그대로 써라):
    태스크 완료:

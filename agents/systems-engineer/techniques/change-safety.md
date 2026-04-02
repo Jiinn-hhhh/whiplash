@@ -7,7 +7,7 @@
 ## 1. 제0 원칙
 
 - 로컬 파일 수정, 테스트, 빌드, 로컬 git commit은 허용한다.
-- 원격 시스템 write는 `team/systems-engineer.md`와 `memory/knowledge/docs/change-authority.md`가 둘 다 허용할 때만 수행한다.
+- 원격 시스템 write는 `team/systems-engineer.md`가 허용할 때만 수행한다.
 - 문서에 없거나 애매한 변경은 수행하지 않는다. Manager에게 올리고, 사용자 합의 후 문서를 갱신한다.
 
 ---
@@ -20,16 +20,14 @@
    - `staging`
    - `dev/local`
 3. `team/systems-engineer.md`의 환경별 권한 표를 확인한다.
-4. `memory/knowledge/docs/change-authority.md`에서 실제 표면, 근거, 허용된 변경 범위를 확인한다.
-5. 롤백 경로와 검증 포인트를 정리한다.
+4. 롤백 경로와 검증 포인트를 정리한다.
 6. 문서에 없거나 애매하면 Manager에게 escalation한다.
 
 ---
 
 ## 3. 문서 게이트
 
-- `team/systems-engineer.md`는 환경별로 어떤 종류의 변경이 가능한지 정의한다.
-- `change-authority.md`는 실제로 만져도 되는 시스템 표면과 근거를 정의한다.
+- `team/systems-engineer.md`는 환경별 권한, 허용된 변경 범위, 실제 시스템 표면을 정의한다.
 - 문서에 명시되지 않은 원격 시스템 write는 기본 거부다.
 
 ---

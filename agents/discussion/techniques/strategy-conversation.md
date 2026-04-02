@@ -30,8 +30,6 @@
 필요할 때만 추가로 본다.
 
 - `memory/manager/sessions.md`, `assignments.md`
-- `workspace/shared/announcements/`
-- `memory/knowledge/index.md`
 
 대화 전에 전체 로그를 다 읽지 않는다. 현재 질문에 필요한 최소 맥락만 가져온다.
 

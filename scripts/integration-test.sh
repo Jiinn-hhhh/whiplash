@@ -1274,45 +1274,6 @@ EOF
   assert_eq "dispatch active 기록 1건" "1" "$dispatch_active"
   assert_eq "dispatch 중복 기록 없음" "1" "$dispatch_total"
 
-  local developer_report
-  developer_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-003.md" "developer")"
-  assert_file_exists "dispatch 시 developer 보고서 stub 생성" "$developer_report"
-  assert_file_contains "dispatch 보고서 stub draft 상태" "$developer_report" "^- \\*\\*Status\\*\\*: draft$"
-
-  assert_false "draft 보고서로 task_complete 거부" \
-    bash "$TOOLS_DIR/message.sh" "$PROJECT" developer manager \
-    task_complete normal "TASK-003 완료" "dispatch task finished"
-
-  local developer_active_before_final
-  developer_active_before_final=$(grep -Ec "\\| developer \\| workspace/tasks/TASK-003.md \\| .*\\| active \\|" "$af" 2>/dev/null || true)
-  assert_eq "draft 보고서 거부 후 active 유지" "1" "$developer_active_before_final"
-
-  cat > "$developer_report" << 'EOF'
-# TASK-003 결과 보고
-
-- **Date**: 2026-03-09
-- **Author**: developer
-- **For**: manager
-- **Status**: final
-- **Tags**: `task-report`, `TASK-003`
-
-## 요약
-- **무엇**: TASK-003 결과 보고
-- **핵심 발견**: dispatch flow verified
-- **시사점**: completion gate can proceed
-
-## 내용
-- 작업 지시: workspace/tasks/TASK-003.md
-- 보고서 경로: reports/tasks/TASK-003-developer.md
-- 수행 내용: dispatch로 전달된 태스크의 완료 흐름을 점검했다.
-- 변경 파일: 없음
-- 검증 결과: message.sh task_complete 게이트 확인
-- 남은 리스크: 없음
-
-## 다음 단계
-- 없음
-EOF
-
   bash "$TOOLS_DIR/message.sh" "$PROJECT" developer manager \
     task_complete normal "TASK-003 완료" "dispatch task finished" >/dev/null
 
@@ -1330,45 +1291,11 @@ EOF
   direct_assign_active=$(grep -Ec "\\| developer \\| workspace/tasks/TASK-004.md \\| .*\\| active \\|" "$af" 2>/dev/null || true)
   assert_eq "message.sh task_assign 직접 기록" "1" "$direct_assign_active"
 
-  local direct_report
-  direct_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-004.md" "developer")"
-  assert_file_exists "message.sh task_assign direct 보고서 stub 생성" "$direct_report"
-
   bash "$TOOLS_DIR/cmd.sh" assign manager "Review consensus result" "$PROJECT" >/dev/null
 
   local manager_active
   manager_active=$(grep -Ec "\\| manager \\| Review consensus result \\| .*\\| active \\|" "$af" 2>/dev/null || true)
   assert_eq "cmd.sh assign 으로 manager 태스크 기록" "1" "$manager_active"
-
-  local manager_report
-  manager_report="$(runtime_task_report_path "$PROJECT" "Review consensus result" "manager")"
-  assert_file_exists "cmd.sh assign 으로 manager 보고서 stub 생성" "$manager_report"
-
-  cat > "$manager_report" << 'EOF'
-# Review-consensus-result 결과 보고
-
-- **Date**: 2026-03-09
-- **Author**: manager
-- **For**: manager
-- **Status**: final
-- **Tags**: `task-report`, `Review-consensus-result`
-
-## 요약
-- **무엇**: manager 메타 태스크 결과 보고
-- **핵심 발견**: assign/complete 흐름 verified
-- **시사점**: manager도 동일한 report gate를 따른다
-
-## 내용
-- 작업 지시: Review consensus result
-- 보고서 경로: reports/tasks/Review-consensus-result-manager.md
-- 수행 내용: manager assign/complete 보고서 게이트를 검증했다.
-- 변경 파일: 없음
-- 검증 결과: cmd.sh complete gate 확인
-- 남은 리스크: 없음
-
-## 다음 단계
-- 없음
-EOF
 
   bash "$TOOLS_DIR/cmd.sh" complete manager "$PROJECT" >/dev/null
 
@@ -1884,17 +1811,6 @@ EOF
   bash "$TOOLS_DIR/cmd.sh" dual-dispatch developer \
     "projects/${PROJECT}/workspace/tasks/TASK-005.md" "$PROJECT" >/dev/null
 
-  local claude_report codex_report manager_report
-  claude_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-005.md" "developer-claude")"
-  codex_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-005.md" "developer-codex")"
-  manager_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-005.md" "manager")"
-
-  assert_file_exists "dual-dispatch claude 보고서 stub 생성" "$claude_report"
-  assert_file_exists "dual-dispatch codex 보고서 stub 생성" "$codex_report"
-  assert_file_exists "dual-dispatch manager synthesis stub 생성" "$manager_report"
-  assert_file_contains "manager synthesis가 claude 보고서 경로 포함" "$manager_report" "reports/tasks/TASK-005-developer-claude.md"
-  assert_file_contains "manager synthesis가 codex 보고서 경로 포함" "$manager_report" "reports/tasks/TASK-005-developer-codex.md"
-
   echo "  시나리오 17 완료"
 }
 
@@ -2124,9 +2040,7 @@ test_scenario_22() {
   build_fake_codex
 
   local project_md="$PROJECT_DIR/project.md"
-  local index_md="$PROJECT_DIR/memory/knowledge/index.md"
   local team_systems_md="$PROJECT_DIR/team/systems-engineer.md"
-  local change_authority_md="$PROJECT_DIR/memory/knowledge/docs/change-authority.md"
   local boot_log="$PROJECT_DIR/boot-onboarding.log"
   assert_file_not_exists "bootstrap 전 project.md 없음" "$project_md"
 
@@ -2165,15 +2079,12 @@ test_scenario_22() {
   fi
 
   assert_file_exists "bootstrap project.md 생성" "$project_md"
-  assert_file_exists "bootstrap knowledge index 생성" "$index_md"
   assert_true "bootstrap discussion memory 디렉토리 생성" test -d "$PROJECT_DIR/memory/discussion"
   assert_file_exists "bootstrap systems-engineer team 문서 생성" "$team_systems_md"
-  assert_file_exists "bootstrap change-authority 문서 생성" "$change_authority_md"
   assert_file_contains "bootstrap project.md pending 실행 모드" "$project_md" "실행 모드.*pending"
   assert_file_contains "bootstrap project.md 활성 에이전트 미정" "$project_md" "활성 에이전트.*미정"
   assert_file_contains "bootstrap project.md control-plane 자동 부팅 안내" "$project_md" "control-plane 역할이라 bootstrap 이후 자동 부팅"
   assert_file_contains "bootstrap project.md 시스템 변경 권한 안내" "$project_md" "시스템 변경 권한"
-  assert_file_not_contains "bootstrap change-authority 문서에 machine policy 없음" "$change_authority_md" "Machine Policy"
   assert_true "bootstrap runtime 루트 생성" test -d "$PROJECT_DIR/runtime"
   assert_true "bootstrap sessions.md 생성" test -f "$PROJECT_DIR/memory/manager/sessions.md"
   TOTAL=$((TOTAL + 1))
@@ -2286,16 +2197,12 @@ test_scenario_25() {
   cleanup
   setup_test_project
 
-  mkdir -p "$PROJECT_DIR/team" "$PROJECT_DIR/memory/knowledge/docs"
+  mkdir -p "$PROJECT_DIR/team"
   cat > "$PROJECT_DIR/team/systems-engineer.md" <<'EOF'
 # systems-role-test — Systems Engineer 프로젝트 지침
 
 ## 시스템 변경 권한
 - 기본값: 명시되지 않은 원격 시스템 write는 금지
-EOF
-
-  cat > "$PROJECT_DIR/memory/knowledge/docs/change-authority.md" <<'EOF'
-# 시스템 변경 권한 근거
 
 ## 표면 목록
 | 환경 | 표면 | 허용 행동 | 금지 행동 | 근거 | 마지막 확인 |
@@ -2872,10 +2779,6 @@ EOF
 
   dashboard_state="$(probe_dashboard_agent developer)"
   assert_eq "refresh/reboot guard 후 task visibility 유지" "WAIT|TASK-010" "$dashboard_state"
-
-  local developer_report
-  developer_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-010.md" "developer")"
-  assert_file_exists "auth-blocked guard 후 report stub 유지" "$developer_report"
 
   echo "  시나리오 30 완료"
 }
@@ -3454,7 +3357,7 @@ EOF
 
   runtime_set_idle_check_ts "$PROJECT" "developer" "$(( $(date +%s) - 60 ))"
   dashboard_state="$(probe_dashboard_agent developer)"
-  assert_eq "idle-state가 있으면 assigned row를 IDLE로 표시" "IDLE|draft|TASK-010" "$dashboard_state"
+  assert_eq "idle-state가 있으면 assigned row를 IDLE로 표시" "IDLE|TASK-010" "$dashboard_state"
 
   echo "  시나리오 41 완료"
 }
@@ -3484,11 +3387,11 @@ EOF
 
   local dashboard_state
   dashboard_state="$(probe_dashboard_agent developer-codex)"
-  assert_eq "healthy codex assigned row는 ACTIVE 유지" "ACTIVE|draft|TASK-011" "$dashboard_state"
+  assert_eq "healthy codex assigned row는 ACTIVE 유지" "ACTIVE|TASK-011" "$dashboard_state"
 
   runtime_set_manager_state "$PROJECT" "agent_health_developer-codex" "AUTH_BLOCKED"
   dashboard_state="$(probe_dashboard_agent developer-codex)"
-  assert_eq "runtime auth-blocked truth가 있으면 WAIT로 표시" "WAIT|draft|TASK-011" "$dashboard_state"
+  assert_eq "runtime auth-blocked truth가 있으면 WAIT로 표시" "WAIT|TASK-011" "$dashboard_state"
 
   echo "  시나리오 42 완료"
 }
@@ -3531,19 +3434,12 @@ EOF
   bash "$TOOLS_DIR/cmd.sh" dispatch developer \
     "workspace/tasks/TASK-012.md" "$PROJECT" >/dev/null
 
-  local sf codex_active claude_active codex_report claude_report manager_report
+  local sf codex_active claude_active
   sf="$PROJECT_DIR/memory/manager/assignments.md"
   codex_active="$(grep -Ec "\\| developer-codex \\| workspace/tasks/TASK-012.md \\| .*\\| active \\|" "$sf" 2>/dev/null || true)"
   claude_active="$(grep -Ec "\\| developer-claude \\| workspace/tasks/TASK-012.md \\| .*\\| active \\|" "$sf" 2>/dev/null || true)"
   assert_eq "single owner는 codex lane만 active" "1" "$codex_active"
   assert_eq "single owner는 claude mirror를 만들지 않음" "0" "$claude_active"
-
-  codex_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-012.md" "developer-codex")"
-  claude_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-012.md" "developer-claude")"
-  manager_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-012.md" "manager")"
-  assert_file_exists "single owner codex 보고서 stub 생성" "$codex_report"
-  assert_file_not_exists "single owner claude 보고서 stub 미생성" "$claude_report"
-  assert_file_not_exists "single owner manager compare stub 미생성" "$manager_report"
 
   echo "  시나리오 43 완료"
 }
@@ -3578,15 +3474,12 @@ EOF
   bash "$TOOLS_DIR/cmd.sh" dispatch developer \
     "workspace/tasks/TASK-013.md" "$PROJECT" >/dev/null
 
-  local sf codex_active claude_active manager_report claude_pane codex_pane
+  local sf codex_active claude_active claude_pane codex_pane
   sf="$PROJECT_DIR/memory/manager/assignments.md"
   codex_active="$(grep -Ec "\\| developer-codex \\| workspace/tasks/TASK-013.md \\| .*\\| active \\|" "$sf" 2>/dev/null || true)"
   claude_active="$(grep -Ec "\\| developer-claude \\| workspace/tasks/TASK-013.md \\| .*\\| active \\|" "$sf" 2>/dev/null || true)"
   assert_eq "lead lane assignment 기록" "1" "$codex_active"
   assert_eq "review lane assignment 기록" "1" "$claude_active"
-
-  manager_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-013.md" "manager")"
-  assert_file_exists "lead + verify manager 조율 stub 생성" "$manager_report"
 
   codex_pane="$(tmux capture-pane -p -t "${SESSION}:developer-codex" -S -80 2>/dev/null || true)"
   claude_pane="$(tmux capture-pane -p -t "${SESSION}:developer-claude" -S -80 2>/dev/null || true)"
@@ -3631,19 +3524,12 @@ EOF
   bash "$TOOLS_DIR/cmd.sh" dispatch developer \
     "workspace/tasks/TASK-014.md" "$PROJECT" >/dev/null
 
-  local sf claude_active codex_active claude_report codex_report manager_report
+  local sf claude_active codex_active
   sf="$PROJECT_DIR/memory/manager/assignments.md"
   claude_active="$(grep -Ec "\\| developer-claude \\| workspace/tasks/TASK-014.md \\| .*\\| active \\|" "$sf" 2>/dev/null || true)"
   codex_active="$(grep -Ec "\\| developer-codex \\| workspace/tasks/TASK-014.md \\| .*\\| active \\|" "$sf" 2>/dev/null || true)"
   assert_eq "independent compare claude lane assignment 기록" "1" "$claude_active"
   assert_eq "independent compare codex lane assignment 기록" "1" "$codex_active"
-
-  claude_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-014.md" "developer-claude")"
-  codex_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-014.md" "developer-codex")"
-  manager_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-014.md" "manager")"
-  assert_file_exists "independent compare claude 보고서 stub 생성" "$claude_report"
-  assert_file_exists "independent compare codex 보고서 stub 생성" "$codex_report"
-  assert_file_exists "independent compare manager 비교 stub 생성" "$manager_report"
 
   echo "  시나리오 45 완료"
 }

@@ -190,18 +190,18 @@ Manager는 주요 운영 판단을 `memory/manager/activity.md`에 기록한다.
 
 ```bash
 # 1. 태스크 지시서 작성
-#    workspace/shared/announcements/TASK-001.md
+#    workspace/teams/manager/TASK-001.md
 
 # 2. Researcher에게 디스패치
 bash scripts/cmd.sh dispatch researcher \
-  workspace/shared/announcements/TASK-001.md {project}
+  workspace/teams/manager/TASK-001.md {project}
 
 # 3. (비동기 — Manager는 다른 작업 가능)
 #    Researcher가 message.sh로 완료 알림을 Manager에게 직접 전달
 
 # 4. 결과 확인 후 다음 에이전트에게 디스패치
 bash scripts/cmd.sh dispatch developer \
-  workspace/shared/announcements/TASK-002.md {project}
+  workspace/teams/manager/TASK-002.md {project}
 ```
 
 - dispatch가 실행되면 태스크가 대상 에이전트에 전달된다.
@@ -216,9 +216,9 @@ bash scripts/cmd.sh dispatch developer \
 
 # 2. 동시 디스패치
 bash scripts/cmd.sh dispatch researcher \
-  workspace/shared/announcements/TASK-A.md {project}
+  workspace/teams/manager/TASK-A.md {project}
 bash scripts/cmd.sh dispatch developer \
-  workspace/shared/announcements/TASK-B.md {project}
+  workspace/teams/manager/TASK-B.md {project}
 
 # 3. (동시 진행 — 유저도 tmux에서 각 창 관찰 가능)
 # 4. 양쪽 알림 도착 후 결과 확인

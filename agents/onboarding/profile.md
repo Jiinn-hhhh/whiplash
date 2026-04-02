@@ -25,7 +25,7 @@ allowed-tools: Read,Glob,Grep,Write,Edit,Bash
 - `projects/{name}/project.md` 작성
 - 프로젝트 디렉토리 구조 생성 (workspace/, memory/, reports/)
 - 팀 커스터마이징이 있으면 `team/{role}.md` 생성
-- `systems-engineer`를 활성화한 프로젝트라면 `team/systems-engineer.md`와 `memory/knowledge/docs/change-authority.md` 초안 생성
+- `systems-engineer`를 활성화한 프로젝트라면 `team/systems-engineer.md` 초안 생성 (환경별 권한 및 허용 변경 범위 포함)
 - 필요 시 `researcher`, `systems-engineer` 보조 에이전트를 onboarding 분석 모드로 제한적으로 spawn
 - 설계 확정 후 onboarding이 내부적으로 Manager를 부팅하고 인계
 
@@ -55,7 +55,7 @@ allowed-tools: Read,Glob,Grep,Write,Edit,Bash
 - **프로젝트 정의**: `common/project-context.md`의 project.md 양식
 - **디렉토리 구조**: `common/project-context.md`의 프로젝트 구조
 - **팀 커스터마이징**: `common/project-context.md` §7의 `team/{role}.md` 양식 (해당 시)
-- **시스템 변경 권한 문서**: `systems-engineer` 활성 프로젝트라면 `memory/knowledge/docs/change-authority.md`
+- **시스템 변경 권한 문서**: `systems-engineer` 활성 프로젝트라면 `team/systems-engineer.md`
 
 ### 품질 기준
 - **잘한 것**: project.md가 충분히 구체적이어서 Manager와 팀이 바로 작업 시작 가능

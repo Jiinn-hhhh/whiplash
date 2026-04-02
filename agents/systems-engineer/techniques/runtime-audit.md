@@ -9,7 +9,7 @@
 - repo보다 **현재 실행 중인 시스템**을 먼저 확인한다.
 - 설명은 추정이 아니라 증거 기반으로 작성한다.
 - `prod`, `staging`, `dev`, `legacy`를 섞어 말하지 않는다.
-- 검증한 운영 사실은 머릿속에만 두지 말고 `memory/knowledge/docs/`의 표준 문서 세트에 남긴다.
+- 검증한 운영 사실은 머릿속에만 두지 말고 `memory/systems-engineer/`의 표준 문서 세트에 남긴다.
 - 문서에는 `마지막 검증 시각`, `검증 환경`, `검증 방식`을 남긴다.
 - secret 값은 저장하지 않고 이름, 경로, 역할, 구조만 기록한다.
 
@@ -48,8 +48,7 @@
 
 ### 작성 위치
 - 조사 중 메모와 초안은 `workspace/teams/systems-engineer/`에 작성한다.
-- 검증이 끝난 운영 사실은 `memory/knowledge/docs/`의 고정 파일명으로 승격한다.
-- 실제로 수정 가능한 시스템 표면과 정책 근거는 `memory/knowledge/docs/change-authority.md`에 정리한다.
+- 검증이 끝난 운영 사실은 `memory/systems-engineer/`의 고정 파일명으로 승격한다.
 
 ### 표준 파일명
 - `live-topology.md`
