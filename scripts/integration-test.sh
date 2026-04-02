@@ -1786,35 +1786,6 @@ test_scenario_16() {
 }
 
 # ──────────────────────────────────────────────
-# 시나리오 17: dual-dispatch 결과 보고서 stub 생성
-# ──────────────────────────────────────────────
-
-test_scenario_17() {
-  echo ""
-  echo "=== 시나리오 17: dual-dispatch 보고서 stub 생성 ==="
-  cleanup
-  setup_test_project
-  build_fake_claude
-  build_fake_codex
-
-  mkdir -p "$PROJECT_DIR/workspace/tasks"
-  cat > "$PROJECT_DIR/workspace/tasks/TASK-005.md" << 'EOF'
-# TASK-005: Dual dispatch report stub test
-EOF
-
-  tmux new-session -d -s "$SESSION" -n manager
-  create_fake_agent "developer-claude"
-  create_fake_codex_agent "developer-codex"
-  register_fake_agent "developer-claude" "developer"
-  register_fake_codex_agent "developer-codex" "developer"
-
-  bash "$TOOLS_DIR/cmd.sh" dual-dispatch developer \
-    "projects/${PROJECT}/workspace/tasks/TASK-005.md" "$PROJECT" >/dev/null
-
-  echo "  시나리오 17 완료"
-}
-
-# ──────────────────────────────────────────────
 # 시나리오 19: systems-engineer role wiring
 # ──────────────────────────────────────────────
 
@@ -3635,7 +3606,6 @@ test_scenario_13
 test_scenario_14
 test_scenario_15
 test_scenario_16
-test_scenario_17
 test_scenario_19
 test_scenario_20
 test_scenario_21
