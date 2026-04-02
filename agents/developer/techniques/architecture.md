@@ -51,7 +51,7 @@
 
 ### 기록 위치
 - `workspace/teams/developer/decisions/` — 작성 중/검토 중
-- 확정 후 `reports/` 또는 `memory/knowledge/docs/`로 이동
+- 확정 후 `memory/developer/`에 핵심만 기록
 
 ---
 

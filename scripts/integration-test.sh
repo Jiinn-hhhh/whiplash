@@ -1899,136 +1899,6 @@ EOF
 }
 
 # ──────────────────────────────────────────────
-# 시나리오 18: dashboard agent live/report 상태 반영
-# ──────────────────────────────────────────────
-
-test_scenario_18() {
-  echo ""
-  echo "=== 시나리오 18: dashboard agent live/report 상태 반영 ==="
-  cleanup
-  setup_test_project
-  build_fake_claude
-
-  mkdir -p "$PROJECT_DIR/workspace/tasks"
-  cat > "$PROJECT_DIR/workspace/tasks/TASK-007.md" << 'EOF'
-# TASK-007: Dashboard report status test
-EOF
-
-  tmux new-session -d -s "$SESSION" -n dashboard
-  create_fake_agent "developer"
-  register_fake_agent "developer" "developer"
-
-  local dashboard_state
-  dashboard_state="$(probe_dashboard_agent developer)"
-  assert_eq "dashboard가 최근 활동 agent를 IDLE로 표시" "IDLE||" "$dashboard_state"
-
-  bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer \
-    task_assign normal "workspace/tasks/TASK-007.md" "dashboard status smoke" >/dev/null
-
-  tmux select-window -t "${SESSION}:dashboard"
-
-  dashboard_state="$(probe_dashboard_agent developer)"
-  assert_eq "dashboard가 live + draft report 표시" "ACTIVE|draft|TASK-007" "$dashboard_state"
-
-  local active_summary
-  active_summary="$(probe_dashboard_active_task_summary)"
-  assert_eq "dashboard가 진행중 task summary 표시" "1|TASK-007|developer" "$active_summary"
-
-  local developer_report
-  developer_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-007.md" "developer")"
-  cat > "$developer_report" << 'EOF'
-# TASK-007 결과 보고
-
-- **Date**: 2026-03-09
-- **Author**: developer
-- **For**: manager
-- **Status**: final
-- **Tags**: `task-report`, `TASK-007`
-
-## 요약
-- **무엇**: dashboard status smoke
-- **핵심 발견**: final report visible
-- **시사점**: dashboard report state should turn final
-
-## 내용
-- 작업 지시: workspace/tasks/TASK-007.md
-- 보고서 경로: reports/tasks/TASK-007-developer.md
-- 수행 내용: dashboard report status 검증
-- 변경 파일: 없음
-- 검증 결과: report final
-- 남은 리스크: 없음
-
-## 다음 단계
-- 없음
-EOF
-
-  dashboard_state="$(probe_dashboard_agent developer)"
-  assert_eq "dashboard가 final report 표시" "ACTIVE|final|TASK-007" "$dashboard_state"
-
-  tmux send-keys -t "${SESSION}:developer" "Not logged in · Please run /login" Enter
-  sleep 1
-  dashboard_state="$(probe_dashboard_agent developer)"
-  assert_eq "dashboard가 auth-blocked Claude pane을 WAIT로 표시" "WAIT|final|TASK-007" "$dashboard_state"
-
-  local pane_pid child_pid
-  pane_pid="$(tmux list-panes -t "${SESSION}:developer" -F '#{pane_pid}' 2>/dev/null | head -1)"
-  child_pid="$(pgrep -P "$pane_pid" claude 2>/dev/null | head -1 || true)"
-  if [ -z "$child_pid" ]; then
-    local pane_comm
-    pane_comm="$(ps -p "$pane_pid" -o comm= 2>/dev/null | head -1 || true)"
-    if [ -n "$pane_comm" ] && printf '%s' "$pane_comm" | grep -Eq '(^|/)claude([^[:space:]]*)?$'; then
-      child_pid="$pane_pid"
-    fi
-  fi
-  if [ -n "$child_pid" ]; then
-    kill "$child_pid" 2>/dev/null || true
-  fi
-  sleep 1
-
-  dashboard_state="$(probe_dashboard_agent developer)"
-  assert_eq "dashboard가 dead process를 CRASHED로 표시" "CRASHED|final|TASK-007" "$dashboard_state"
-
-  cleanup
-  setup_test_project
-  build_fake_codex
-
-  tmux new-session -d -s "$SESSION" -n dashboard
-  create_fake_codex_agent "developer-codex"
-  register_fake_codex_agent "developer-codex" "developer"
-
-  mkdir -p "$PROJECT_DIR/workspace/tasks"
-  cat > "$PROJECT_DIR/workspace/tasks/TASK-009.md" << 'EOF'
-# TASK-009: Dashboard codex alias status test
-EOF
-
-  pane_pid="$(tmux list-panes -t "${SESSION}:developer-codex" -F '#{pane_pid}' 2>/dev/null | head -1)"
-  local dashboard_codex_match
-  dashboard_codex_match="$(python3 - "$REPO_ROOT" <<'PY'
-import importlib.util
-import pathlib
-import sys
-
-repo_root = pathlib.Path(sys.argv[1])
-module_path = repo_root / "dashboard" / "dashboard.py"
-spec = importlib.util.spec_from_file_location("whiplash_dashboard", module_path)
-module = importlib.util.module_from_spec(spec)
-assert spec.loader is not None
-spec.loader.exec_module(module)
-print(int(module._command_matches_backend("codex-aarch64-a", "codex")))
-PY
-)"
-  assert_eq "dashboard helper가 codex alias command를 codex backend로 인식" "1" "$dashboard_codex_match"
-
-  bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer-codex \
-    task_assign normal "workspace/tasks/TASK-009.md" "dashboard codex alias smoke" >/dev/null
-
-  dashboard_state="$(probe_dashboard_agent developer-codex)"
-  assert_eq "dashboard collect가 codex alias pane를 ACTIVE로 표시" "ACTIVE|draft|TASK-009" "$dashboard_state"
-
-  echo "  시나리오 18 완료"
-}
-
-# ──────────────────────────────────────────────
 # 시나리오 19: systems-engineer role wiring
 # ──────────────────────────────────────────────
 
@@ -2337,75 +2207,6 @@ test_scenario_22() {
   echo "  시나리오 22 완료"
 }
 
-# ──────────────────────────────────────────────
-# 시나리오 23: dashboard waiting report lifecycle
-# ──────────────────────────────────────────────
-
-test_scenario_23() {
-  echo ""
-  echo "=== 시나리오 23: dashboard waiting report lifecycle ==="
-  cleanup
-  setup_test_project
-  build_fake_claude
-
-  mkdir -p "$PROJECT_DIR/workspace/tasks"
-  cat > "$PROJECT_DIR/workspace/tasks/TASK-008.md" << 'EOF'
-# TASK-008: Waiting report smoke test
-EOF
-  cat > "$PROJECT_DIR/workspace/tasks/TASK-009.md" << 'EOF'
-# TASK-009: Waiting report clear test
-EOF
-
-  tmux new-session -d -s "$SESSION" -n dashboard
-  create_fake_agent "developer"
-  register_fake_agent "developer" "developer"
-
-  bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer \
-    task_assign normal "workspace/tasks/TASK-008.md" "waiting report setup" >/dev/null
-
-  local developer_report
-  developer_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-008.md" "developer")"
-  cat > "$developer_report" << 'EOF'
-# TASK-008 결과 보고
-
-- **Date**: 2026-03-12
-- **Author**: developer
-- **For**: manager
-- **Status**: final
-- **Tags**: `task-report`, `TASK-008`
-
-## 요약
-- **무엇**: waiting report smoke
-- **핵심 발견**: waiting state visible
-- **시사점**: dashboard should show completion waiting report
-
-## 내용
-- 작업 지시: workspace/tasks/TASK-008.md
-- 보고서 경로: reports/tasks/TASK-008-developer.md
-- 수행 내용: waiting report state 기록
-- 변경 파일: 없음
-- 검증 결과: task_complete gate pass
-- 남은 리스크: 없음
-
-## 다음 단계
-- 다음 task assign 시 waiting state clear 확인
-EOF
-
-  bash "$TOOLS_DIR/message.sh" "$PROJECT" developer manager \
-    task_complete normal "TASK-008 완료" "waiting report smoke" >/dev/null
-
-  local waiting_state
-  waiting_state="$(probe_dashboard_waiting_report developer)"
-  assert_eq "dashboard가 완료 후 대기 보고 표시" "1|IDLE|TASK-008 완료" "$waiting_state"
-
-  bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer \
-    task_assign normal "workspace/tasks/TASK-009.md" "next task clears waiting report" >/dev/null
-
-  waiting_state="$(probe_dashboard_waiting_report developer)"
-  assert_eq "다음 task_assign 시 waiting report 제거" "0||" "$waiting_state"
-
-  echo "  시나리오 23 완료"
-}
 
 # ──────────────────────────────────────────────
 # 시나리오 24: Claude plan mode 감지
@@ -3026,7 +2827,7 @@ EOF
   assert_eq "auth-blocked actionable signal은 1회만 기록" "1" "$auth_alert_count"
 
   dashboard_state="$(probe_dashboard_agent developer)"
-  assert_eq "dashboard가 auth-blocked task/report visibility 유지" "WAIT|draft|TASK-010" "$dashboard_state"
+  assert_eq "dashboard가 auth-blocked task visibility 유지" "WAIT|TASK-010" "$dashboard_state"
 
   status_out="$(bash "$TOOLS_DIR/cmd.sh" status "$PROJECT" 2>/dev/null || true)"
   TOTAL=$((TOTAL + 1))
@@ -3070,7 +2871,7 @@ EOF
       bash "$TOOLS_DIR/cmd.sh" reboot developer "$PROJECT"
 
   dashboard_state="$(probe_dashboard_agent developer)"
-  assert_eq "refresh/reboot guard 후 task/report visibility 유지" "WAIT|draft|TASK-010" "$dashboard_state"
+  assert_eq "refresh/reboot guard 후 task visibility 유지" "WAIT|TASK-010" "$dashboard_state"
 
   local developer_report
   developer_report="$(runtime_task_report_path "$PROJECT" "workspace/tasks/TASK-010.md" "developer")"
@@ -3649,7 +3450,7 @@ EOF
 
   local dashboard_state
   dashboard_state="$(probe_dashboard_agent developer)"
-  assert_eq "healthy assigned agent는 여전히 ACTIVE" "ACTIVE|draft|TASK-010" "$dashboard_state"
+  assert_eq "healthy assigned agent는 여전히 ACTIVE" "ACTIVE|TASK-010" "$dashboard_state"
 
   runtime_set_idle_check_ts "$PROJECT" "developer" "$(( $(date +%s) - 60 ))"
   dashboard_state="$(probe_dashboard_agent developer)"
@@ -3949,12 +3750,10 @@ test_scenario_14
 test_scenario_15
 test_scenario_16
 test_scenario_17
-test_scenario_18
 test_scenario_19
 test_scenario_20
 test_scenario_21
 test_scenario_22
-test_scenario_23
 test_scenario_24
 test_scenario_25
 test_scenario_26
