@@ -1189,6 +1189,10 @@ def render(state: dict, interval: int) -> Layout:
     # agent table: header(1) + rows + panel borders(2) + title(1)
     bottom_height = max(9, n_agents + 4)
 
+    # tasks 패널: 태스크 수에 맞춰 동적 높이 (각 태스크 ~4줄 + borders 3줄)
+    n_tasks = len(state.get("active_task_summaries", []))
+    tasks_height = max(6, min(n_tasks * 4 + 3, shutil.get_terminal_size().lines // 2))
+
     layout = Layout()
 
     # 알림 유무에 따라 레이아웃 구성
@@ -1197,7 +1201,7 @@ def render(state: dict, interval: int) -> Layout:
     ]
     if alerts_height > 0:
         sections.append(Layout(name="alerts", size=alerts_height))
-    sections.append(Layout(name="tasks"))  # flexible
+    sections.append(Layout(name="tasks", size=tasks_height))
     sections.append(Layout(name="bottom", size=bottom_height))
     sections.append(Layout(name="footer", size=1))
 
