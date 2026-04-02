@@ -663,44 +663,11 @@ for agent in state["agents"]:
     if agent.get("win_name") == window_name:
         print(
             f'{agent.get("display_status","")}|'
-            f'{agent.get("report_status","")}|'
             f'{agent.get("task_id","")}'
         )
         break
 else:
-    print("missing||")
-PY
-}
-
-probe_dashboard_waiting_report() {
-  local window_name="$1"
-  python3 - "$REPO_ROOT" "$PROJECT_DIR" "$SESSION" "$window_name" <<'PY'
-import importlib.util
-import pathlib
-import sys
-
-repo_root = pathlib.Path(sys.argv[1])
-project_dir = sys.argv[2]
-session_name = sys.argv[3]
-window_name = sys.argv[4]
-module_path = repo_root / "dashboard" / "dashboard.py"
-spec = importlib.util.spec_from_file_location("whiplash_dashboard", module_path)
-module = importlib.util.module_from_spec(spec)
-assert spec.loader is not None
-spec.loader.exec_module(module)
-project_info = module.parse_project_md(project_dir)
-state = module.collect(project_dir, session_name, project_info)
-waiting = state.get("waiting_reports", [])
-for entry in waiting:
-    if entry.get("agent") == window_name:
-        print(
-            f'{len(waiting)}|'
-            f'{entry.get("status","")}|'
-            f'{entry.get("subject","")}'
-        )
-        break
-else:
-    print(f'{len(waiting)}||')
+    print("missing|")
 PY
 }
 

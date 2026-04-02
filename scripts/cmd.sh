@@ -118,7 +118,6 @@ ensure_onboarding_project_layout() {
   mkdir -p \
     "$base/team" \
     "$base/workspace/shared/discussions" \
-    "$base/workspace/shared/announcements" \
     "$base/workspace/teams/research" \
     "$base/workspace/teams/developer" \
     "$base/workspace/teams/systems-engineer" \
@@ -129,13 +128,12 @@ ensure_onboarding_project_layout() {
     "$base/memory/systems-engineer" \
     "$base/memory/monitoring" \
     "$base/memory/onboarding" \
-    "$base/memory/knowledge/lessons" \
     "$base/memory/knowledge/docs" \
     "$base/runtime/message-queue" \
     "$base/runtime/message-locks" \
     "$base/runtime/manager" \
     "$base/logs" \
-    "$base/reports/tasks"
+    "$base/reports"
 }
 
 write_onboarding_systems_engineer_team_md() {
@@ -262,10 +260,9 @@ EOF
 
 ensure_onboarding_project_bootstrap() {
   local project="$1"
-  local base project_md knowledge_index team_systems_md change_authority_md
+  local base project_md team_systems_md change_authority_md
   base="$(project_dir "$project")"
   project_md="${base}/project.md"
-  knowledge_index="${base}/memory/knowledge/index.md"
   team_systems_md="$(project_team_role_doc_path "$project" "systems-engineer")"
   change_authority_md="$(project_change_authority_doc_path "$project")"
 
@@ -273,14 +270,6 @@ ensure_onboarding_project_bootstrap() {
 
   if [ ! -f "$project_md" ]; then
     write_onboarding_bootstrap_project_md "$project"
-  fi
-
-  if [ ! -f "$knowledge_index" ]; then
-    cat > "$knowledge_index" <<'EOF'
-# 지식 지도
-
-- 초기 bootstrap 상태. onboarding과 이후 에이전트가 핵심 문서 링크를 정리한다.
-EOF
   fi
 
   if [ ! -f "$team_systems_md" ]; then
@@ -1655,168 +1644,7 @@ pattern_dispatch_message() {
   esac
 }
 
-write_pattern_manager_report_stub() {
-  local project="$1" task_ref="$2" pattern="$3"
-  shift 3
-  local report_path report_rel task_key pattern_label tag joined_reports report_line
-  report_path="$(runtime_task_report_path "$project" "$task_ref" "manager")"
-  report_rel="$(runtime_project_relative_path "$project" "$report_path")"
-  task_key="$(runtime_task_report_key "$task_ref")"
-  mkdir -p "$(dirname "$report_path")"
 
-  case "$pattern" in
-    lead_verify)
-      pattern_label="lead + verify"
-      tag="lead-verify"
-      ;;
-    *)
-      pattern_label="independent compare"
-      tag="independent-compare"
-      ;;
-  esac
-
-  joined_reports=""
-  for report_line in "$@"; do
-    if [ -n "$joined_reports" ]; then
-      joined_reports="${joined_reports}; "
-    fi
-    joined_reports="${joined_reports}${report_line}"
-  done
-
-  if [ ! -f "$report_path" ]; then
-    cat > "$report_path" <<EOF
-# ${task_key} 패턴 조율 보고
-
-- **Date**: $(date +%Y-%m-%d)
-- **Author**: manager
-- **For**: user
-- **Status**: draft
-- **Tags**: \`task-report\`, \`${task_key}\`, \`task-pattern\`, \`${tag}\`
-
-## 요약
-- **무엇**: ${task_ref}에 대한 ${pattern_label} 조율 보고
-- **핵심 발견**: 작성 필요
-- **시사점**: 작성 필요
-
-## 내용
-- 작업 지시: ${task_ref}
-- 보고서 경로: ${report_rel}
-- 실행 패턴: ${pattern_label}
-- lane 결과: ${joined_reports}
-- 최종 판정: 작성 필요
-- 검증 결과: 작성 필요
-- 남은 리스크: 작성 필요
-
-## 다음 단계
-- 후속 작업이 있으면 작성
-EOF
-  fi
-
-  printf '%s\n' "$report_rel"
-}
-
-task_subject_and_message() {
-  local task="$1"
-  local _tsm_subject_var="$2"
-  local _tsm_message_var="$3"
-  local project="${4:-}"
-  local _tsm_subject _tsm_msg _tsm_resolved
-  _tsm_resolved=""
-  if [ -n "$project" ]; then
-    _tsm_resolved="$(resolve_task_metadata_path "$project" "$task" 2>/dev/null || true)"
-  fi
-  if [ -n "$_tsm_resolved" ] || [ -f "$task" ]; then
-    _tsm_subject="$task"
-    if [ -n "$project" ]; then
-      _tsm_msg="$(normalize_task_ref "$project" "$task") 파일에 새 작업 지시가 있다. 읽고 실행해라."
-    else
-      _tsm_msg="${task} 파일에 새 작업 지시가 있다. 읽고 실행해라."
-    fi
-  else
-    _tsm_subject="$task"
-    _tsm_msg="$task"
-  fi
-  printf -v "$_tsm_subject_var" '%s' "$_tsm_subject"
-  printf -v "$_tsm_message_var" '%s' "$_tsm_msg"
-}
-
-pattern_dispatch_message() {
-  local task="$1" project="$2" pattern="$3" role_label="$4" lead_target="${5:-}"
-  local subject base
-  task_subject_and_message "$task" subject base "$project"
-  case "$pattern:$role_label" in
-    single_owner:owner)
-      printf '%s\n' "$base"
-      ;;
-    lead_verify:lead)
-      printf '[execution pattern: lead + verify]\n%s\nexecution lead로서 구현을 주도하고 결과 보고를 남겨라.\n' "$base"
-      ;;
-    lead_verify:verify)
-      printf '[execution pattern: lead + verify]\n%s\nreview/verify lane으로서 %s 결과를 교차검토하고 challenge/confirm 메모를 남겨라.\n' "$base" "${lead_target:-lead lane}"
-      ;;
-    independent_compare:compare)
-      printf '[execution pattern: independent compare]\n%s\npeer lane과 독립적으로 읽고 실행한 뒤 비교 가능한 보고를 남겨라.\n' "$base"
-      ;;
-    *)
-      printf '%s\n' "$base"
-      ;;
-  esac
-}
-
-write_pattern_manager_report_stub() {
-  local project="$1" task_ref="$2" pattern="$3"
-  shift 3
-  local report_path report_rel task_key pattern_label tag joined_reports report_line
-  report_path="$(runtime_task_report_path "$project" "$task_ref" "manager")"
-  report_rel="$(runtime_project_relative_path "$project" "$report_path")"
-  task_key="$(runtime_task_report_key "$task_ref")"
-  mkdir -p "$(dirname "$report_path")"
-
-  case "$pattern" in
-    lead_verify)
-      pattern_label="lead + verify"
-      tag="lead-verify"
-      ;;
-    *)
-      pattern_label="independent compare"
-      tag="independent-compare"
-      ;;
-  esac
-
-  joined_reports=""
-  for report_line in "$@"; do
-    if [ -n "$joined_reports" ]; then
-      joined_reports="${joined_reports}; "
-    fi
-    joined_reports="${joined_reports}${report_line}"
-  done
-
-  if [ ! -f "$report_path" ]; then
-    cat > "$report_path" <<EOF
-# ${task_key} 패턴 조율 보고
-
-- **Date**: $(date +%Y-%m-%d)
-- **Author**: manager
-- **For**: user
-- **Status**: draft
-- **Tags**: \`task-report\`, \`${task_key}\`, \`task-pattern\`, \`${tag}\`
-
-## 요약
-- **무엇**: ${task_ref}에 대한 ${pattern_label} 조율 보고
-- **핵심 발견**: 작성 필요
-- **시사점**: 작성 필요
-
-## 내용
-- 작업 지시: ${task_ref}
-- 보고서 경로: ${report_rel}
-- 실행 패턴: ${pattern_label}
-- lane 결과: ${joined_reports}
-- 최종 판정: 작성 필요
-EOF
-  fi
-
-  printf '%s\n' "$report_rel"
-}
 
 # ──────────────────────────────────────────────
 
@@ -1834,11 +1662,6 @@ cmd_complete() {
   local agent="$1" project="$2"
   validate_project_name "$project"
   validate_window_name "$agent"
-  local active_task
-  active_task="$(get_active_task "$project" "$agent")"
-  if [ -n "$active_task" ]; then
-    validate_task_report_ready "$project" "$agent" "$active_task"
-  fi
   complete_assignment "$project" "$agent"
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator task_complete "$agent" || true
   echo "complete 완료: ${agent}"
@@ -1852,7 +1675,6 @@ cmd_assign() {
   validate_project_name "$project"
   validate_window_name "$agent"
   record_assignment "$project" "$agent" "$task"
-  runtime_write_task_report_stub "$project" "$(normalize_task_ref "$project" "$task")" "$agent" "manager" >/dev/null
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator task_assign "$agent" \
     --detail task="$task" || true
   echo "assign 완료: ${agent} ← ${task}"
@@ -1915,28 +1737,6 @@ resume_pending_task_for_window() {
   fi
 
   printf '%s\n' "$pending_task"
-}
-
-validate_task_report_ready() {
-  local project="$1" agent="$2" task_ref="$3"
-  local report_path report_rel
-  report_path="$(runtime_task_report_path "$project" "$task_ref" "$agent")"
-  report_rel="$(runtime_project_relative_path "$project" "$report_path")"
-
-  if [ ! -f "$report_path" ]; then
-    echo "Error: 완료 전에 결과 보고서가 필요하다: ${report_rel}" >&2
-    return 1
-  fi
-
-  if ! grep -Eq '^- \*\*Status\*\*: final([[:space:]]*)$' "$report_path"; then
-    echo "Error: 결과 보고서 Status가 final이어야 한다: ${report_rel}" >&2
-    return 1
-  fi
-
-  if grep -q "작성 필요" "$report_path" 2>/dev/null; then
-    echo "Error: 결과 보고서에 미완성 placeholder가 남아 있다: ${report_rel}" >&2
-    return 1
-  fi
 }
 
 # sessions.md 초기화 (멱등: 이미 존재하면 건너뜀)
@@ -2095,7 +1895,6 @@ reset_stale_boot_runtime_state() {
   local project="$1"
   rm -f "$(runtime_reboot_state_file "$project")"
   rm -f "$(runtime_idle_state_file "$project")"
-  rm -f "$(runtime_waiting_state_file "$project")"
 
   # tmux-debug 로그 정리: 이전 세션 잔재 삭제
   # server 로그는 현재 PID 보존, client 로그는 부팅 시점에 모두 이전 세션 잔재이므로 전부 삭제
@@ -3291,10 +3090,8 @@ cmd_dispatch() {
   expire_stale_assignments "$project"
 
   local subject base_msg lead_target target role_label target_msg idx
-  local normalized_task target_report_rel claude_report_rel codex_report_rel
-  local manager_report_rel="" target_csv="" role_csv="" report_refs=()
+  local target_csv="" role_csv=""
   task_subject_and_message "$task" subject base_msg "$project"
-  normalized_task="$(normalize_task_ref "$project" "$subject")"
 
   resolve_task_execution_plan "$role" "$task" "$project" "$forced_pattern"
   if [ "${#TASK_EXEC_TARGETS[@]}" -eq 0 ]; then
@@ -3317,28 +3114,10 @@ cmd_dispatch() {
     role_label="${TASK_EXEC_ROLES[$idx]}"
     target_msg="$(pattern_dispatch_message "$task" "$project" "$TASK_EXEC_PATTERN" "$role_label" "$lead_target")"
     bash "$TOOLS_DIR/message.sh" "$project" "manager" "$target" "task_assign" "normal" "$subject" "$target_msg"
-    target_report_rel="$(runtime_project_relative_path "$project" "$(runtime_task_report_path "$project" "$normalized_task" "$target")")"
-    report_refs+=("${target}:${target_report_rel}")
-    if [[ "$target" == *-claude ]]; then
-      claude_report_rel="$target_report_rel"
-    elif [[ "$target" == *-codex ]]; then
-      codex_report_rel="$target_report_rel"
-    fi
   done
 
-  if [ "$TASK_EXEC_MANAGER_STUB" = "compare" ]; then
-    if [ -n "${claude_report_rel:-}" ] && [ -n "${codex_report_rel:-}" ]; then
-      runtime_write_dual_synthesis_report_stub "$project" "$normalized_task" "$claude_report_rel" "$codex_report_rel" >/dev/null
-      manager_report_rel="$(runtime_project_relative_path "$project" "$(runtime_task_report_path "$project" "$normalized_task" "manager")")"
-    else
-      manager_report_rel="$(write_pattern_manager_report_stub "$project" "$normalized_task" "$TASK_EXEC_PATTERN" "${report_refs[@]}")"
-    fi
-  elif [ "$TASK_EXEC_MANAGER_STUB" = "verify" ]; then
-    manager_report_rel="$(write_pattern_manager_report_stub "$project" "$normalized_task" "$TASK_EXEC_PATTERN" "${report_refs[@]}")"
-  fi
-
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator task_dispatch "$role" \
-    --detail task="$task" pattern="$TASK_EXEC_PATTERN" targets="$target_csv" roles="$role_csv" manager_report="${manager_report_rel:-}" || true
+    --detail task="$task" pattern="$TASK_EXEC_PATTERN" targets="$target_csv" roles="$role_csv" || true
   echo "dispatch 완료: ${role} [${TASK_EXEC_PATTERN}] ← ${task} (${target_csv})"
 }
 

@@ -75,92 +75,6 @@ runtime_task_report_path() {
     "$(runtime_report_author_key "$author")"
 }
 
-runtime_write_task_report_stub() {
-  local project="$1"
-  local task_ref="$2"
-  local author="$3"
-  local report_for="${4:-manager}"
-  local report_path report_rel task_key
-  report_path="$(runtime_task_report_path "$project" "$task_ref" "$author")"
-  report_rel="$(runtime_project_relative_path "$project" "$report_path")"
-  task_key="$(runtime_task_report_key "$task_ref")"
-  mkdir -p "$(dirname "$report_path")"
-
-  if [ ! -f "$report_path" ]; then
-    cat > "$report_path" <<EOF
-# ${task_key} 결과 보고
-
-- **Date**: $(date +%Y-%m-%d)
-- **Author**: ${author}
-- **For**: ${report_for}
-- **Status**: draft
-- **Tags**: \`task-report\`, \`${task_key}\`
-
-## 요약
-- **무엇**: ${task_ref}에 대한 결과 보고
-- **핵심 발견**: 작성 필요
-- **시사점**: 작성 필요
-
-## 내용
-- 작업 지시: ${task_ref}
-- 보고서 경로: ${report_rel}
-- 수행 내용: 작성 필요
-- 변경 파일: 작성 필요
-- 검증 결과: 작성 필요
-- 남은 리스크: 작성 필요
-
-## 다음 단계
-- 후속 작업이 있으면 작성
-EOF
-  fi
-
-  printf '%s\n' "$report_rel"
-}
-
-runtime_write_dual_synthesis_report_stub() {
-  local project="$1"
-  local task_ref="$2"
-  local claude_report_rel="$3"
-  local codex_report_rel="$4"
-  local report_path report_rel task_key
-  report_path="$(runtime_task_report_path "$project" "$task_ref" "manager")"
-  report_rel="$(runtime_project_relative_path "$project" "$report_path")"
-  task_key="$(runtime_task_report_key "$task_ref")"
-  mkdir -p "$(dirname "$report_path")"
-
-  if [ ! -f "$report_path" ]; then
-    cat > "$report_path" <<EOF
-# ${task_key} 합의 보고
-
-- **Date**: $(date +%Y-%m-%d)
-- **Author**: manager
-- **For**: user
-- **Status**: draft
-- **Tags**: \`task-report\`, \`${task_key}\`, \`dual-synthesis\`
-
-## 요약
-- **무엇**: ${task_ref}에 대한 듀얼 실행 종합 보고
-- **핵심 발견**: 작성 필요
-- **시사점**: 작성 필요
-
-## 내용
-- 작업 지시: ${task_ref}
-- 보고서 경로: ${report_rel}
-- Claude 결과: ${claude_report_rel}
-- Codex 결과: ${codex_report_rel}
-- 최종 판정: 작성 필요
-- 차용한 아이디어: 작성 필요
-- 검증 결과: 작성 필요
-- 남은 리스크: 작성 필요
-
-## 다음 단계
-- 후속 작업이 있으면 작성
-EOF
-  fi
-
-  printf '%s\n' "$report_rel"
-}
-
 runtime_manager_state_file() {
   printf '%s/manager-state.tsv\n' "$(runtime_root_dir "$1")"
 }
@@ -610,22 +524,6 @@ runtime_set_idle_check_ts() {
 
 runtime_clear_idle_check_ts() {
   runtime_row_clear "$(runtime_idle_state_file "$1")" "$2"
-}
-
-runtime_get_waiting_report_ts() {
-  runtime_row_get "$(runtime_waiting_state_file "$1")" "$2" 2 ""
-}
-
-runtime_get_waiting_report_subject() {
-  runtime_row_get "$(runtime_waiting_state_file "$1")" "$2" 3 ""
-}
-
-runtime_get_waiting_report_task_ref() {
-  runtime_row_get "$(runtime_waiting_state_file "$1")" "$2" 4 ""
-}
-
-runtime_get_waiting_report_path() {
-  runtime_row_get "$(runtime_waiting_state_file "$1")" "$2" 5 ""
 }
 
 runtime_set_waiting_report() {

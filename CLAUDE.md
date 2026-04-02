@@ -29,11 +29,11 @@
 
 ### Multi-Project Support
 
-One framework runs multiple projects simultaneously. Each project gets isolated workspace, memory, and reports under `projects/{name}/`.
+One framework runs multiple projects simultaneously. Each project gets isolated workspace and memory under `projects/{name}/`.
 
-- Paths like `workspace/`, `memory/`, `reports/` in agent documents are **relative to the current project** (resolved to `projects/{name}/workspace/`, etc.)
+- Paths like `workspace/`, `memory/` in agent documents are **relative to the current project** (resolved to `projects/{name}/workspace/`, etc.)
 - Each project has a `project.md` defining its name, goal, and domain
-- Cross-project references use explicit full paths: `projects/{other}/memory/knowledge/...`
+- Cross-project references use explicit full paths: `projects/{other}/memory/...`
 - See `agents/common/project-context.md` for full convention
 
 ### Domain Specialization
@@ -82,9 +82,9 @@ See `agents/manager/techniques/orchestration.md`
 - **Language**: All framework documents are written in Korean.
 - **Append-only**: Never edit another agent's text. Corrections go in new sections.
 - **Reasoning obligation**: Every decision and artifact must include explicit rationale.
-- **Context minimization**: `memory/knowledge/index.md` stays under ~100 lines. Deep reads are on-demand.
+- **Context minimization**: Agents keep personal memos in `memory/{role}/` for session continuity. Deep reads are on-demand.
 - **No prototype-to-production shortcuts**: Researcher prototypes must be re-architected by Developer before production.
-- **Document IDs**: `LESSON-NNN`, `DISC-NNN`, `ADR-NNN` (3-digit sequential).
+- **Document IDs**: `ADR-NNN` (3-digit sequential, as needed).
 - **Project-relative paths**: `workspace/`, `memory/`, `reports/` in agent docs resolve to current project's directories.
 
 ## Agent Onboarding Sequence (Progressive Disclosure)
@@ -97,7 +97,7 @@ See `agents/manager/techniques/orchestration.md`
 3. Read `projects/{name}/project.md` — current project
 
 ### Layer 2 — 작업 시작 시
-4. Read `memory/knowledge/index.md` — project knowledge map (지도만, 전체 읽기 아님)
+4. Read `memory/{role}/` — personal memos from prior sessions (if any)
 5. Read `agents/{role}/techniques/*.md` — 해당 작업에 필요한 방법론만
 6. (If domain != `general` and file exists) Read `domains/{domain}/context.md` — domain background
 

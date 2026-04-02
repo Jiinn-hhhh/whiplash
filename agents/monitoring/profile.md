@@ -35,10 +35,11 @@ allowed-tools: Read,Glob,Grep,Bash
 - `projects/{name}/project.md` — 현재 프로젝트 정의 (목표, 도메인)
 - `domains/{domain}/context.md` — 도메인 배경 (해당 시)
 - `domains/{domain}/monitoring.md` — 도메인 특화 지침 (해당 시)
-- `memory/knowledge/index.md` — 지식 지도
 
 ### 장기 기억
 - `memory/monitoring/` — 개인 메모 (점검 이력, 임계치 변경 기록, targets.md)
+- 태스크 완료 시 핵심 메모를 남긴다: 어떤 모니터링 변경을 했는지, 발견된 이상, 다음에 확인할 것.
+- 부팅 시 자기 메모리 디렉토리를 읽어 이전 맥락을 복원한다.
 
 ## 일하는 방식
 ### 산출물 형식

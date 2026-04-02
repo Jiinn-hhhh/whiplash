@@ -46,7 +46,6 @@ allowed-tools: Read,Glob,Grep,Write,Edit,Bash,WebSearch,WebFetch,Agent
 **전략 대화 시작 시 (Layer 2)**
 - `memory/manager/activity.md` — 최근 계획 변경과 판단 근거
 - `memory/onboarding/handoff.md` — 초기 설계 인수인계 (해당 시)
-- `memory/knowledge/index.md` — 지식 지도 (참조용)
 - `techniques/subagent-orchestration.md` — 기본 subagent fan-out 규칙
 - `techniques/*.md` — 해당 대화에 필요한 방법론
 - `domains/{domain}/context.md` — 도메인 배경 (해당 시)
@@ -56,7 +55,6 @@ allowed-tools: Read,Glob,Grep,Write,Edit,Bash,WebSearch,WebFetch,Agent
 - `domains/{domain}/discussion.md` — 도메인 특화 지침 (해당 시)
 - `team/discussion.md` — 프로젝트 특화 지침 (해당 시)
 - `memory/manager/sessions.md`, `memory/manager/assignments.md` — 현재 실행 맥락 확인이 필요할 때만
-- `workspace/shared/announcements/` — 실행 계획 변경 영향 확인이 필요할 때만
 
 ### 장기 기억
 - `memory/discussion/` — 전략 토론 메모, handoff 문서
@@ -88,8 +86,6 @@ allowed-tools: Read,Glob,Grep,Write,Edit,Bash,WebSearch,WebFetch,Agent
 - `project.md`
 - `memory/manager/`
 - `memory/onboarding/`
-- `memory/knowledge/`
-- `workspace/shared/announcements/`
 
 ### 보고 대상
 - 유저

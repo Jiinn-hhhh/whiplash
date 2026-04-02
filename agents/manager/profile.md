@@ -20,8 +20,7 @@ allowed-tools: Read,Glob,Grep,Bash,WebSearch,WebFetch,Agent
 - Developer, Researcher, Systems Engineer가 어떤 specialist를 내부적으로 호출할지는 해당 lead가 스스로 결정하게 둔다
 - 팀 간 의존성과 진행 상황 파악 (workspace/shared/ + 모든 workspace/teams/ 관찰)
 - 중요한 결정/방향 전환은 유저에게 에스컬레이션
-- 완료된 토론/회의에서 교훈 추출 → memory/knowledge/lessons/에 기록
-- memory/knowledge/index.md 큐레이션 (~100줄 이내 유지)
+- 중요한 결정과 교훈을 activity.md에 기록
 - 유저에게 진행 상황 보고
 - 에이전트 인스턴스를 생성하고 세션을 관리한다 (orchestration.md)
 - 멀티 모드에서 이중 실행 결과를 중재하여 합의를 도출한다
@@ -47,11 +46,9 @@ allowed-tools: Read,Glob,Grep,Bash,WebSearch,WebFetch,Agent
 - `projects/{name}/project.md` — 현재 프로젝트 정의 (목표, 도메인)
 
 **작업 시작 시 (Layer 2)**
-- `memory/knowledge/index.md` — 지식 지도 (참조용)
 - `techniques/subagent-orchestration.md` — 기본 subagent fan-out 규칙
 - `techniques/*.md` — 해당 작업에 필요한 방법론
 - `domains/{domain}/context.md` — 도메인 배경 (해당 시)
-- `workspace/shared/announcements/` — 현재 공지 사항
 - `memory/discussion/handoff.md` — discussion이 넘긴 실행 변경 handoff (해당 시)
   - 단, `User approved: yes`, `Why this change`, `Scope impact`, `Manager next action`이 있는 유효 handoff만 공식 입력으로 본다.
 
@@ -90,9 +87,8 @@ allowed-tools: Read,Glob,Grep,Bash,WebSearch,WebFetch,Agent
 
 ## 소통
 ### 기본 관찰 범위
-- `workspace/shared/` 전체 (토론, 회의, 공지)
+- `workspace/shared/` 전체 (토론, 공지)
 - `workspace/teams/` 전체 (모든 팀의 진행 상황)
-- `memory/knowledge/` (지식 지도, 교훈)
 
 ### 보고 대상
 - 유저

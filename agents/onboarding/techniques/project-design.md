@@ -84,7 +84,6 @@ Onboarding 에이전트는 Manager 부팅 확인 후 종료한다.
 ```
 → projects/{name}/ 디렉토리 구조 생성 (디렉토리 생성 목록 참조)
 → projects/{name}/project.md 초안 작성 (실행 모드만 기록)
-→ projects/{name}/memory/knowledge/index.md 초기화
 ```
 
 ### 사전 질문 3: control-plane 백엔드
@@ -202,7 +201,7 @@ Phase 0 마지막에, 코드 작업 경로를 확정한다.
 - 예: 이메일 알림 → 이메일 서비스 연동 필요
 - 예: 자동 테스트 결과 보고 → CI/CD 파이프라인 필요
 - 이런 전제조건은 project.md `운영 방식 > 기술적 전제조건`에 기록하고, Manager 인계 시 Developer가 우선 처리하도록 명시한다.
-- `systems-engineer`가 활성인 프로젝트라면 project.md `운영 방식 > 시스템 변경 권한`에도 `team/systems-engineer.md`와 `memory/knowledge/docs/change-authority.md`를 참조한다고 기록한다.
+- `systems-engineer`가 활성인 프로젝트라면 project.md `운영 방식 > 시스템 변경 권한`에도 `team/systems-engineer.md`를 참조한다고 기록한다.
 
 **실행 환경 구체화**: 운영 방식이 합의되면, 프로젝트 유형별로 실현에 필요한 구체적 도구와 설정을 확정한다. 추상적 합의("Slack으로 보고")에서 끝내지 않고, 실행 가능한 수준("#project-alpha 채널, webhook 설정 완료")까지 구체화한다.
 
@@ -225,7 +224,7 @@ Phase 0 마지막에, 코드 작업 경로를 확정한다.
 - 이메일 → 테스트 메일 전송 후 수신 확인
 - 기타 채널 → 해당 채널로 테스트 전송
 - **수신 실패 시**: 설정을 즉시 수정한다. 검증 없이 넘어가지 않는다.
-- reports/ 파일 기반은 별도 검증 불필요 (로컬 파일시스템)
+- 로컬 파일 기반은 별도 검증 불필요
 
 **파일 작업**: project.md에 운영 방식 섹션을 기록한다. (보고 빈도, 채널, 자율 범위, 기술적 전제조건, 실행 환경, 알림 검증 결과)
 
@@ -254,13 +253,12 @@ Phase 0 마지막에, 코드 작업 경로를 확정한다.
 - project.md의 `팀 구성` 섹션에 결과를 기록한다. `systems-engineer`를 제외했다면 그 이유가 `서버/클라우드/배포/runtime 비중이 낮음`인지, 포함했다면 어떤 운영 범위 때문에 필요한지 드러나게 쓴다.
 - `team/{role}.md` 양식은 `common/project-context.md` §7을 따른다.
 - `systems-engineer`를 포함하면 `team/systems-engineer.md`의 `시스템 변경 권한` 표를 작성한다.
-- `systems-engineer`를 포함하면 `memory/knowledge/docs/change-authority.md`도 함께 작성한다. 이 문서에는 실제 수정 가능한 시스템 표면과 정책 근거 초안을 남긴다.
 - `작업 루프 = ralph`이고 `systems-engineer`를 포함하면 한 질문을 더 한다.
   - **질문 문구**: "랄프 루프에서 systems-engineer가 문서에 적힌 원격 변경까지 자율로 진행해도 될까, 아니면 local/read 수준까지만 맡길까?"
-  - 답변 결과를 `team/systems-engineer.md`와 `memory/knowledge/docs/change-authority.md`에 함께 반영한다.
+  - 답변 결과를 `team/systems-engineer.md`에 반영한다.
   - 온보딩이 대신 판단하지 않는다. project-by-project로 유저가 정한다.
 
-**파일 작업**: 커스터마이징이 필요하면 `team/{role}.md`를 생성한다. `systems-engineer`를 포함하면 `memory/knowledge/docs/change-authority.md`도 함께 작성한다. project.md의 `팀 구성` 섹션을 기록한다.
+**파일 작업**: 커스터마이징이 필요하면 `team/{role}.md`를 생성한다. project.md의 `팀 구성` 섹션을 기록한다.
 
 ### Phase 7: 리뷰 및 확정
 
@@ -315,7 +313,6 @@ projects/{name}/
   workspace/
     shared/
       discussions/
-      announcements/
     teams/
       research/
       developer/
@@ -327,19 +324,6 @@ projects/{name}/
     systems-engineer/
     monitoring/
     onboarding/
-    knowledge/
-      lessons/
-      docs/
-      index.md
-  reports/
-```
-
-`index.md` 초기 내용:
-
-```markdown
-# Knowledge Index — {프로젝트 이름}
-
-(아직 축적된 지식 없음)
 ```
 
 ---
