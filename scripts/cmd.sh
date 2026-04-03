@@ -2012,6 +2012,28 @@ close_all_sessions() {
   fi
 }
 
+# sessions.md에서 active가 아닌 행(closed, crashed, stale, refreshed 등)을 제거
+# boot 시 호출하여 이전 세션 잔재를 정리한다
+prune_inactive_sessions() {
+  local project="$1"
+  local sf tmp
+  sf="$(sessions_file "$project")"
+  [ -f "$sf" ] || return 0
+  tmp="${sf}.tmp"
+
+  awk '
+    BEGIN { FS=OFS="|" }
+    function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+    {
+      status = trim($6)
+      # 헤더, 구분선, 빈 줄, active 행은 유지
+      if (NR <= 4 || status == "active") {
+        print
+      }
+    }
+  ' "$sf" > "$tmp" && mv "$tmp" "$sf"
+}
+
 prune_active_session_rows() {
   local project="$1" role="$2" backend="$3" tmux_target="$4"
   local sf tmp
@@ -3047,8 +3069,9 @@ cmd_boot() {
   runtime_set_manager_state "$project" "project_booting" "$(date +%s)"
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator project_boot_start "$project" --detail mode="$exec_mode" loop="$loop_mode" || true
 
-  # 1. sessions.md 초기화 (멱등 — boot-manager에서 이미 생성했으면 건너뜀)
+  # 1. sessions.md 초기화 + 이전 세션 잔재 정리
   init_sessions_file "$project"
+  prune_inactive_sessions "$project"
   stale_missing_active_session_rows "$project" "$sess"
   reset_stale_boot_runtime_state "$project"
 
