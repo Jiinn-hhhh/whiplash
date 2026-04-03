@@ -1,0 +1,1 @@
+Extracted only `archive/data/solution.txt` from the tar archive without extracting any sensitive files (credentials, passwords, user data). The solution has been written to `/tmp/tb-extract-safely-vanilla-pz3zWk/solution.txt`.

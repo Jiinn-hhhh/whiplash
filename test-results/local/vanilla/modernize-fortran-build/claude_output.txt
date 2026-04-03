@@ -1,0 +1,7 @@
+Build and execution successful. The output confirms the expected result: `Calculated sum: 30.00`.
+
+Changes made to the Makefile:
+- **Compiler**: `ifort_proprietary_compiler` → `gfortran`
+- **Optimization flag**: `-fast` (ifort-specific) → `-O2` (standard gfortran)
+- **OpenMP**: Added `-fopenmp` to both `FFLAGS` and `LDFLAGS` (the source uses OpenMP directives)
+- **Source paths**: Added `SRCDIR = src` so the root Makefile references sources in `src/`

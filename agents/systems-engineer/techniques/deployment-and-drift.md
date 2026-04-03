@@ -51,9 +51,9 @@
 
 표준 문서 반영:
 
-- `memory/knowledge/docs/deployment-map.md`에 실제 배포 경로를 유지한다.
-- `memory/knowledge/docs/live-code-state.md`에 서버 코드 경로와 revision/hash를 유지한다.
-- `memory/knowledge/docs/drift-report.md`에 aligned/drifted/legacy/broken 판정을 유지한다.
+- `memory/systems-engineer/deployment-map.md`에 실제 배포 경로를 유지한다.
+- `memory/systems-engineer/live-code-state.md`에 서버 코드 경로와 revision/hash를 유지한다.
+- `memory/systems-engineer/drift-report.md`에 aligned/drifted/legacy/broken 판정을 유지한다.
 
 문서화할 때는 아래를 같이 남긴다:
 

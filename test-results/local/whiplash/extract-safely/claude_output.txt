@@ -1,0 +1,7 @@
+Done. Extracted `solution.txt` from the tar archive — the content is:
+
+```
+The answer is: extract_without_compromise
+```
+
+Written to `/tmp/tb-extract-safely-whiplash-keYSiT/solution.txt`.

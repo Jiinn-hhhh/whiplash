@@ -1,0 +1,6 @@
+Output matches the expected result. The transformation rule:
+
+1. **Tile the 2x2 input 3×3** to produce a 6×6 grid
+2. **Even row-blocks** (0, 2) use the original input rows
+3. **Odd row-blocks** (1) use the horizontally flipped input rows
+4. Each row is repeated 3 times horizontally

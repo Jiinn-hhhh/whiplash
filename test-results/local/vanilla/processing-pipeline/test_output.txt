@@ -1,0 +1,61 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.14.0, pytest-9.0.2, pluggy-1.6.0
+rootdir: /tmp/tb-test-processing-pipeline-WWm2IX
+plugins: anyio-4.13.0
+collected 9 items
+
+../../../tmp/tb-test-processing-pipeline-WWm2IX/test_outputs.py .....F.F [ 88%]
+F                                                                        [100%]
+
+=================================== FAILURES ===================================
+______________________ test_output_directory_permissions _______________________
+
+    def test_output_directory_permissions():
+        """Test that the output directory has proper permissions."""
+>       assert os.path.exists("/data/output"), "/data/output directory should exist"
+E       AssertionError: /data/output directory should exist
+E       assert False
+E        +  where False = <function exists at 0x1042f9dd0>('/data/output')
+E        +    where <function exists at 0x1042f9dd0> = <module 'posixpath' (frozen)>.exists
+E        +      where <module 'posixpath' (frozen)> = os.path
+
+/tmp/tb-test-processing-pipeline-WWm2IX/test_outputs.py:55: AssertionError
+________________________ test_all_output_files_created _________________________
+
+    def test_all_output_files_created():
+        """Test that all expected output files were created."""
+        expected_files = [
+            "/data/output/raw_data.txt",
+            "/data/output/processed_data.txt",
+            "/data/output/final_report.txt",
+        ]
+        for file_path in expected_files:
+>           assert os.path.exists(file_path), f"{file_path} should be created"
+E           AssertionError: /data/output/raw_data.txt should be created
+E           assert False
+E            +  where False = <function exists at 0x1042f9dd0>('/data/output/raw_data.txt')
+E            +    where <function exists at 0x1042f9dd0> = <module 'posixpath' (frozen)>.exists
+E            +      where <module 'posixpath' (frozen)> = os.path
+
+/tmp/tb-test-processing-pipeline-WWm2IX/test_outputs.py:74: AssertionError
+___________________________ test_data_was_processed ____________________________
+
+    def test_data_was_processed():
+        """Test that data was correctly processed (uppercase conversion)."""
+>       with open("/data/output/processed_data.txt", "r") as f:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: '/data/output/processed_data.txt'
+
+/tmp/tb-test-processing-pipeline-WWm2IX/test_outputs.py:79: FileNotFoundError
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED ../../../tmp/tb-test-processing-pipeline-WWm2IX/test_outputs.py::test_all_scripts_exist
+PASSED ../../../tmp/tb-test-processing-pipeline-WWm2IX/test_outputs.py::test_all_scripts_executable
+PASSED ../../../tmp/tb-test-processing-pipeline-WWm2IX/test_outputs.py::test_collect_data_readable
+PASSED ../../../tmp/tb-test-processing-pipeline-WWm2IX/test_outputs.py::test_no_dos_line_endings
+PASSED ../../../tmp/tb-test-processing-pipeline-WWm2IX/test_outputs.py::test_correct_shebang
+PASSED ../../../tmp/tb-test-processing-pipeline-WWm2IX/test_outputs.py::test_pipeline_execution
+FAILED ../../../tmp/tb-test-processing-pipeline-WWm2IX/test_outputs.py::test_output_directory_permissions
+FAILED ../../../tmp/tb-test-processing-pipeline-WWm2IX/test_outputs.py::test_all_output_files_created
+FAILED ../../../tmp/tb-test-processing-pipeline-WWm2IX/test_outputs.py::test_data_was_processed
+========================= 3 failed, 6 passed in 0.04s ==========================

@@ -149,34 +149,6 @@ def _read_tsv_rows(path: str) -> list[list[str]]:
     return rows
 
 
-def _sanitize_report_component(value: str, default: str) -> str:
-    value = value.replace(" ", "-")
-    value = re.sub(r"[^A-Za-z0-9._-]", "", value)
-    value = value.strip("-.")
-    return value or default
-
-
-def _task_report_key(task_ref: str) -> str:
-    base = os.path.basename(task_ref)
-    stem, _ = os.path.splitext(base)
-    return _sanitize_report_component(stem or base or task_ref, "task")
-
-
-def _task_report_path(project_dir: str, task_ref: str, author: str) -> str:
-    key = _task_report_key(task_ref)
-    author_key = _sanitize_report_component(author, "agent")
-    return os.path.join(project_dir, "reports", "tasks", f"{key}-{author_key}.md")
-
-
-def _read_report_status(report_path: str) -> str:
-    content = _read_file(report_path)
-    if not content:
-        return "missing"
-    match = re.search(r"^- \*\*Status\*\*: ([A-Za-z0-9_-]+)\s*$", content, re.MULTILINE)
-    if not match:
-        return "unknown"
-    return match.group(1).lower()
-
 
 def _clean_project_value(value: str) -> str:
     value = value.replace("**", "").replace("`", "").strip()
@@ -611,28 +583,6 @@ def get_reboot_counts(project_dir: str) -> dict[str, int]:
     return result
 
 
-def parse_waiting_state(project_dir: str) -> dict[str, dict[str, Any]]:
-    """waiting-state.tsv에서 완료 후 대기 상태를 읽는다."""
-    rows = _read_tsv_rows(os.path.join(project_dir, "runtime", "waiting-state.tsv"))
-    result: dict[str, dict[str, Any]] = {}
-    for cols in rows:
-        if len(cols) < 4:
-            continue
-        agent, ts_raw, subject, task_ref = cols[:4]
-        if not agent:
-            continue
-        report_path = cols[4] if len(cols) > 4 else ""
-        ts = None
-        if ts_raw.isdigit():
-            ts = datetime.fromtimestamp(int(ts_raw), _KST)
-        result[agent] = {
-            "ts": ts,
-            "subject": subject,
-            "task_ref": task_ref,
-            "report_path": report_path,
-        }
-    return result
-
 
 def _resolve_task_path(project_dir: str, task_path: str) -> str:
     """태스크 파일 경로를 절대경로로 해석."""
@@ -753,22 +703,6 @@ def parse_assignments_md(project_dir: str) -> dict[str, dict]:
     return result
 
 
-def resolve_task_report(project_dir: str, task_ref: str, authors: list[str]) -> dict[str, str]:
-    if not authors:
-        return {"path": "", "status": "missing"}
-    for author in authors:
-        report_path = _task_report_path(project_dir, task_ref, author)
-        if os.path.isfile(report_path):
-            return {
-                "path": os.path.relpath(report_path, project_dir),
-                "status": _read_report_status(report_path),
-            }
-    primary_path = _task_report_path(project_dir, task_ref, authors[0])
-    return {
-        "path": os.path.relpath(primary_path, project_dir),
-        "status": "missing",
-    }
-
 
 # ──────────────────────────────────────────────
 # 데이터 수집
@@ -785,7 +719,6 @@ def collect(project_dir: str, session_name: str,
     tmux_panes = get_tmux_panes(session_name)
     reboot_counts = get_reboot_counts(project_dir)
     assignments = parse_assignments_md(project_dir)
-    waiting_state = parse_waiting_state(project_dir)
     manager_state = _read_tsv_map(os.path.join(project_dir, "runtime", "manager-state.tsv"))
     monitor = check_monitor(project_dir)
     boot_times = parse_boot_times(project_dir)
@@ -836,13 +769,6 @@ def collect(project_dir: str, session_name: str,
             agent["task_background"] = task_info.get("background", "")
             agent["task_started"] = task_info.get("started")
             agent["task_stale"] = task_info.get("stale", False)
-            report_info = resolve_task_report(
-                project_dir,
-                task_info["task_ref"],
-                [win_name, role] if win_name != role else [role],
-            )
-            agent["report_path"] = report_info["path"]
-            agent["report_status"] = report_info["status"]
             if agent["display_status"] == "ALIVE":
                 agent["display_status"] = "ACTIVE"
                 agent["status_reason"] = ""
@@ -852,8 +778,6 @@ def collect(project_dir: str, session_name: str,
             agent["task_background"] = ""
             agent["task_started"] = None
             agent["task_stale"] = False
-            agent["report_path"] = ""
-            agent["report_status"] = ""
             if agent["display_status"] == "ALIVE":
                 activity_ts = tmux_activity.get(win_name)
                 if activity_ts and (now_epoch - activity_ts) < _RECENT_ACTIVITY_WINDOW_SEC:
@@ -885,7 +809,6 @@ def collect(project_dir: str, session_name: str,
                 "task_background": agent.get("task_background", ""),
                 "assignees": [],
                 "started": agent.get("task_started"),
-                "report_status": agent.get("report_status", ""),
             }
             summary_map[key] = summary
             active_task_summaries.append(summary)
@@ -895,38 +818,9 @@ def collect(project_dir: str, session_name: str,
         existing_started = summary.get("started")
         if started and (existing_started is None or started < existing_started):
             summary["started"] = started
-        # report 상태: 가장 진행된 걸로 (final > draft > missing)
-        rs = agent.get("report_status", "")
-        if rs == "final" or (rs == "draft" and summary["report_status"] != "final"):
-            summary["report_status"] = rs
 
     active_task_summaries.sort(
         key=lambda item: item.get("started") or datetime.fromtimestamp(0, _KST),
-    )
-
-    # 대기 보고서 (통합 테스트 호환)
-    waiting_reports: list[dict[str, Any]] = []
-    for agent in agents:
-        win_name = agent.get("win_name", agent["role"])
-        waiting_info = waiting_state.get(win_name) or waiting_state.get(agent["role"])
-        if not waiting_info:
-            continue
-        if agent.get("task_id"):
-            continue
-        if agent.get("display_status") not in ("ACTIVE", "IDLE"):
-            continue
-        waiting_reports.append({
-            "agent": win_name,
-            "role": agent["role"],
-            "status": agent.get("display_status", ""),
-            "subject": waiting_info.get("subject", ""),
-            "task_ref": waiting_info.get("task_ref", ""),
-            "report_path": waiting_info.get("report_path", ""),
-            "ts": waiting_info.get("ts"),
-        })
-    waiting_reports.sort(
-        key=lambda item: item["ts"] or datetime.fromtimestamp(0, _KST),
-        reverse=True,
     )
 
     # 유저 대상 알림 수집
@@ -951,7 +845,6 @@ def collect(project_dir: str, session_name: str,
         "agents": agents,
         "active_task_summaries": active_task_summaries,
         "user_alerts": user_alerts,
-        "waiting_reports": waiting_reports,
         "monitor": monitor,
         "system_log": system_log,
         "message_log": message_log,
@@ -970,13 +863,6 @@ _STATUS_DISPLAY = {
     "CRASHED": ("✗ CRASH",  "bold red"),
     "ABSENT":  ("— ABSENT", "red"),
     "CLOSED":  ("— CLOSED", "dim"),
-}
-
-_REPORT_DISPLAY = {
-    "final":   ("✓ FINAL", "green"),
-    "draft":   ("  DRAFT", "yellow"),
-    "missing": ("",        "dim"),
-    "unknown": ("  ???",   "yellow"),
 }
 
 
@@ -1122,7 +1008,6 @@ def _render_tasks(state: dict) -> Panel:
         background = entry.get("task_background", "")
         assignees = entry.get("assignees", [])
         started = entry.get("started")
-        report_status = entry.get("report_status", "")
 
         # elapsed
         if started:
@@ -1136,12 +1021,6 @@ def _render_tasks(state: dict) -> Panel:
             lines.append(f"  {task_title}", style="bold")
         # elapsed 우측
         lines.append(f"  ({elapsed})", style="dim")
-
-        # report status
-        if report_status:
-            rl, rs = _REPORT_DISPLAY.get(report_status, ("", "dim"))
-            if rl:
-                lines.append(f"  {rl}", style=rs)
 
         lines.append("\n")
 
@@ -1335,6 +1214,10 @@ def render(state: dict, interval: int) -> Layout:
     # agent table: header(1) + rows + panel borders(2) + title(1)
     bottom_height = max(9, n_agents + 4)
 
+    # tasks 패널: 태스크 수에 맞춰 동적 높이 (각 태스크 ~4줄 + borders 3줄)
+    n_tasks = len(state.get("active_task_summaries", []))
+    tasks_height = max(6, min(n_tasks * 4 + 3, shutil.get_terminal_size().lines // 2))
+
     layout = Layout()
 
     # 알림 유무에 따라 레이아웃 구성
@@ -1343,7 +1226,7 @@ def render(state: dict, interval: int) -> Layout:
     ]
     if alerts_height > 0:
         sections.append(Layout(name="alerts", size=alerts_height))
-    sections.append(Layout(name="tasks"))  # flexible
+    sections.append(Layout(name="tasks", size=tasks_height))
     sections.append(Layout(name="bottom", size=bottom_height))
     sections.append(Layout(name="footer", size=1))
 

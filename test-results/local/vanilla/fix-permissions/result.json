@@ -1,0 +1,8 @@
+{
+  "task_id": "fix-permissions",
+  "agent_mode": "vanilla",
+  "passed": true,
+  "duration_sec": 18,
+  "claude_exit": 0,
+  "test_exit": 0
+}

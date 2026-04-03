@@ -1,0 +1,1 @@
+The file had permissions `-rw-r--r--` (no execute bit). Added the execute permission with `chmod +x`, and the script now runs successfully.

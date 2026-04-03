@@ -105,12 +105,12 @@ project_team_role_doc_path() {
   echo "$(project_team_dir "$project")/${role}.md"
 }
 
-project_knowledge_docs_dir() {
-  echo "$(project_dir "$1")/memory/knowledge/docs"
+project_se_memory_dir() {
+  echo "$(project_dir "$1")/memory/systems-engineer"
 }
 
-project_change_authority_doc_path() {
-  echo "$(project_knowledge_docs_dir "$1")/change-authority.md"
+project_se_team_md_path() {
+  echo "$(project_dir "$1")/team/systems-engineer.md"
 }
 
 ensure_onboarding_project_layout() {
@@ -120,8 +120,6 @@ ensure_onboarding_project_layout() {
 
   mkdir -p \
     "$base/team" \
-    "$base/workspace/shared/discussions" \
-    "$base/workspace/shared/announcements" \
     "$base/workspace/teams/research" \
     "$base/workspace/teams/developer" \
     "$base/workspace/teams/systems-engineer" \
@@ -132,13 +130,11 @@ ensure_onboarding_project_layout() {
     "$base/memory/systems-engineer" \
     "$base/memory/monitoring" \
     "$base/memory/onboarding" \
-    "$base/memory/knowledge/lessons" \
-    "$base/memory/knowledge/docs" \
     "$base/runtime/message-queue" \
     "$base/runtime/message-locks" \
     "$base/runtime/manager" \
     "$base/logs" \
-    "$base/reports/tasks"
+    "$base/reports"
 }
 
 write_onboarding_systems_engineer_team_md() {
@@ -152,7 +148,7 @@ write_onboarding_systems_engineer_team_md() {
 이 파일은 \`agents/systems-engineer/profile.md\`를 보충한다.
 
 ## 이 프로젝트에서의 초점
-- 시스템 변경 전마다 \`memory/knowledge/docs/change-authority.md\`를 확인하고, 실제 표면과 근거를 최신 상태로 유지한다.
+- 시스템 변경 전마다 \`team/systems-engineer.md\`를 확인하고, 실제 표면과 근거를 최신 상태로 유지한다.
 
 ## 이 프로젝트에서의 제한
 - 문서에 없는 원격 시스템 write는 금지다.
@@ -163,7 +159,7 @@ write_onboarding_systems_engineer_team_md() {
 - Ralph 자율 실행: 미정 (온보딩 시 프로젝트별로 확정)
 - 판단 순서:
   1. 이 표의 환경별 정책 확인
-  2. \`memory/knowledge/docs/change-authority.md\`의 실제 표면/근거 확인
+  2. \`team/systems-engineer.md\`의 실제 표면/근거 확인
   3. 두 문서가 모두 허용할 때만 실행
 - \`read\` 성격의 조사/진단 명령은 허용. 단, secret 값은 저장하지 않는다.
 
@@ -178,7 +174,7 @@ EOF
 write_onboarding_change_authority_md() {
   local project="$1"
   local authority_md
-  authority_md="$(project_change_authority_doc_path "$project")"
+  authority_md="$(project_se_team_md_path "$project")"
 
   cat > "$authority_md" <<'EOF'
 # 시스템 변경 권한 근거
@@ -252,7 +248,7 @@ write_onboarding_bootstrap_project_md() {
 - **긴급 알림**: 미정
 - **프레임워크 디버깅**: off
 - **기술적 전제조건**: 미정
-- **시스템 변경 권한**: 기본 금지. 상세는 team/systems-engineer.md 와 memory/knowledge/docs/change-authority.md 참고
+- **시스템 변경 권한**: 기본 금지. 상세는 team/systems-engineer.md 와 team/systems-engineer.md 참고
 
 ## 팀 구성
 - **활성 에이전트**: 미정
@@ -266,25 +262,16 @@ EOF
 
 ensure_onboarding_project_bootstrap() {
   local project="$1"
-  local base project_md knowledge_index team_systems_md change_authority_md
+  local base project_md team_systems_md change_authority_md
   base="$(project_dir "$project")"
   project_md="${base}/project.md"
-  knowledge_index="${base}/memory/knowledge/index.md"
   team_systems_md="$(project_team_role_doc_path "$project" "systems-engineer")"
-  change_authority_md="$(project_change_authority_doc_path "$project")"
+  change_authority_md="$(project_se_team_md_path "$project")"
 
   ensure_onboarding_project_layout "$project"
 
   if [ ! -f "$project_md" ]; then
     write_onboarding_bootstrap_project_md "$project"
-  fi
-
-  if [ ! -f "$knowledge_index" ]; then
-    cat > "$knowledge_index" <<'EOF'
-# 지식 지도
-
-- 초기 bootstrap 상태. onboarding과 이후 에이전트가 핵심 문서 링크를 정리한다.
-EOF
   fi
 
   if [ ! -f "$team_systems_md" ]; then
@@ -1410,15 +1397,14 @@ BOOTRULES
 [Layer 2 — 전략 대화 시작 시 읽기]
 4. memory/manager/activity.md 읽기 (있으면 최근 판단과 변경 이유 확인)
 5. memory/onboarding/handoff.md 읽기 (있으면 초기 설계 맥락 확인)
-6. memory/knowledge/index.md 읽기 (지도만, 전체 읽기 아님)
-7. 해당 대화에 필요한 agents/discussion/techniques/*.md 읽기
+6. 해당 대화에 필요한 agents/discussion/techniques/*.md 읽기
 ${discussion_layer2_domain_line}
 
 [Layer 3 — 필요할 때만 읽기]
 8. agents/common/project-context.md (경로 해석 등 필요 시)
 ${discussion_layer3_domain_line}
 10. (해당 시) projects/${project}/team/discussion.md
-11. 필요하면 memory/manager/sessions.md, memory/manager/assignments.md, workspace/shared/announcements/ 를 읽어라.
+11. 필요하면 memory/manager/sessions.md, memory/manager/assignments.md 를 읽어라.
     단, "지금 누가 뭘 하고 있는지"의 공식 source of truth는 manager다.
 
 12. discussion의 기본 산출물:
@@ -1473,7 +1459,7 @@ TASKMSG
     mutation_safety_note="$(cat <<BOOTRULES
 15. 외부 반영 안전 규칙:
     - 로컬 파일 수정, 테스트, 빌드, 로컬 git commit은 가능하다.
-    - 원격 시스템 변경 전에는 projects/${project}/team/systems-engineer.md 와 projects/${project}/memory/knowledge/docs/change-authority.md 를 다시 읽어라.
+    - 원격 시스템 변경 전에는 projects/${project}/team/systems-engineer.md 와 projects/${project}/team/systems-engineer.md 를 다시 읽어라.
     - 문서에 없는 변경이거나 애매하면 manager에게 escalation하고, manager가 프로젝트의 현재 loop 정책에 맞게 판단하게 해라.
 BOOTRULES
 )"
@@ -1501,7 +1487,7 @@ BOOTRULES
 3. projects/${project}/project.md 읽기
 
 [Layer 2 — 첫 태스크 수신 시 읽기]
-4. memory/knowledge/index.md 읽기 (지도만, 전체 읽기 아님)
+4. memory/${role}/ 읽기 (이전 세션 메모 확인)
 5. 해당 작업에 필요한 agents/${role}/techniques/*.md 읽기
 ${layer2_domain_line}
 
@@ -1510,10 +1496,7 @@ ${layer2_domain_line}
 ${layer3_domain_line}
 9. (해당 시) projects/${project}/team/${role}.md
 
-10. top-level task마다 결과 보고서를 작성해라.
-    - 경로 규칙: reports/tasks/{task-id}-${agent_id}.md
-    - manager가 task_assign를 보낼 때 해당 보고서 stub 경로를 같이 알려준다.
-    - task_complete 전에 보고서를 채우고 Status를 final로 바꿔라.
+10. 태스크 완료 시 핵심 메모를 memory/${role}/에 남겨라 (어떤 파일을 왜 고쳤는지, 주의할 점, 다음에 이어할 때 알아야 할 것).
 
 11. 알림 보내기 (상황별 예시. worktree 안에서도 아래 절대경로 명령을 그대로 써라):
    태스크 완료:
@@ -1844,168 +1827,7 @@ pattern_dispatch_message() {
   esac
 }
 
-write_pattern_manager_report_stub() {
-  local project="$1" task_ref="$2" pattern="$3"
-  shift 3
-  local report_path report_rel task_key pattern_label tag joined_reports report_line
-  report_path="$(runtime_task_report_path "$project" "$task_ref" "manager")"
-  report_rel="$(runtime_project_relative_path "$project" "$report_path")"
-  task_key="$(runtime_task_report_key "$task_ref")"
-  mkdir -p "$(dirname "$report_path")"
 
-  case "$pattern" in
-    lead_verify)
-      pattern_label="lead + verify"
-      tag="lead-verify"
-      ;;
-    *)
-      pattern_label="independent compare"
-      tag="independent-compare"
-      ;;
-  esac
-
-  joined_reports=""
-  for report_line in "$@"; do
-    if [ -n "$joined_reports" ]; then
-      joined_reports="${joined_reports}; "
-    fi
-    joined_reports="${joined_reports}${report_line}"
-  done
-
-  if [ ! -f "$report_path" ]; then
-    cat > "$report_path" <<EOF
-# ${task_key} 패턴 조율 보고
-
-- **Date**: $(date +%Y-%m-%d)
-- **Author**: manager
-- **For**: user
-- **Status**: draft
-- **Tags**: \`task-report\`, \`${task_key}\`, \`task-pattern\`, \`${tag}\`
-
-## 요약
-- **무엇**: ${task_ref}에 대한 ${pattern_label} 조율 보고
-- **핵심 발견**: 작성 필요
-- **시사점**: 작성 필요
-
-## 내용
-- 작업 지시: ${task_ref}
-- 보고서 경로: ${report_rel}
-- 실행 패턴: ${pattern_label}
-- lane 결과: ${joined_reports}
-- 최종 판정: 작성 필요
-- 검증 결과: 작성 필요
-- 남은 리스크: 작성 필요
-
-## 다음 단계
-- 후속 작업이 있으면 작성
-EOF
-  fi
-
-  printf '%s\n' "$report_rel"
-}
-
-task_subject_and_message() {
-  local task="$1"
-  local _tsm_subject_var="$2"
-  local _tsm_message_var="$3"
-  local project="${4:-}"
-  local _tsm_subject _tsm_msg _tsm_resolved
-  _tsm_resolved=""
-  if [ -n "$project" ]; then
-    _tsm_resolved="$(resolve_task_metadata_path "$project" "$task" 2>/dev/null || true)"
-  fi
-  if [ -n "$_tsm_resolved" ] || [ -f "$task" ]; then
-    _tsm_subject="$task"
-    if [ -n "$project" ]; then
-      _tsm_msg="$(normalize_task_ref "$project" "$task") 파일에 새 작업 지시가 있다. 읽고 실행해라."
-    else
-      _tsm_msg="${task} 파일에 새 작업 지시가 있다. 읽고 실행해라."
-    fi
-  else
-    _tsm_subject="$task"
-    _tsm_msg="$task"
-  fi
-  printf -v "$_tsm_subject_var" '%s' "$_tsm_subject"
-  printf -v "$_tsm_message_var" '%s' "$_tsm_msg"
-}
-
-pattern_dispatch_message() {
-  local task="$1" project="$2" pattern="$3" role_label="$4" lead_target="${5:-}"
-  local subject base
-  task_subject_and_message "$task" subject base "$project"
-  case "$pattern:$role_label" in
-    single_owner:owner)
-      printf '%s\n' "$base"
-      ;;
-    lead_verify:lead)
-      printf '[execution pattern: lead + verify]\n%s\nexecution lead로서 구현을 주도하고 결과 보고를 남겨라.\n' "$base"
-      ;;
-    lead_verify:verify)
-      printf '[execution pattern: lead + verify]\n%s\nreview/verify lane으로서 %s 결과를 교차검토하고 challenge/confirm 메모를 남겨라.\n' "$base" "${lead_target:-lead lane}"
-      ;;
-    independent_compare:compare)
-      printf '[execution pattern: independent compare]\n%s\npeer lane과 독립적으로 읽고 실행한 뒤 비교 가능한 보고를 남겨라.\n' "$base"
-      ;;
-    *)
-      printf '%s\n' "$base"
-      ;;
-  esac
-}
-
-write_pattern_manager_report_stub() {
-  local project="$1" task_ref="$2" pattern="$3"
-  shift 3
-  local report_path report_rel task_key pattern_label tag joined_reports report_line
-  report_path="$(runtime_task_report_path "$project" "$task_ref" "manager")"
-  report_rel="$(runtime_project_relative_path "$project" "$report_path")"
-  task_key="$(runtime_task_report_key "$task_ref")"
-  mkdir -p "$(dirname "$report_path")"
-
-  case "$pattern" in
-    lead_verify)
-      pattern_label="lead + verify"
-      tag="lead-verify"
-      ;;
-    *)
-      pattern_label="independent compare"
-      tag="independent-compare"
-      ;;
-  esac
-
-  joined_reports=""
-  for report_line in "$@"; do
-    if [ -n "$joined_reports" ]; then
-      joined_reports="${joined_reports}; "
-    fi
-    joined_reports="${joined_reports}${report_line}"
-  done
-
-  if [ ! -f "$report_path" ]; then
-    cat > "$report_path" <<EOF
-# ${task_key} 패턴 조율 보고
-
-- **Date**: $(date +%Y-%m-%d)
-- **Author**: manager
-- **For**: user
-- **Status**: draft
-- **Tags**: \`task-report\`, \`${task_key}\`, \`task-pattern\`, \`${tag}\`
-
-## 요약
-- **무엇**: ${task_ref}에 대한 ${pattern_label} 조율 보고
-- **핵심 발견**: 작성 필요
-- **시사점**: 작성 필요
-
-## 내용
-- 작업 지시: ${task_ref}
-- 보고서 경로: ${report_rel}
-- 실행 패턴: ${pattern_label}
-- lane 결과: ${joined_reports}
-- 최종 판정: 작성 필요
-EOF
-  fi
-
-  printf '%s\n' "$report_rel"
-}
 
 # ──────────────────────────────────────────────
 
@@ -2023,11 +1845,6 @@ cmd_complete() {
   local agent="$1" project="$2"
   validate_project_name "$project"
   validate_window_name "$agent"
-  local active_task
-  active_task="$(get_active_task "$project" "$agent")"
-  if [ -n "$active_task" ]; then
-    validate_task_report_ready "$project" "$agent" "$active_task"
-  fi
   complete_assignment "$project" "$agent"
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator task_complete "$agent" || true
   echo "complete 완료: ${agent}"
@@ -2041,7 +1858,6 @@ cmd_assign() {
   validate_project_name "$project"
   validate_window_name "$agent"
   record_assignment "$project" "$agent" "$task"
-  runtime_write_task_report_stub "$project" "$(normalize_task_ref "$project" "$task")" "$agent" "manager" >/dev/null
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator task_assign "$agent" \
     --detail task="$task" || true
   echo "assign 완료: ${agent} ← ${task}"
@@ -2104,304 +1920,6 @@ resume_pending_task_for_window() {
   fi
 
   printf '%s\n' "$pending_task"
-}
-
-mark_assignment_status_for_agent() {
-  local project="$1" agent="$2" old_status="$3" new_status="$4"
-  local af
-  af="$(assignments_file_for_project "$project")"
-  [ -f "$af" ] || return 0
-  runtime_acquire_path_lock "$af" || return 1
-  _assignment_state_transition "$af" "$agent" "$old_status" "$new_status"
-  runtime_release_path_lock "$af"
-}
-
-unique_active_tasks_for_agents() {
-  local project="$1"
-  shift
-  local agent task seen="" unique=()
-  for agent in "$@"; do
-    [ -n "$agent" ] || continue
-    task="$(get_active_task "$project" "$agent")" || task=""
-    [ -n "$task" ] || continue
-    case "|${seen}|" in
-      *"|${task}|"*) ;;
-      *)
-        unique+=("$task")
-        seen="${seen:+${seen}|}${task}"
-        ;;
-    esac
-  done
-  printf '%s\n' "${unique[@]}"
-}
-
-collapse_target_task_for_role() {
-  local project="$1" role="$2"
-  shift 2
-  local tasks
-  tasks="$(unique_active_tasks_for_agents "$project" "$role" "$@")"
-  local count
-  count="$(printf '%s\n' "$tasks" | sed '/^$/d' | wc -l | tr -d ' ')"
-  if [ "${count:-0}" -gt 1 ]; then
-    echo "Error: ${role}는 서로 다른 active task가 여러 lane에 걸려 있어 single lane으로 축소할 수 없다." >&2
-    printf '%s\n' "$tasks" | sed '/^$/d' >&2
-    return 1
-  fi
-  printf '%s\n' "$tasks" | sed -n '1p'
-}
-
-project_has_active_role() {
-  local project="$1" target_role="$2"
-  local role
-  while IFS= read -r role; do
-    [ "$role" = "$target_role" ] && return 0
-  done < <(get_active_agents "$project")
-  return 1
-}
-
-current_windows_for_role() {
-  local project="$1" role="$2"
-  get_active_session_entries "$project" | awk -F'|' -v target_role="$role" '
-    $3 == target_role && ($1 == target_role || $1 == target_role "-claude" || $1 == target_role "-codex") {
-      print $1 "|" $2
-    }
-  '
-}
-
-kill_window_for_reconcile() {
-  local project="$1" sess="$2" window_name="$3"
-  if window_indices_by_name "$sess" "$window_name" | grep -q .; then
-    tmux send-keys -t "${sess}:${window_name}" "/exit" Enter 2>/dev/null || true
-    sleep 1
-    kill_windows_by_name "$sess" "$window_name"
-  fi
-  mark_window_status "$project" "$window_name" "active" "closed"
-}
-
-reconcile_worker_role() {
-  local project="$1" role="$2"
-  local sess loop_mode
-  sess="$(session_name "$project")"
-  loop_mode="$(get_loop_mode "$project")"
-
-  if ! project_has_active_role "$project" "$role"; then
-    return 0
-  fi
-
-  local desired_lines current_lines desired_count=0 desired_window=""
-  desired_lines="$(role_window_plan_lines "$project" "$role")"
-  current_lines="$(current_windows_for_role "$project" "$role")"
-
-  while IFS='|' read -r _window_name _backend _model; do
-    [ -n "${_window_name:-}" ] || continue
-    desired_count=$((desired_count + 1))
-    if [ -z "$desired_window" ]; then
-      desired_window="$_window_name"
-    fi
-  done <<< "$desired_lines"
-
-  local needs_collapse_migration=0 current_window current_backend carry_task=""
-  if [ "$desired_count" -eq 1 ] && [ "$desired_window" = "$role" ]; then
-    while IFS='|' read -r current_window current_backend; do
-      [ -n "$current_window" ] || continue
-      if [ "$current_window" != "$desired_window" ]; then
-        needs_collapse_migration=1
-        break
-      fi
-    done <<< "$current_lines"
-  fi
-
-  if [ "$needs_collapse_migration" -eq 1 ]; then
-    local current_agents=()
-    while IFS='|' read -r current_window current_backend; do
-      [ -n "$current_window" ] || continue
-      current_agents+=("$current_window")
-    done <<< "$current_lines"
-    carry_task="$(collapse_target_task_for_role "$project" "$role" "${current_agents[@]}")" || return 1
-    if [ -n "$carry_task" ]; then
-      record_assignment "$project" "$role" "$carry_task"
-    fi
-    for current_window in "${current_agents[@]}"; do
-      mark_assignment_status_for_agent "$project" "$current_window" "active" "superseded" || true
-    done
-  fi
-
-  while IFS='|' read -r current_window current_backend; do
-    [ -n "$current_window" ] || continue
-    kill_window_for_reconcile "$project" "$sess" "$current_window"
-  done <<< "$current_lines"
-
-  if role_runs_dual_now "$project" "$role"; then
-    create_worktrees "$project" "$role"
-  elif [ "$loop_mode" = "ralph" ] && role_uses_ralph_worktree "$role"; then
-    create_ralph_worktree "$project" "$role" || true
-  fi
-
-  while IFS='|' read -r desired_window current_backend _model; do
-    [ -n "$desired_window" ] || continue
-    local pending_task=""
-    if [ -n "$carry_task" ] && [ "$desired_window" = "$role" ]; then
-      pending_task="$carry_task"
-    else
-      pending_task="$(resume_pending_task_for_window "$project" "$role" "$desired_window")" || pending_task=""
-    fi
-    boot_agent_with_backend "$role" "$project" "$desired_window" "$current_backend" "" "$pending_task" || {
-      echo "Error: ${desired_window} 재구성 실패." >&2
-      return 1
-    }
-  done <<< "$desired_lines"
-}
-
-ensure_preset_collapse_safe() {
-  local project="$1" preset="$2"
-  case "$preset" in
-    dual) return 0 ;;
-  esac
-
-  local role current_window current_backend current_agents carry_task
-  for role in developer researcher; do
-    role_runs_dual_now "$project" "$role" || continue
-    current_agents=()
-    while IFS='|' read -r current_window current_backend; do
-      [ -n "$current_window" ] || continue
-      current_agents+=("$current_window")
-    done < <(current_windows_for_role "$project" "$role")
-    [ "${#current_agents[@]}" -gt 0 ] || continue
-    carry_task="$(collapse_target_task_for_role "$project" "$role" "${current_agents[@]}")" || return 1
-    :
-  done
-}
-
-cmd_execution_config() {
-  local project="$1"
-  shift
-  validate_project_name "$project"
-
-  local scope="current"
-  if [ "${1:-}" = "--scope" ]; then
-    scope="${2:-current}"
-    shift 2
-  fi
-
-  if [ $# -lt 1 ]; then
-    echo "Usage: cmd.sh execution-config {project} [--scope current|baseline] {default|claude only|codex only|dual|<role> ...}" >&2
-    exit 1
-  fi
-
-  local stage sess has_live_session=0
-  stage="$(get_project_stage "$project")"
-  sess="$(session_name "$project")"
-  if tmux has-session -t "$sess" 2>/dev/null; then
-    has_live_session=1
-  fi
-
-  local lowered
-  lowered="$(printf '%s ' "$@" | tr '[:upper:]' '[:lower:]' | sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//')"
-
-  local preset_candidate=""
-  case "$lowered" in
-    default|dual|claude|claude-only|claude\ only|codex|codex-only|codex\ only)
-      preset_candidate="$lowered"
-      ;;
-  esac
-
-  if [ -n "$preset_candidate" ]; then
-    if [ "$scope" != "current" ]; then
-      echo "Error: preset 변경은 current scope에서만 지원한다." >&2
-      exit 1
-    fi
-    if [ "$has_live_session" -eq 1 ] && [ "$stage" = "active" ]; then
-      ensure_preset_collapse_safe "$project" "$preset_candidate"
-    fi
-    execution_config_set_preset "$project" "$preset_candidate" >/dev/null
-    python3 "$TOOLS_DIR/log.py" system "$project" orchestrator execution_config_preset "$project" \
-      --detail preset="$preset_candidate" scope="$scope" || true
-    if [ "$has_live_session" -eq 1 ] && [ "$stage" = "active" ]; then
-      local worker_role
-      for worker_role in developer researcher systems-engineer monitoring; do
-        project_has_active_role "$project" "$worker_role" || continue
-        reconcile_worker_role "$project" "$worker_role"
-      done
-      echo "execution-config 적용 완료: preset=${preset_candidate} (worker 즉시 반영, control-plane은 다음 reboot/boot부터)"
-    else
-      echo "execution-config 저장 완료: preset=${preset_candidate} (다음 boot/reboot부터 반영)"
-    fi
-    return 0
-  fi
-
-  local role="$1"
-  shift
-  if ! is_canonical_role "$role"; then
-    echo "Error: 지원하지 않는 role: ${role}" >&2
-    exit 1
-  fi
-  [ $# -ge 1 ] || { echo "Error: ${role} 뒤에 backend/model/reset 지시가 필요하다." >&2; exit 1; }
-
-  local action="$1"
-  shift
-
-  if [ "$action" = "reset" ]; then
-    execution_config_reset_role "$project" "$role" "$scope" >/dev/null
-  elif [ "$action" = "model" ]; then
-    [ $# -ge 1 ] || { echo "Error: ${role} model 뒤에 model 값이 필요하다." >&2; exit 1; }
-    local backend
-    if [ "$scope" = "baseline" ]; then
-      backend="$(execution_config_baseline_role_backend "$project" "$role" 2>/dev/null || true)"
-      [ -z "$backend" ] && backend="$(resolve_role_backend "$project" "$role")"
-    else
-      backend="$(execution_config_role_backend "$project" "$role" 2>/dev/null || true)"
-      [ "$backend" = "dual" ] && backend=""
-      [ -z "$backend" ] && backend="$(resolve_role_backend "$project" "$role")"
-    fi
-    if [ "$backend" != "claude" ] && [ "$backend" != "codex" ]; then
-      echo "Error: ${role} model은 현재 effective backend가 단일일 때만 설정할 수 있다." >&2
-      exit 1
-    fi
-    execution_config_set_role_model "$project" "$role" "$backend" "$1" "$scope" >/dev/null
-  elif [ "$action" = "claude" ] || [ "$action" = "codex" ]; then
-    local backend="$action"
-    execution_config_set_role_backend "$project" "$role" "$backend" "$scope" >/dev/null
-    if [ $# -ge 1 ]; then
-      execution_config_set_role_model "$project" "$role" "$backend" "$1" "$scope" >/dev/null
-    fi
-  else
-    echo "Error: 지원하지 않는 execution-config 지시: ${action}" >&2
-    exit 1
-  fi
-
-  python3 "$TOOLS_DIR/log.py" system "$project" orchestrator execution_config_role "$role" \
-    --detail scope="$scope" action="$action" || true
-
-  if [ "$scope" = "current" ] && [ "$has_live_session" -eq 1 ] && [ "$stage" = "active" ] && is_worker_role "$role"; then
-    reconcile_worker_role "$project" "$role"
-    echo "execution-config 적용 완료: ${role} (worker 즉시 반영)"
-  elif [ "$scope" = "current" ] && is_worker_role "$role"; then
-    echo "execution-config 저장 완료: ${role} (다음 boot/reboot부터 반영)"
-  else
-    echo "execution-config 저장 완료: ${role} (control-plane은 다음 reboot/boot부터 반영)"
-  fi
-}
-
-validate_task_report_ready() {
-  local project="$1" agent="$2" task_ref="$3"
-  local report_path report_rel
-  report_path="$(runtime_task_report_path "$project" "$task_ref" "$agent")"
-  report_rel="$(runtime_project_relative_path "$project" "$report_path")"
-
-  if [ ! -f "$report_path" ]; then
-    echo "Error: 완료 전에 결과 보고서가 필요하다: ${report_rel}" >&2
-    return 1
-  fi
-
-  if ! grep -Eq '^- \*\*Status\*\*: final([[:space:]]*)$' "$report_path"; then
-    echo "Error: 결과 보고서 Status가 final이어야 한다: ${report_rel}" >&2
-    return 1
-  fi
-
-  if grep -q "작성 필요" "$report_path" 2>/dev/null; then
-    echo "Error: 결과 보고서에 미완성 placeholder가 남아 있다: ${report_rel}" >&2
-    return 1
-  fi
 }
 
 # sessions.md 초기화 (멱등: 이미 존재하면 건너뜀)
@@ -2560,7 +2078,6 @@ reset_stale_boot_runtime_state() {
   local project="$1"
   rm -f "$(runtime_reboot_state_file "$project")"
   rm -f "$(runtime_idle_state_file "$project")"
-  rm -f "$(runtime_waiting_state_file "$project")"
 
   # tmux-debug 로그 정리: 이전 세션 잔재 삭제
   # server 로그는 현재 PID 보존, client 로그는 부팅 시점에 모두 이전 세션 잔재이므로 전부 삭제
@@ -3696,10 +3213,8 @@ cmd_dispatch() {
   expire_stale_assignments "$project"
 
   local subject base_msg lead_target target role_label target_msg idx
-  local normalized_task target_report_rel claude_report_rel codex_report_rel
-  local manager_report_rel="" target_csv="" role_csv="" report_refs=()
+  local target_csv="" role_csv=""
   task_subject_and_message "$task" subject base_msg "$project"
-  normalized_task="$(normalize_task_ref "$project" "$subject")"
 
   resolve_task_execution_plan "$role" "$task" "$project" "$forced_pattern"
   if [ "${#TASK_EXEC_TARGETS[@]}" -eq 0 ]; then
@@ -3722,28 +3237,10 @@ cmd_dispatch() {
     role_label="${TASK_EXEC_ROLES[$idx]}"
     target_msg="$(pattern_dispatch_message "$task" "$project" "$TASK_EXEC_PATTERN" "$role_label" "$lead_target")"
     bash "$TOOLS_DIR/message.sh" "$project" "manager" "$target" "task_assign" "normal" "$subject" "$target_msg"
-    target_report_rel="$(runtime_project_relative_path "$project" "$(runtime_task_report_path "$project" "$normalized_task" "$target")")"
-    report_refs+=("${target}:${target_report_rel}")
-    if [[ "$target" == *-claude ]]; then
-      claude_report_rel="$target_report_rel"
-    elif [[ "$target" == *-codex ]]; then
-      codex_report_rel="$target_report_rel"
-    fi
   done
 
-  if [ "$TASK_EXEC_MANAGER_STUB" = "compare" ]; then
-    if [ -n "${claude_report_rel:-}" ] && [ -n "${codex_report_rel:-}" ]; then
-      runtime_write_dual_synthesis_report_stub "$project" "$normalized_task" "$claude_report_rel" "$codex_report_rel" >/dev/null
-      manager_report_rel="$(runtime_project_relative_path "$project" "$(runtime_task_report_path "$project" "$normalized_task" "manager")")"
-    else
-      manager_report_rel="$(write_pattern_manager_report_stub "$project" "$normalized_task" "$TASK_EXEC_PATTERN" "${report_refs[@]}")"
-    fi
-  elif [ "$TASK_EXEC_MANAGER_STUB" = "verify" ]; then
-    manager_report_rel="$(write_pattern_manager_report_stub "$project" "$normalized_task" "$TASK_EXEC_PATTERN" "${report_refs[@]}")"
-  fi
-
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator task_dispatch "$role" \
-    --detail task="$task" pattern="$TASK_EXEC_PATTERN" targets="$target_csv" roles="$role_csv" manager_report="${manager_report_rel:-}" || true
+    --detail task="$task" pattern="$TASK_EXEC_PATTERN" targets="$target_csv" roles="$role_csv" || true
   echo "dispatch 완료: ${role} [${TASK_EXEC_PATTERN}] ← ${task} (${target_csv})"
 }
 

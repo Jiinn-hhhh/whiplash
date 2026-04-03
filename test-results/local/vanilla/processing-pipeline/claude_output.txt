@@ -1,0 +1,7 @@
+Pipeline runs successfully. Here's a summary of the three fixes:
+
+| Issue | File | Fix |
+|---|---|---|
+| No execute permissions | All `.sh` files | `chmod +x` |
+| Invalid shebang `#!/bin/nonexistent` | `generate_report.sh` | Changed to `#!/bin/bash` |
+| Absolute path `/data/output/` (not writable) | `collect_data.sh`, `process_data.sh`, `generate_report.sh` | Changed to relative `./data/output/` |

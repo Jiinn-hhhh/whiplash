@@ -1,0 +1,14 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.14.0, pytest-9.0.2, pluggy-1.6.0
+rootdir: /tmp/tb-test-modernize-fortran-build-QYrhnw
+plugins: anyio-4.13.0
+collected 3 items
+
+../../../tmp/tb-test-modernize-fortran-build-QYrhnw/test_outputs.py ...  [100%]
+
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED ../../../tmp/tb-test-modernize-fortran-build-QYrhnw/test_outputs.py::test_output_file_exists_and_content_is_correct
+PASSED ../../../tmp/tb-test-modernize-fortran-build-QYrhnw/test_outputs.py::test_target_executable_was_created_and_is_executable
+PASSED ../../../tmp/tb-test-modernize-fortran-build-QYrhnw/test_outputs.py::test_makefile_compilation_process
+============================== 3 passed in 0.19s ===============================

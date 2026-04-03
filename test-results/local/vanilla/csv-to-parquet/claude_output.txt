@@ -1,0 +1,1 @@
+The CSV has been converted to `/private/tmp/tb-csv-to-parquet-vanilla-ecmU4m/data.parquet` — 5 rows with columns `name` (string), `age` (int), and `city` (string).

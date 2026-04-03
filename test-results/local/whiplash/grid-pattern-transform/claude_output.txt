@@ -1,0 +1,5 @@
+Output matches perfectly. The transformation rule:
+
+1. Tile the 2x2 input into a 6x6 grid (3x3 blocks)
+2. Even block-rows (0, 2) use the original orientation
+3. Odd block-rows (1) are horizontally flipped

@@ -1,6 +1,6 @@
 # 프로젝트 컨텍스트 컨벤션
 
-이 프레임워크는 여러 프로젝트를 동시에 운영한다. 각 프로젝트는 `projects/{name}/` 안에 workspace, memory, runtime, reports를 갖는다.
+이 프레임워크는 여러 프로젝트를 동시에 운영한다. 각 프로젝트는 `projects/{name}/` 안에 workspace, memory, runtime을 갖는다.
 
 ---
 
@@ -12,7 +12,6 @@
 |------------------|----------------|
 | `workspace/shared/` | `projects/{name}/workspace/shared/` |
 | `workspace/teams/` | `projects/{name}/workspace/teams/` |
-| `memory/knowledge/` | `projects/{name}/memory/knowledge/` |
 | `memory/discussion/` | `projects/{name}/memory/discussion/` |
 | `memory/{role}/` | `projects/{name}/memory/{role}/` |
 | `runtime/manager-state.tsv` | `projects/{name}/runtime/manager-state.tsv` |
@@ -20,7 +19,6 @@
 | `runtime/idle-state.tsv` | `projects/{name}/runtime/idle-state.tsv` |
 | `runtime/message-queue/` | `projects/{name}/runtime/message-queue/` |
 | `runtime/message-locks/` | `projects/{name}/runtime/message-locks/` |
-| `reports/` | `projects/{name}/reports/` |
 
 에이전트 정의 파일(`agents/`)과 도메인 파일(`domains/`)의 경로는 레포 루트 기준이다.
 
@@ -39,7 +37,6 @@ projects/{name}/
   workspace/               # 진행 중인 작업
     shared/
       discussions/
-      announcements/
     teams/
       research/
       developer/
@@ -51,13 +48,8 @@ projects/{name}/
       sessions.md          #   활성 세션 추적
     researcher/
     developer/
-    systems-engineer/
+    systems-engineer/      #   live 시스템 문서 (live-topology.md, deployment-map.md 등)
     monitoring/
-    knowledge/
-      lessons/
-      docs/
-        change-authority.md #   systems-engineer 시스템 수정 가능 표면 / 정책 근거
-      index.md
   runtime/                 # 시스템 운용용 런타임 상태
     manager-state.tsv      #   monitor pid/heartbeat/lock/nudge key-value 상태
     reboot-state.tsv       #   role -> reboot count / reboot lock / lockout 시각
@@ -66,7 +58,6 @@ projects/{name}/
     message-locks/         #   target별 직렬화 lock
     manager/               #   runtime 보조 파일
   logs/                    # system.log, message.log
-  reports/                 # 사용자 열람 전용 (에이전트는 쓰기만, 읽기 참조 금지)
 ```
 
 ---
@@ -77,8 +68,7 @@ projects/{name}/
 
 1. **온보딩 에이전트**(`agents/onboarding/`)가 유저와 대화하며 프로젝트를 설계한다.
 2. 온보딩 에이전트가 `projects/{name}/` 폴더, project.md, 디렉토리 구조를 생성한다.
-3. `memory/knowledge/index.md`를 빈 지식 지도로 초기화한다.
-4. 설계 확정 후 Manager에게 인계한다.
+3. 설계 확정 후 Manager에게 인계한다.
 
 온보딩 에이전트 없이 수동으로 시작할 수도 있다. 이 경우 아래 양식을 직접 작성한다.
 
@@ -132,7 +122,7 @@ projects/{name}/
 - **긴급 알림**: {블로커 발생 시 즉시 / 모아서 보고}
 - **프레임워크 디버깅**: {on | off} (에이전트가 프레임워크 비효율을 feedback/insights.md에 기록할지 여부)
 - **기술적 전제조건**: {운영 방식 실현에 필요한 인프라, 설정 등 또는 "없음"}
-- **시스템 변경 권한**: {기본 금지 / systems-engineer 비활성 / team/systems-engineer.md + memory/knowledge/docs/change-authority.md 참조}
+- **시스템 변경 권한**: {기본 금지 / systems-engineer 비활성 / team/systems-engineer.md 참조}
 - `작업 루프 = ralph`면 manager는 user 승인 입력을 기다리며 멈추지 않는다. 대신 blocker / scope 축소 / 최종 완료를 알림 채널에 남기고 계속 진행한다.
 - `랄프 종료 방식 = continue-until-no-improvement`이면 완료 기준 충족 후에도 개선 loop를 이어가며, 팀이 보수적으로 "더 이상 의미 있는 개선이 어렵다"고 판단할 때만 종료한다.
 - `실행 프리셋`은 현재 유효 runtime 상태다.
@@ -150,7 +140,7 @@ projects/{name}/
   - `systems-engineer` 포함 여부는 온보딩 중 유저 확인을 거쳐 결정
   - 확인 질문 예시: "이 프로젝트에서 서버, 클라우드, 배포, runtime 작업이 얼마나 중요한가? 거의 없음 / 일부 있음 / 핵심임"
   - 기본 기준: `핵심임`이면 포함 권장, `일부 있음`이면 포함 추천, `거의 없음`이면 제외 가능
-  - `systems-engineer`를 포함하면 `team/systems-engineer.md`와 `memory/knowledge/docs/change-authority.md`를 함께 초안 작성
+  - `systems-engineer`를 포함하면 `team/systems-engineer.md`를 초안 작성
 - **커스터마이징**: {있으면 team/{role}.md 참조, 없으면 "기본"}
 
 ## 현재 상태
@@ -167,17 +157,16 @@ projects/{name}/
 2. 도메인이 `general`이 아니고 파일이 있으면 `domains/{domain}/context.md`를 읽는다.
 3. 해당 도메인이 `general`이 아니고 자기 역할 파일이 있으면 (`domains/{domain}/{role}.md`) 읽는다.
 4. 해당 프로젝트에 자기 역할 파일이 있으면 (`projects/{name}/team/{role}.md`) 읽는다.
-5. `systems-engineer`라면 `projects/{name}/memory/knowledge/docs/change-authority.md`를 읽는다. 원격 시스템 변경 전에는 다시 확인한다.
-6. `projects/{name}/memory/knowledge/index.md`를 읽는다.
-7. 이후 workspace/, memory/, reports/ 경로는 해당 프로젝트 기준으로 해석한다.
+5. `systems-engineer`라면 `projects/{name}/memory/systems-engineer/`의 live 문서를 읽는다. 원격 시스템 변경 전에는 `team/systems-engineer.md`를 다시 확인한다.
+6. 이후 workspace/, memory/ 경로는 해당 프로젝트 기준으로 해석한다.
 
 ---
 
 ## 5. 크로스 프로젝트 참조
 
-다른 프로젝트의 지식을 참조할 때:
+다른 프로젝트의 정보를 참조할 때:
 
-- 명시적 전체 경로를 사용한다: `projects/{other-project}/memory/knowledge/lessons/LESSON-NNN.md`
+- 명시적 전체 경로를 사용한다: `projects/{other-project}/memory/{role}/...`
 - 다른 프로젝트의 workspace/는 참조하지 않는다 (진행 중인 작업은 해당 프로젝트에 종속).
 
 ---
@@ -231,8 +220,7 @@ projects/{name}/team/{role}.md    ← 프로젝트 특화 (프로젝트, 가변)
 - 기본값: 명시되지 않은 원격 시스템 write는 금지
 - 판단 순서:
   1. 이 표의 환경별 정책 확인
-  2. `memory/knowledge/docs/change-authority.md`의 실제 표면/근거 확인
-  3. 두 문서가 모두 허용할 때만 실행
+  2. 이 표가 허용할 때만 실행
 
 | 환경 | read | config-change | deploy | service-restart | data-change |
 |------|------|---------------|--------|-----------------|-------------|
@@ -241,28 +229,10 @@ projects/{name}/team/{role}.md    ← 프로젝트 특화 (프로젝트, 가변)
 | dev | {허용/금지} | {허용/금지} | {허용/금지} | {허용/금지} | {허용/금지} |
 ```
 
-### change-authority.md 양식
-
-```markdown
-# 시스템 변경 권한 근거
-
-- **마지막 검증 시각**: YYYY-MM-DD HH:MM TZ
-- **검증 환경**: prod | staging | dev
-- **검증 근거 종류**: AWS API | SSH | systemd | config file | ...
-
-## 목적
-- 실제로 수정 가능한 시스템 표면과 근거를 기록한다.
-- 문서에 없는 원격 시스템 write는 금지다.
-
-## 표면 목록
-| 환경 | 표면 | 허용 행동 | 금지 행동 | 근거 | 마지막 확인 |
-|------|------|-----------|-----------|------|-------------|
-```
-
 ### 작성 규칙
 
 - **온보딩 에이전트가 생성**한다. 유저와의 대화에서 프로젝트별 에이전트 커스터마이징을 도출한 결과물이다.
 - **Manager가 수정 가능**하다. 프로젝트 진행 중 필요 시 유저 합의 하에 업데이트한다.
 - 기본 profile.md나 도메인 파일의 규칙을 **무효화하지 않는다**. 초점과 우선순위를 조정할 뿐이다.
 - project.md의 `팀 구성` 섹션에 개요를 기록하고, 상세는 `team/{role}.md`에 둔다.
-- `systems-engineer`가 활성인 프로젝트라면 `team/systems-engineer.md`와 `memory/knowledge/docs/change-authority.md`를 함께 관리한다.
+- `systems-engineer`가 활성인 프로젝트라면 `team/systems-engineer.md`를 함께 관리한다.

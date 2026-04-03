@@ -1,63 +1,38 @@
-# 메모리/지식 관리
+# 메모리 관리
 
-에이전트가 지식을 축적하고 활용하는 규칙을 정의한다.
-
----
-
-## 1. 배경 지식 (항상 인식)
-
-- `memory/knowledge/index.md` = **지식 지도**. 항상 ~100줄 이내로 유지한다.
-- 에이전트는 작업 시작 시 `index.md`를 읽어 배경 인식 상태를 유지한다.
-- **index.md는 카탈로그가 아니라 지도**: 모든 걸 나열하지 않는다. 활성 교훈 + 주요 문서만 큐레이션한다.
-- 끝난 토론은 index에 올리지 않는다 (`memory/knowledge/` 하위 폴더에서 필요시 검색).
-- index에서 빠져도 파일은 존재한다 → 깊이 참고 시 직접 찾아볼 수 있다.
-
-### index.md 관리 원칙
-- 항목당 1-2줄 설명 (요약 수준은 [formats.md](formats.md) 참조).
-- 100줄 초과 시 덜 중요한 항목을 제거한다 (파일 자체는 삭제하지 않음).
-- 새 교훈이나 주요 문서 추가 시 index를 업데이트한다.
-- 장기적으로 참조하는 canonical 문서만 올린다. 특히 live 시스템 문서는 표준 파일명 링크를 유지하고, 매 점검 로그를 전부 index에 나열하지 않는다.
+에이전트가 세션 간 맥락을 유지하는 규칙을 정의한다.
 
 ---
 
-## 2. 교훈 (Lessons)
+## 1. Manager 메모리
 
-### 저장
-- `memory/knowledge/lessons/` 폴더에 저장한다.
-- 파일명: `LESSON-NNN.md` (3자리 순번, 예: `LESSON-001.md`).
-- 형식은 [formats.md](formats.md)의 교훈 템플릿을 따른다.
+- `memory/manager/sessions.md` — 활성 세션 추적 (cmd.sh 연동)
+- `memory/manager/assignments.md` — 태스크 할당 기록 (cmd.sh 연동)
+- `memory/manager/activity.md` — 판단 근거, 계획 변경 이력, 핵심 교훈 기록
 
-### 중복 제거
-- 새 교훈 작성 시 기존 교훈과 의미적 중복 여부를 확인한다.
-- 중복이면 새로 만들지 않고 기존 교훈을 보강한다.
+Manager는 activity.md에 중요한 결정과 교훈을 누적한다.
 
 ---
 
-## 3. 문서 (Docs)
+## 2. 팀원 메모리
 
-- `memory/knowledge/docs/` 폴더에 레퍼런스 문서를 저장한다.
-- 깊이 참고용. 배경 지식(`index.md`)에서 관련 문서를 안내하고, 필요시 가서 읽는다.
-- live 시스템 관련 canonical 문서는 가능하면 고정 파일명을 유지한다.
-  - `live-topology.md`
-  - `deployment-map.md`
-  - `runtime-inventory.md`
-  - `live-code-state.md`
-  - `drift-report.md`
-  - `runbook.md`
-- Systems Engineer가 이 파일들의 실질적 유지 책임을 가진다. Manager는 `index.md`에서 이 문서들의 링크와 1줄 요약을 큐레이션한다.
-- 문서에는 비밀값을 넣지 않는다. 구조, 경로, 이름, 역할, 검증 방법만 기록한다.
+각 worker 에이전트는 `memory/{role}/`에 작업 메모를 남긴다.
+
+- 태스크 완료 시 핵심만 기록한다.
+- 내용: 어떤 파일을 왜 고쳤는지, 주의할 점, 다음에 이어할 때 알아야 할 것
+- 형식은 자유. 과하게 쓰지 않되, 다음 세션에서 맥락 복원이 되는 수준.
+- 부팅 시 자기 메모리 디렉토리를 읽어 이전 맥락을 복원한다.
 
 ---
 
-## 4. 끝난 토론
+## 3. Discussion 메모리
 
-- **토론 종료** → 교훈을 추출한다 (해당 시). 종료된 토론은 정리하되, 이중 저장하지 않는다.
+- `memory/discussion/handoff.md` — 전략 합의 + 실행 변경 (discussion → manager)
+- `memory/onboarding/handoff.md` — 초기 설계 인수인계
 
 ---
 
-## 5. 하면 안 되는 것
+## 4. 하면 안 되는 것
 
-- `index.md`를 100줄 이상으로 늘리지 않는다.
-- 의미적으로 중복되는 교훈을 별도로 생성하지 않는다.
-- 끝난 토론을 `workspace/shared/`에 방치하지 않는다.
-- live 시스템 문서를 날짜별 파일로 계속 새로 만들며 canonical 파일명을 버리지 않는다.
+- 메모를 과하게 쓰지 않는다. 핵심만.
+- 다른 에이전트의 메모리를 수정/삭제하지 않는다.

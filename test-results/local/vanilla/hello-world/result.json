@@ -1,0 +1,8 @@
+{
+  "task_id": "hello-world",
+  "agent_mode": "vanilla",
+  "passed": true,
+  "duration_sec": 13,
+  "claude_exit": 0,
+  "test_exit": 0
+}

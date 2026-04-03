@@ -1,0 +1,30 @@
+{
+    "run_id": "vanilla-test",
+    "uuid": "f33a4c3b-fb13-4e2f-91ce-93667e3b3bbb",
+    "dataset_path": null,
+    "dataset_name": "terminal-bench-core",
+    "dataset_version": "0.1.1",
+    "output_path": "/Users/seungjin/Documents/seungjin/whiplash/test-results/vanilla",
+    "agent_name": "claude-code",
+    "no_rebuild": false,
+    "cleanup": true,
+    "log_level": 20,
+    "task_ids": [
+        "hello-world"
+    ],
+    "exclude_task_ids": null,
+    "n_tasks": null,
+    "n_concurrent_trials": 4,
+    "n_attempts": 1,
+    "dataset_size": 1,
+    "accuracy": 0.0,
+    "model_name": "anthropic/claude-sonnet-4-20250514",
+    "start_time": "2026-04-02T08:46:22.648230+00:00",
+    "end_time": "2026-04-02T08:46:22.657104+00:00",
+    "commit_hash": "8a06269355b2d36969e3a06303f30aee0805a352",
+    "username": "Seungjin Hwang",
+    "s3_bucket": null,
+    "agent_kwargs": null,
+    "pass_at_k": {},
+    "resumed_at": null
+}

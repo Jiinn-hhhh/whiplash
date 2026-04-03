@@ -1,0 +1,7 @@
+All working. Here's a summary of the **3 issues fixed**:
+
+| Issue | File(s) | Fix |
+|-------|---------|-----|
+| **No execute permissions** | All 4 scripts | `chmod +x` on all `.sh` files |
+| **Wrong shebang** | `generate_report.sh` | Changed `#!/bin/nonexistent` to `#!/bin/bash` |
+| **Hardcoded absolute paths** | `collect_data.sh`, `process_data.sh`, `generate_report.sh` | Replaced `/data/output/` with a relative `$SCRIPT_DIR/data/output/` path derived from each script's location |

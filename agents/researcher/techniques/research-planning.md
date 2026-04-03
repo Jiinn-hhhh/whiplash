@@ -7,7 +7,7 @@
 ## 1. 지식 갭 식별
 
 ### 절차
-1. `memory/knowledge/index.md`와 `workspace/teams/research/`의 현재 상태를 검토한다.
+1. `memory/researcher/`와 `workspace/teams/research/`의 현재 상태를 검토한다.
 2. 진행 중인 프로젝트/작업에 필요하지만 아직 조사되지 않은 영역을 식별한다.
 3. 갭을 다음과 같이 분류한다:
    - **핵심 갭**: 이것이 없으면 프로젝트 진행이 블로킹됨

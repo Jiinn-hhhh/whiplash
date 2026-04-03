@@ -1,0 +1,8 @@
+{
+  "task_id": "csv-to-parquet",
+  "agent_mode": "whiplash",
+  "passed": false,
+  "duration_sec": 33,
+  "claude_exit": 0,
+  "test_exit": 1
+}

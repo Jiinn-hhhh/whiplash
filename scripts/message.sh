@@ -98,9 +98,6 @@ whiplash_activate_tmux_project "$project"
 
 lock_held=0
 lock_target=""
-task_assign_report_rel=""
-task_complete_report_rel=""
-task_complete_task_ref=""
 
 release_target_lock() {
   if [ "$lock_held" -eq 1 ] && [ -n "$lock_target" ]; then
@@ -163,15 +160,6 @@ record_assignment() {
 
 complete_assignment() {
   complete_assignment_for_project "$project" "$1"
-}
-
-prepare_task_assign_report_stub() {
-  if [ "$kind" != "task_assign" ]; then
-    return 0
-  fi
-  local normalized_task
-  normalized_task="$(normalize_task_ref "$subject")"
-  task_assign_report_rel="$(runtime_write_task_report_stub "$project" "$normalized_task" "$to" "manager")"
 }
 
 is_execution_lead_task_assign_target() {
@@ -250,67 +238,10 @@ validate_discussion_handoff_contract() {
   fi
 }
 
-validate_task_complete_report() {
-  if [ "$kind" != "task_complete" ] || [ "$to" != "manager" ] || [ "$from" = "manager" ]; then
-    return 0
-  fi
-
-  local active_task report_path
-  active_task="$(get_active_task_ref "$from")"
-  if [ -z "$active_task" ]; then
-    echo "Error: task_complete 전에 active assignment를 찾을 수 없다: ${from}" >&2
-    exit 1
-  fi
-  task_complete_task_ref="$active_task"
-
-  report_path="$(runtime_task_report_path "$project" "$active_task" "$from")"
-  task_complete_report_rel="$(runtime_project_relative_path "$project" "$report_path")"
-
-  if [ ! -f "$report_path" ]; then
-    echo "Error: task_complete 전에 결과 보고서가 필요하다: ${task_complete_report_rel}" >&2
-    exit 1
-  fi
-
-  if ! grep -Eq '^- \*\*Status\*\*: final([[:space:]]*)$' "$report_path"; then
-    echo "Error: 결과 보고서 Status가 final이어야 한다: ${task_complete_report_rel}" >&2
-    exit 1
-  fi
-
-  if grep -q "작성 필요" "$report_path" 2>/dev/null; then
-    echo "Error: 결과 보고서에 미완성 placeholder가 남아 있다: ${task_complete_report_rel}" >&2
-    exit 1
-  fi
-}
-
 augment_content_with_report_context() {
-  if [ "$kind" = "task_assign" ] && [ -n "$task_assign_report_rel" ] && [[ "$content" != *"$task_assign_report_rel"* ]]; then
-    content="${content} 결과 보고서는 ${task_assign_report_rel}에 작성하고 완료 전 Status를 final로 바꿔라."
-  fi
-
   if [ "$kind" = "task_assign" ] && is_execution_lead_task_assign_target "$to"; then
     content="${content} [kickoff reminder] 비사소한 작업이면 specialist 최소 1개, 복잡한 작업이면 2-way 이상 병렬 fan-out을 기본값으로 잡아라. specialist별 기본 모델/effort tier도 설정돼 있으니 난이도에 맞게 override를 고려해라. 어떤 specialist를 부를지는 네가 판단해라."
   fi
-
-  if [ "$kind" = "task_complete" ] && [ -n "$task_complete_report_rel" ] && [[ "$content" != *"$task_complete_report_rel"* ]]; then
-    content="${content} | 보고서: ${task_complete_report_rel}"
-  fi
-}
-
-record_waiting_report() {
-  local agent="$1"
-  [ -n "$task_complete_task_ref" ] || return 0
-  runtime_set_waiting_report \
-    "$project" \
-    "$agent" \
-    "$(date +%s)" \
-    "$subject" \
-    "$(normalize_task_ref "$task_complete_task_ref")" \
-    "$task_complete_report_rel" || true
-}
-
-clear_waiting_report() {
-  local agent="$1"
-  runtime_clear_waiting_report "$project" "$agent" || true
 }
 
 resolve_backend() {
@@ -606,22 +537,18 @@ apply_bookkeeping() {
 
   case "$kind" in
     task_assign)
-      clear_waiting_report "$to"
       record_assignment "$to" "$subject"
       ;;
     task_complete)
       if [ "$to" = "manager" ]; then
         complete_assignment "$from"
-        record_waiting_report "$from"
       fi
       ;;
   esac
 }
 
 validate_routing
-prepare_task_assign_report_stub
 validate_discussion_handoff_contract
-validate_task_complete_report
 augment_content_with_report_context
 # M-10: bookkeeping은 원본 subject를 사용해야 하므로 포맷팅 전에 실행
 apply_bookkeeping

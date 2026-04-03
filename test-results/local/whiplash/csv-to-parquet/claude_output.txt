@@ -1,0 +1,1 @@
+Done. The Parquet file has been created at `/private/tmp/tb-csv-to-parquet-whiplash-9jwxSH/data.parquet` with all 5 rows and 3 columns (`name`, `age`, `city`) preserved. The `age` column was correctly inferred as `int64`.

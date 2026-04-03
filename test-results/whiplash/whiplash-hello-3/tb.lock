@@ -1,0 +1,62 @@
+{
+    "lockfile_version": "1.0",
+    "created_at": "2026-04-02T18:06:40.547705+09:00",
+    "invocation": {
+        "command": "tb",
+        "args": [
+            "run",
+            "-d",
+            "terminal-bench-core==0.1.1",
+            "--agent-import-path",
+            "terminal_bench_whiplash.agent:WhiplashAgent",
+            "-m",
+            "anthropic/claude-sonnet-4-20250514",
+            "-t",
+            "hello-world",
+            "--output-path",
+            "test-results/whiplash",
+            "--run-id",
+            "whiplash-hello-3"
+        ]
+    },
+    "harness": {
+        "package": "terminal-bench",
+        "version": "0.2.18",
+        "is_editable_installation": false
+    },
+    "agent": {
+        "name": "whiplash",
+        "import_path": "terminal_bench_whiplash.agent:WhiplashAgent",
+        "model_name": "anthropic/claude-sonnet-4-20250514",
+        "extra_kwargs": {
+            "no_rebuild": false,
+            "model_name": "anthropic/claude-sonnet-4-20250514"
+        }
+    },
+    "run_config": {
+        "log_level": "info",
+        "livestream": false,
+        "n_concurrent_trials": 4,
+        "n_attempts": 1,
+        "no_rebuild": false,
+        "cleanup": true,
+        "global_timeout_multiplier": 1.0,
+        "global_agent_timeout_sec": null,
+        "global_test_timeout_sec": null
+    },
+    "dataset": {
+        "name": "terminal-bench-core",
+        "version": "0.1.1",
+        "local_path": null,
+        "task_ids": [
+            "hello-world"
+        ],
+        "registry_url": null,
+        "local_registry_path": null
+    },
+    "local_config": {
+        "output_path": "test-results/whiplash",
+        "run_id": "whiplash-hello-3",
+        "upload_results": false
+    }
+}

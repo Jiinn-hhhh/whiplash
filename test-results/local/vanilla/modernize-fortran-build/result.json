@@ -1,0 +1,8 @@
+{
+  "task_id": "modernize-fortran-build",
+  "agent_mode": "vanilla",
+  "passed": true,
+  "duration_sec": 28,
+  "claude_exit": 0,
+  "test_exit": 0
+}

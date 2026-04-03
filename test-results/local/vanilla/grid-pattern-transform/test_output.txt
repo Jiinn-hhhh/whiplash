@@ -1,0 +1,14 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.14.0, pytest-9.0.2, pluggy-1.6.0
+rootdir: /tmp/tb-test-grid-pattern-transform-che2JF
+plugins: anyio-4.13.0
+collected 3 items
+
+../../../tmp/tb-test-grid-pattern-transform-che2JF/test_outputs.py ...   [100%]
+
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED ../../../tmp/tb-test-grid-pattern-transform-che2JF/test_outputs.py::test_transformation_case1
+PASSED ../../../tmp/tb-test-grid-pattern-transform-che2JF/test_outputs.py::test_transformation_case2
+PASSED ../../../tmp/tb-test-grid-pattern-transform-che2JF/test_outputs.py::test_transformation_case3
+============================== 3 passed in 0.04s ===============================

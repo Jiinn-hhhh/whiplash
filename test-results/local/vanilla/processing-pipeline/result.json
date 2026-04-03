@@ -1,0 +1,8 @@
+{
+  "task_id": "processing-pipeline",
+  "agent_mode": "vanilla",
+  "passed": false,
+  "duration_sec": 38,
+  "claude_exit": 0,
+  "test_exit": 1
+}

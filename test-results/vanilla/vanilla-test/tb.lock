@@ -1,0 +1,62 @@
+{
+    "lockfile_version": "1.0",
+    "created_at": "2026-04-02T17:46:22.648823+09:00",
+    "invocation": {
+        "command": "tb",
+        "args": [
+            "run",
+            "-d",
+            "terminal-bench-core==0.1.1",
+            "-a",
+            "claude-code",
+            "-m",
+            "anthropic/claude-sonnet-4-20250514",
+            "-t",
+            "hello-world",
+            "--output-path",
+            "/Users/seungjin/Documents/seungjin/whiplash/test-results/vanilla",
+            "--run-id",
+            "vanilla-test"
+        ]
+    },
+    "harness": {
+        "package": "terminal-bench",
+        "version": "0.2.18",
+        "is_editable_installation": false
+    },
+    "agent": {
+        "name": "claude-code",
+        "import_path": "terminal_bench.agents.installed_agents.claude_code.claude_code_agent:ClaudeCodeAgent",
+        "model_name": "anthropic/claude-sonnet-4-20250514",
+        "extra_kwargs": {
+            "no_rebuild": false,
+            "model_name": "anthropic/claude-sonnet-4-20250514"
+        }
+    },
+    "run_config": {
+        "log_level": "info",
+        "livestream": false,
+        "n_concurrent_trials": 4,
+        "n_attempts": 1,
+        "no_rebuild": false,
+        "cleanup": true,
+        "global_timeout_multiplier": 1.0,
+        "global_agent_timeout_sec": null,
+        "global_test_timeout_sec": null
+    },
+    "dataset": {
+        "name": "terminal-bench-core",
+        "version": "0.1.1",
+        "local_path": null,
+        "task_ids": [
+            "hello-world"
+        ],
+        "registry_url": null,
+        "local_registry_path": null
+    },
+    "local_config": {
+        "output_path": "/Users/seungjin/Documents/seungjin/whiplash/test-results/vanilla",
+        "run_id": "vanilla-test",
+        "upload_results": false
+    }
+}
