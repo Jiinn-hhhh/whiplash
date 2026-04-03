@@ -705,14 +705,31 @@ check_agent_health() {
           fi
           # 10분 후 다시 확인됨 (30초 루프 + HUNG_THRESHOLD 조건)
         else
-          # 죽었음 → 매니저에게 보고
-          local idle_min=$((idle_sec / 60))
-          python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor idle_dead "$win_name" --detail idle_min="$idle_min" || true
-          bash "$TOOLS_DIR/message.sh" "$PROJECT" monitor manager \
-            escalation urgent "${win_name} 프로세스 종료 감지" \
-            "${win_name} 에이전트가 ${idle_min}분간 비활성 + 프로세스 종료 상태다. 리부팅이 필요하다." || \
-            echo "[monitor] Warning: 종료 알림 전달 실패 (${win_name})" >&2
-          runtime_clear_idle_check_ts "$PROJECT" "$win_name"
+          # 죽었음 — 이미 보고했으면 중복 escalation 방지
+          if [[ "${idle_check_ts:-}" =~ ^[0-9]+$ ]]; then
+            # 이미 감지·보고 완료된 상태. 반복 escalation 안 함.
+            :
+          else
+            local idle_min=$((idle_sec / 60))
+            runtime_set_idle_check_ts "$PROJECT" "$win_name" "$now"
+
+            # 태스크 할당 여부 확인: 할당 없으면 로그만, 있으면 escalation
+            local _role_for_task="${win_name}"
+            # dual 모드 window 이름에서 role 추출 (예: developer-claude → developer)
+            _role_for_task="${_role_for_task%-claude}"
+            _role_for_task="${_role_for_task%-codex}"
+            local _active_task
+            _active_task="$(get_active_task_ref_for_project "$PROJECT" "$_role_for_task" 2>/dev/null || true)"
+
+            python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor idle_dead "$win_name" --detail idle_min="$idle_min" has_task="${_active_task:+yes}" || true
+
+            if [ -n "$_active_task" ]; then
+              bash "$TOOLS_DIR/message.sh" "$PROJECT" monitor manager \
+                escalation urgent "${win_name} 프로세스 종료 감지" \
+                "${win_name} 에이전트가 ${idle_min}분간 비활성 + 프로세스 종료 상태다. 활성 태스크: ${_active_task}. 리부팅이 필요하다." || \
+                echo "[monitor] Warning: 종료 알림 전달 실패 (${win_name})" >&2
+            fi
+          fi
         fi
       else
         # 활동 재개 — 체크 파일 제거
