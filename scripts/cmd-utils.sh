@@ -524,6 +524,7 @@ write_agent_env_script() {
     printf 'export WHIPLASH_TMUX_PROJECT=%q\n' "$project"
     printf 'export WHIPLASH_NATIVE_CLAUDE_AGENTS=%q\n' "${REPO_ROOT}/.claude/agents"
     printf 'export WHIPLASH_NATIVE_CODEX_AGENTS=%q\n' "${REPO_ROOT}/.codex/agents"
+    printf 'export WHIPLASH_AGENT_ROLE=%q\n' "$role"
     env | awk -F= '
       /^(WHIPLASH_FAKE_CLAUDE_|WHIPLASH_FAKE_CODEX_)/ {
         key=$1
