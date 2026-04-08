@@ -19,8 +19,7 @@
 - canonical source는 project.md execution config block의 `baseline/current_preset/current_overrides`다.
 - runtime 변경은 `bash scripts/cmd.sh execution-config {project} ...`로 수행한다.
 - **Dual ≠ 항상 이중 실행**. 양쪽 lane이 떠 있어도 dispatch 패턴은 task별로 다를 수 있다.
-- `discussion`은 control-plane 역할이라 항상 단일 세션으로 부팅된다. dual 프리셋에서도 복제하지 않는다.
-- 전략/설계/우선순위 토론은 `discussion`, 현재 실행 상태/블로커/작업자 현황의 source of truth는 `manager`가 맡는다.
+- Manager가 유저와의 전략 토론과 실행 관리를 모두 담당한다. 별도 discussion 에이전트는 사용하지 않는다.
 - Systems Engineer와 Monitoring은 dual 프리셋에서도 기본적으로 single lane이다.
 - 각 역할 에이전트는 Claude Code와 Codex CLI가 제공하는 네이티브 subagent / agent team / 병렬 기능을 우선 활용한다. tmux 수준 spawn은 역할 단위 격리나 추가 용량이 필요할 때 사용한다.
 
@@ -146,44 +145,15 @@ Progressive Disclosure 3단계 온보딩 + 알림 안내:
 
 ---
 
-## 4. 세션 추적
+## 4. 상태 관리
 
-`memory/manager/sessions.md`에 활성 세션 기록:
+### 세션 추적
+`cmd.sh status {project}`가 source of truth. Manager가 sessions.md를 수동 관리할 필요 없다.
 
-```markdown
-# 활성 에이전트 세션
+### 프로젝트 상태 갱신
+Manager는 `project.md`의 "현재 상태" 섹션을 짧게 유지한다 (5줄 이내). 다음 세션 Manager가 이것만 읽으면 맥락 복원 가능해야 한다.
 
-| 역할 | 백엔드 | Session ID | tmux Target | 상태 | 시작일 | 모델 | 비고 |
-|------|--------|-----------|-------------|------|--------|------|------|
-| researcher | claude | abc-123 | whiplash-myproj:researcher | active | 2026-02-14 | opus | |
-| developer | claude | def-456 | whiplash-myproj:developer | active | 2026-02-14 | opus | |
-| monitoring | claude | ghi-789 | whiplash-myproj:monitoring | active | 2026-02-14 | haiku | |
-```
-
-- Manager가 세션 생성/종료 시 업데이트
-- cmd.sh가 boot/shutdown/reboot/refresh 시 자동 관리
-- 상태값: `active` | `closed` | `crashed` | `refreshed`
-- 세션이 오래되거나 맥락이 너무 길어지면 `refresh`로 교체
-
-### Manager 활동 기록
-
-Manager는 주요 운영 판단을 `memory/manager/activity.md`에 기록한다. 다른 에이전트가 점검 이력이나 실험 결과를 기록하는 것과 동일한 원칙.
-
-기록 시점:
-- 태스크 분배 결정 (왜 이 에이전트에게, 왜 이 순서로)
-- 에이전트 보고(task_complete) 검토 후 판단
-- 에스컬레이션 결정 (유저에게 올릴지 자체 해결할지)
-- 계획 변경 (순서 조정, 추가 태스크 등)
-- dual 모드 합의 판정
-
-형식 (자유 형식, 시간순 append):
-
-```markdown
-### 2026-03-05 14:30 — TASK-001 결과 검토
-- Researcher가 호환성 매트릭스 완료 보고
-- Kontakt 8, BBC SO 동작 확인. SWAM 불가.
-- → Developer에게 TASK-002 (코어 파이프라인) 분배. Kontakt 8로 먼저 시작.
-```
+activity.md에 상세 기록하지 않는다. 유저는 보고서를 읽지 않고 궁금하면 직접 물어본다.
 
 ---
 
@@ -289,22 +259,15 @@ bash scripts/cmd.sh dual-dispatch {role} {task-file} {project}
 
 ### 6.4 합의 절차
 
-Manager가 다음 6단계를 수동으로 수행한다:
+양쪽 `task_complete`를 받으면 Manager가 즉시 판정한다:
 
-1. **결과 수집**: 양쪽 에이전트의 `task_complete` 메시지를 대기. 이중 실행(비교/검증) 모드에서는 양쪽 결과를 기다린다 (타임아웃은 Manager 판단). 기다릴 가치가 없다고 판단하면 먼저 끝난 결과를 채택하고 나머지 쪽에 다른 태스크를 배부한다.
-2. **합의 문서 생성**: 양쪽 결과를 비교하여 `workspace/shared/discussions/DISC-NNN.md`에 합의 문서를 작성한다. 형식은 `formats.md` 토론 템플릿을 따른다.
-3. **교차 전달**: message.sh로 양쪽 에이전트에 `consensus_request`를 보낸다.
-   ```bash
-   bash scripts/message.sh {project} manager {role}-claude \
-     consensus_request normal "합의 요청" "workspace/shared/discussions/DISC-NNN.md를 읽고 의견을 추가하라."
-   bash scripts/message.sh {project} manager {role}-codex \
-     consensus_request normal "합의 요청" "workspace/shared/discussions/DISC-NNN.md를 읽고 의견을 추가하라."
-   ```
-4. **판정**: 양쪽 응답 확인 후 Manager가 판정한다.
-   - **동의**: 합의 결과를 채택하고 문서에 결론을 기록한다.
-   - **대립**: 2차 라운드를 진행한다.
-5. **2차 라운드** (최대 1회 추가): 대립 지점을 명확히 하여 양쪽에 재질의한다. 2차에서도 미합의 시 Manager가 직접 판정하거나 유저에게 에스컬레이션한다.
-6. **결과 확정**: 합의 문서에 결론을 기록하고, 최종 결과를 정식 위치에 배치한다.
+1. **결과 비교**: 양쪽 결과를 읽고 비교. 먼저 끝난 쪽이 충분하면 나머지를 기다리지 않아도 된다.
+2. **즉시 판정**: 아래 중 하나를 선택하고, 이유를 태스크 보고서에 한 줄 기록한다.
+   - `prefer_claude` / `prefer_codex`: 한쪽이 명확히 나을 때
+   - `synth`: 양쪽 장점을 결합할 때
+3. **결과 확정**: 채택된 결과를 정식 위치에 배치한다.
+
+DISC-NNN 문서, consensus_request 메시지, 2차 라운드는 필요 없다. 판정 근거는 보고서 한 줄이면 충분하다.
 
 ### 6.5 작업 영역 분리 (Git Worktree)
 
@@ -552,18 +515,6 @@ bash scripts/message.sh {project} researcher developer \
 | escalation | `guided`면 유저에게 보고, `ralph`면 notify-only로 처리하고 루프는 계속 |
 | reboot_notice | 에이전트 복구 상태 확인, 필요 시 수동 개입 |
 | consensus_request | (dual 모드) 에이전트에게 합의 문서 검토 요청. 응답 대기 후 판정(§6.4) |
-
-### Discussion handoff 처리 흐름
-
-1. `discussion`이 `memory/discussion/handoff.md`를 작성하고 Manager에게 `status_update`로 알린다.
-2. Manager가 handoff를 읽고 유효성을 확인한다 (`User approved: yes`, `Why this change`, `Scope impact`, `Manager next action` 필수).
-3. Manager가 handoff 내용을 실행 계획으로 반영하고 태스크를 분배한다.
-4. **모든 관련 태스크 처리가 완료되면**, Manager가 `discussion`에 `status_update`로 완료 알림을 보낸다.
-   ```bash
-   bash scripts/message.sh {project} manager discussion \
-     status_update normal "handoff 처리 완료" "handoff 건 '{제목}' 관련 태스크 모두 완료."
-   ```
-5. `discussion`은 완료 알림을 받으면 해당 건을 종료 처리한다.
 
 ### monitor.sh 관리
 

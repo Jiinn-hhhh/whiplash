@@ -146,7 +146,7 @@ write_onboarding_bootstrap_project_md() {
 
 ## 팀 구성
 - **활성 에이전트**: 미정
-  - \`manager\`, \`discussion\`은 control-plane 역할이라 bootstrap 이후 자동 부팅된다.
+  - \`manager\`는 control-plane 역할이라 bootstrap 이후 자동 부팅된다.
 - **커스터마이징**: 기본
 
 ## 현재 상태
@@ -205,7 +205,7 @@ build_boot_message() {
   loop_mode="$(get_loop_mode "$project")"
   ralph_completion_mode="$(get_ralph_completion_mode "$project")"
 
-  if [ -z "$ready_target" ] && { [ "$role" = "manager" ] || [ "$role" = "onboarding" ] || [ "$role" = "discussion" ]; }; then
+  if [ -z "$ready_target" ] && { [ "$role" = "manager" ] || [ "$role" = "onboarding" ]; }; then
     ready_target="user"
   elif [ -z "$ready_target" ]; then
     ready_target="manager"
@@ -251,7 +251,7 @@ BOOTRULES
 - user 승인/확인 입력을 기다리며 작업을 멈추지 마라.
 - manager → user need_input / escalation은 금지다. 대신 ${user_notice_cmd} ${project} "제목" "내용" [level] 로 알리고 계속 진행해라.
 - 블로커, scope 축소, 최종 완료는 user_notice로 남겨라.
-- discussion 또는 user 개입이 와도 전체 루프를 pause 하지 말고 activity/handoff를 반영한 뒤 해당 레인만 재계획해라.
+- user 개입이 와도 전체 루프를 pause 하지 말고 반영한 뒤 해당 레인만 재계획해라.
 - 종료 방식: ${ralph_completion_mode}. stop-on-criteria면 project.md의 랄프 완료 기준을 만족할 때 끝내고, continue-until-no-improvement면 완료 기준 충족 후에도 개선 loop를 계속 돌려라.
 BOOTRULES
 )"
@@ -261,94 +261,10 @@ BOOTRULES
 - 현재 프로젝트의 작업 루프는 ralph 다.
 - user 확인을 기다리며 멈추지 마라. 필요한 판단은 manager에게 올리고, user-facing 알림은 manager가 user_notice로 처리한다.
 - 블로커를 만나면 manager에게 이유와 fallback/options를 짧게 알리고, 가능한 대체 경로로 계속 진행해라.
-- discussion이나 user의 새 방향 입력은 pause 신호가 아니라 async 업데이트다. manager의 새 지시가 오면 그 방향으로 흡수해라.
+- user의 새 방향 입력은 pause 신호가 아니라 async 업데이트다. manager의 새 지시가 오면 그 방향으로 흡수해라.
 - 종료는 manager가 project.md의 랄프 정책을 만족했다고 판단할 때만 선언한다.
 BOOTRULES
 )"
-  fi
-
-  if [ "$role" = "discussion" ]; then
-    local discussion_layer2_domain_line discussion_layer3_domain_line
-    if [ "$domain" = "general" ]; then
-      discussion_layer2_domain_line="8. 이 프로젝트 도메인은 general이다. 추가 domain context는 없다."
-      discussion_layer3_domain_line="9. general 도메인이므로 role-specific domain 파일도 없다."
-    else
-      discussion_layer2_domain_line="8. (파일이 있으면) domains/${domain}/context.md 읽기"
-      discussion_layer3_domain_line="9. (파일이 있으면) domains/${domain}/discussion.md"
-    fi
-
-    cat << BOOTMSG
-너는 discussion 에이전트다.
-레포 루트: ${REPO_ROOT}
-현재 프로젝트: projects/${project}/
-주의: worktree나 다른 디렉토리로 이동한 뒤에도 whiplash 문서/스크립트는 위 레포 루트 기준 절대경로로 다뤄라.
-
-아래 온보딩 절차를 순서대로 따라라 (Progressive Disclosure — 필요한 것만 필요한 시점에):
-
-[Layer 1 — 필수, 지금 즉시 읽기]
-1. agents/common/README.md 읽기
-2. agents/discussion/profile.md 읽기
-3. projects/${project}/project.md 읽기
-
-[Layer 2 — 전략 대화 시작 시 읽기]
-4. memory/manager/activity.md 읽기 (있으면 최근 판단과 변경 이유 확인)
-5. memory/onboarding/handoff.md 읽기 (있으면 초기 설계 맥락 확인)
-6. 해당 대화에 필요한 agents/discussion/techniques/*.md 읽기
-${discussion_layer2_domain_line}
-
-[Layer 3 — 필요할 때만 읽기]
-8. agents/common/project-context.md (경로 해석 등 필요 시)
-${discussion_layer3_domain_line}
-10. (해당 시) projects/${project}/team/discussion.md
-11. 필요하면 memory/manager/sessions.md, memory/manager/assignments.md 를 읽어라.
-    단, "지금 누가 뭘 하고 있는지"의 공식 source of truth는 manager다.
-
-12. discussion의 기본 산출물:
-    - 전략 합의 + 실행 변경 handoff: memory/discussion/handoff.md
-    - handoff는 유저와 합의된 전략 내용과 실행 변경을 기록한다.
-
-13. 라우팅 규칙:
-    - 전략, 설계, 요구사항, 우선순위, 코드 방향 토론은 네가 담당한다.
-    - 현재 진행 상황, 누가 작업 중인지, blocker, idle 상태, runtime health는 manager가 담당한다.
-    - 상태 질문을 받으면 manager에게 안내하고, 설계 질문을 받으면 스스로 끝까지 토론해라.
-
-14. 권한과 금지:
-    - 직접 task_assign, task_complete, reboot, refresh, spawn, merge-worktree, dispatch를 실행하지 마라.
-    - developer, researcher, systems-engineer에게 직접 실행 지시하지 마라.
-    - 코드 구현이나 리서치 실무를 직접 수행하지 마라.
-    - 공식 실행 변경은 handoff 문서로 정리하고 manager에게 status_update로 알려라.
-
-15. manager handoff 알림 예시:
-    ${message_cmd} ${project} ${agent_id} manager status_update normal "discussion handoff 준비" "memory/discussion/handoff.md를 읽고 실행 계획에 반영해라"
-
-16. handoff 작성 규칙:
-    - 유저와 합의된 내용만 handoff로 승격해라.
-    - handoff 알림이 전달되려면 User approved: yes, Why this change, Scope impact, Manager next action 필드가 모두 있어야 한다.
-    - 목표, 변경 이유, 영향 범위, manager가 바로 실행에 옮겨야 할 다음 액션을 짧고 명확하게 적어라.
-    - 실행 변경이 없으면 decision note만 갱신하고 handoff는 만들지 마라.
-
-17. repo-local native subagent pack:
-    - Claude Code: ${REPO_ROOT}/.claude/agents/
-    - Codex CLI: ${REPO_ROOT}/.codex/agents/
-    - 비사소한 전략 토론은 agents/discussion/techniques/subagent-orchestration.md 를 초기에 읽고, 관련 specialist를 먼저 호출해라.
-    - discussion은 전략 토론에 필요한 aide를 스스로 고른다. manager가 discussion 내부 specialist 조합을 세세히 지정하지 않는다.
-    - 최종 추천안과 handoff 책임은 항상 너에게 있다.
-
-${loop_mode_note}
-${extra}
-온보딩이 끝나면 준비 완료를 알림으로 보고해라:
-${message_cmd} ${project} ${agent_id} ${ready_target} agent_ready normal "온보딩 완료" "${agent_id} 에이전트 준비 완료"
-BOOTMSG
-
-    if [ -n "$pending_task" ]; then
-      cat << TASKMSG
-
-[재부팅 후 태스크 복구]
-이전 세션에서 중단된 태스크가 있다: ${pending_task}
-해당 파일을 읽고 작업을 이어서 진행해라.
-TASKMSG
-    fi
-    return 0
   fi
 
   if [ "$role" = "systems-engineer" ]; then
@@ -519,7 +435,7 @@ boot_single_agent() {
   result=$(run_with_agent_env "$project" "$role" "$agent_id" env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude -p "$bootstrap_msg" \
     --model "$model" \
     --output-format json \
-    --dangerously-skip-permissions $tools_flag) || {
+    --dangerously-skip-permissions $tools_flag </dev/null) || {
     echo "Warning: ${window_name} claude -p 실행 실패." >&2
     python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_boot_fail "$window_name" --detail reason="claude -p 실행 실패" || true
     return 1
@@ -527,6 +443,15 @@ boot_single_agent() {
 
   local session_id
   session_id=$(echo "$result" | jq -r '.session_id' 2>/dev/null) || session_id=""
+
+  # 부팅 토큰 사용량 로깅
+  local usage_input usage_output
+  usage_input=$(echo "$result" | jq -r '.usage.input_tokens // 0' 2>/dev/null) || usage_input=0
+  usage_output=$(echo "$result" | jq -r '.usage.output_tokens // 0' 2>/dev/null) || usage_output=0
+  if [ "$usage_input" != "0" ] || [ "$usage_output" != "0" ]; then
+    python3 "$TOOLS_DIR/log.py" system "$project" orchestrator agent_bootstrap_tokens \
+      "$window_name" --detail input_tokens="$usage_input" output_tokens="$usage_output" model="$model" || true
+  fi
 
   if [ -z "$session_id" ] || [ "$session_id" = "null" ]; then
     echo "Warning: ${window_name} session_id 획득 실패." >&2
@@ -785,7 +710,7 @@ normalize_spawn_role() {
     systems-engineer|systems-engineer-claude|systems-engineer-codex) echo "systems-engineer" ;;
     monitoring|monitoring-claude|monitoring-codex) echo "monitoring" ;;
     manager|manager-claude|manager-codex) echo "manager" ;;
-    discussion|discussion-claude|discussion-codex) echo "discussion" ;;
+    discussion|discussion-claude|discussion-codex) echo "discussion" ;; # legacy, 더이상 부팅하지 않음
     *)
       echo "Error: 지원하지 않는 spawn role: '$role'" >&2
       exit 1
@@ -1166,25 +1091,11 @@ cmd_boot() {
     exit 1
   fi
 
-  local discussion_backend
-  discussion_backend="$(resolve_role_backend "$project" "discussion")"
   local failed_agents=""
-  boot_agent_with_backend "discussion" "$project" "discussion" "$discussion_backend" "" "" "user" || {
-    echo "Warning: discussion 부팅 실패. 건너뜀." >&2
-    failed_agents="discussion"
-  }
-  # discussion readiness gate (1-C): 부팅 성공 후 프로세스 생존 확인
-  if [ -z "$failed_agents" ]; then
-    sleep 2
-    if ! agent_window_has_live_backend "$sess" "discussion" "$discussion_backend" 2>/dev/null; then
-      echo "Warning: discussion 프로세스 부팅 후 즉사 감지." >&2
-      failed_agents="discussion"
-    fi
-  fi
 
   for role in $agents; do
-    # manager/discussion은 control-plane 역할로 별도 처리됨
-    if [ "$role" = "manager" ] || [ "$role" = "discussion" ]; then
+    # manager는 control-plane 역할로 별도 처리됨
+    if [ "$role" = "manager" ]; then
       continue
     fi
 
@@ -1212,7 +1123,7 @@ cmd_boot() {
   while IFS= read -r win_name; do
     [ -n "$win_name" ] || continue
     case "$win_name" in
-      manager|dashboard|discussion) continue ;;
+      manager|dashboard) continue ;;
     esac
     win_backend="$(resolve_window_backend "$project" "$win_name")"
     if ! agent_window_has_live_backend "$sess" "$win_name" "$win_backend" 2>/dev/null; then
@@ -1265,7 +1176,7 @@ cmd_boot() {
       echo \"\$(date '+%Y-%m-%d %H:%M:%S') monitor.sh 종료 감지. 10초 후 재시작...\" >&2
       sleep 10
     done
-  " >/dev/null 2>&1 &
+  " >>"$log_dir/monitor-wrapper.log" 2>&1 &
   local monitor_pid=$!
   runtime_set_manager_state "$project" "monitor_pid" "$monitor_pid"
   echo "monitor.sh 시작됨 (PID: $monitor_pid, 자동 재시작 wrapper)"

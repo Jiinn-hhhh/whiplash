@@ -96,7 +96,8 @@ def _repo_root() -> str:
 
 
 def _validate_project(name: str) -> None:
-    if not name or "/" in name or ".." in name:
+    import re
+    if not name or not re.fullmatch(r'[a-zA-Z0-9_-]+', name):
         raise ValueError(f"잘못된 project 이름: {name}")
 
 
@@ -175,6 +176,11 @@ def cmd_system(args: argparse.Namespace) -> None:
 
 def cmd_message(args: argparse.Namespace) -> None:
     _validate_project(args.project)
+
+    # message.log: delivered만 기록. skipped/queued는 WHIPLASH_MESSAGE_LOG=1 시에만.
+    if args.status != "delivered" and not os.environ.get("WHIPLASH_MESSAGE_LOG"):
+        return
+
     sender = getattr(args, "from")
 
     # 2026-03-03 18:35:42 [delivered] researcher → manager task_complete normal "TASK-001 완료"

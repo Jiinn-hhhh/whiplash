@@ -261,7 +261,7 @@ restart_monitor() {
       echo \"\$(date '+%Y-%m-%d %H:%M:%S') monitor.sh 종료 감지. 10초 후 재시작...\" >&2
       sleep 10
     done
-  " >/dev/null 2>&1 &
+  " >>"$log_dir/monitor-wrapper.log" 2>&1 &
   local new_pid=$!
   runtime_set_manager_state "$project" "monitor_pid" "$new_pid"
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator monitor_restart monitor --detail pid="$new_pid" || true
@@ -430,8 +430,10 @@ cmd_status() {
     cat "$sf"
   fi
 
-  echo ""
-  print_agent_health_status "$project" "$sess"
+  if ! tmux has-session -t "$sess" 2>/dev/null; then
+    echo ""
+    print_agent_health_status "$project" "$sess"
+  fi
 }
 
 # ──────────────────────────────────────────────

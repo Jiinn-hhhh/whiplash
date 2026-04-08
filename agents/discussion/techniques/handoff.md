@@ -40,30 +40,19 @@
 
 ---
 
-## 3. 템플릿
+## 3. 형식
 
+자유 형식 마크다운. 핵심 4가지가 포함되면 된다:
+1. **유저 합의 여부** — "User approved: yes" 한 줄
+2. **뭘 바꿀지** — 변경 사항
+3. **왜** — 이유
+4. **Manager가 할 일** — 다음 행동
+
+예시:
 ```markdown
-# Discussion Handoff
-
-- **Date**: YYYY-MM-DD HH:MM
-- **Author**: discussion
-- **User approved**: yes
-
-## Why this change
-- 왜 실행 변경이 필요한지 2-4줄
-- 유저가 무엇에 동의했는지
-
-## Scope impact
-- 영향을 받는 역할 / 태스크 / 우선순위
-- 지금 바로 바뀌는 것과 보류하는 것
-
-## Manager next action
-- Manager가 바로 해야 할 다음 행동 1-3개
-- 필요하면 중단/추가/재분배할 태스크
-
-## Notes
-- 선택. 추가 맥락이나 열린 질문
-- 없으면 생략 가능
+User approved: yes
+Developer 우선순위를 SWAM에서 Kontakt로 변경. SWAM headless 불가 확인됨.
+Manager: Developer에게 Kontakt config 생성 태스크 분배.
 ```
 
 ---

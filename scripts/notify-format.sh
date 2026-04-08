@@ -1,4 +1,32 @@
 #!/bin/bash
+# notify-format.sh -- 알림 포맷팅 공통 함수
+# message.sh, monitor.sh에서 source된다.
+
+# 파이프 문자 이스케이프 (알림 구분자 충돌 방지)
+_escape_pipe() {
+  printf '%s' "$1" | tr '|' '∣'
+}
+
+build_notification() {
+  local msg_from="$1"
+  local msg_to="$2"
+  local msg_kind="$3"
+  local msg_priority="$4"
+  local msg_subject="$5"
+  local msg_content="$6"
+  local flat_subject flat_content
+  local prefix="[notify] ${msg_from} → ${msg_to} | ${msg_kind}"
+  if [ "$msg_priority" = "urgent" ]; then
+    prefix="[URGENT] ${msg_from} → ${msg_to} | ${msg_kind}"
+  fi
+  flat_subject="$(_escape_pipe "$(printf '%s' "$msg_subject" | tr '\r\n' '  ')")"
+  if [ "$msg_kind" = "user_notice" ] || { [ "$msg_kind" = "status_update" ] && { [ "$msg_to" = "manager" ] || [ "$msg_to" = "user" ]; }; }; then
+    printf '%s | 제목: %s\n%s' "$prefix" "$flat_subject" "$msg_content"
+    return 0
+  fi
+  flat_content="$(_escape_pipe "$(printf '%s' "$msg_content" | tr '\r\n' '  ')")"
+  printf '%s' "${prefix} | 제목: ${flat_subject} | 내용: ${flat_content}"
+}
 
 whiplash_notification_subject() {
   local kind="$1"

@@ -212,18 +212,8 @@ validate_discussion_handoff_contract() {
     exit 1
   fi
 
-  if ! grep -Eq '^- \*\*User approved\*\*: yes([[:space:]]*)$' "$handoff_file"; then
-    echo "Error: discussion handoff는 '- **User approved**: yes'가 필요하다: ${handoff_rel}" >&2
-    exit 1
-  fi
-
-  if ! section_has_body "$handoff_file" "## Why this change"; then
-    echo "Error: discussion handoff에 '## Why this change' 본문이 필요하다: ${handoff_rel}" >&2
-    exit 1
-  fi
-
-  if ! section_has_body "$handoff_file" "## Scope impact"; then
-    echo "Error: discussion handoff에 '## Scope impact' 본문이 필요하다: ${handoff_rel}" >&2
+  if ! grep -Eiq 'User approved.*yes' "$handoff_file"; then
+    echo "Error: discussion handoff는 'User approved: yes'가 필요하다: ${handoff_rel}" >&2
     exit 1
   fi
 
@@ -322,26 +312,7 @@ target_delivery_state() {
   agent_delivery_state "$project" "$session" "$window_name" "$backend"
 }
 
-build_notification() {
-  local msg_from="$1"
-  local msg_to="$2"
-  local msg_kind="$3"
-  local msg_priority="$4"
-  local msg_subject="$5"
-  local msg_content="$6"
-  local flat_subject flat_content
-  local prefix="[notify] ${msg_from} → ${msg_to} | ${msg_kind}"
-  if [ "$msg_priority" = "urgent" ]; then
-    prefix="[URGENT] ${msg_from} → ${msg_to} | ${msg_kind}"
-  fi
-  flat_subject="$(printf '%s' "$msg_subject" | tr '\r\n' '  ')"
-  if [ "$msg_kind" = "user_notice" ] || { [ "$msg_kind" = "status_update" ] && { [ "$msg_to" = "manager" ] || [ "$msg_to" = "user" ]; }; }; then
-    printf '%s | 제목: %s\n%s' "$prefix" "$flat_subject" "$msg_content"
-    return 0
-  fi
-  flat_content="$(printf '%s' "$msg_content" | tr '\r\n' '  ')"
-  printf '%s' "${prefix} | 제목: ${flat_subject} | 내용: ${flat_content}"
-}
+# build_notification은 notify-format.sh에서 제공 (source는 파일 상단에서)
 
 validate_routing() {
   if [ "$kind" = "task_assign" ] && [ "$from" != "manager" ]; then

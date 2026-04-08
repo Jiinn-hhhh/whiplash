@@ -229,26 +229,7 @@ resolve_agent_role() {
   heuristic_agent_role "$win_name"
 }
 
-build_notification() {
-  local msg_from="$1"
-  local msg_to="$2"
-  local msg_kind="$3"
-  local msg_priority="$4"
-  local msg_subject="$5"
-  local msg_content="$6"
-  local flat_subject flat_content
-  local prefix="[notify] ${msg_from} → ${msg_to} | ${msg_kind}"
-  if [ "$msg_priority" = "urgent" ]; then
-    prefix="[URGENT] ${msg_from} → ${msg_to} | ${msg_kind}"
-  fi
-  flat_subject="$(printf '%s' "$msg_subject" | tr '\r\n' '  ')"
-  if [ "$msg_kind" = "user_notice" ] || { [ "$msg_kind" = "status_update" ] && { [ "$msg_to" = "manager" ] || [ "$msg_to" = "user" ]; }; }; then
-    printf '%s | 제목: %s\n%s' "$prefix" "$flat_subject" "$msg_content"
-    return 0
-  fi
-  flat_content="$(printf '%s' "$msg_content" | tr '\r\n' '  ')"
-  printf '%s' "${prefix} | 제목: ${flat_subject} | 내용: ${flat_content}"
-}
+# build_notification은 notify-format.sh에서 제공 (source는 파일 상단에서)
 
 mark_active_session_rows_stale() {
   local sessions_file

@@ -15,13 +15,12 @@ from pathlib import Path
 ROLE_ORDER = [
     "onboarding",
     "manager",
-    "discussion",
     "developer",
     "researcher",
     "systems-engineer",
     "monitoring",
 ]
-CONTROL_PLANE_ROLES = {"onboarding", "manager", "discussion"}
+CONTROL_PLANE_ROLES = {"onboarding", "manager"}
 DUAL_ROLES = {"developer", "researcher"}
 
 START_MARKER = "<!-- WHIPLASH_EXECUTION_CONFIG:START -->"
@@ -323,7 +322,7 @@ def _summary_values(cfg: dict[str, object]) -> dict[str, str]:
 
 
 def required_backends(cfg: dict[str, object], active_agents: list[str], include_onboarding: bool = False) -> list[str]:
-    roles = {"manager", "discussion"}
+    roles = {"manager"}
     roles.update(role for role in active_agents if role in ROLE_ORDER)
     if include_onboarding:
         roles.add("onboarding")

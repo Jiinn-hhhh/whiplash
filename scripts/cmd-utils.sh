@@ -1107,6 +1107,7 @@ add_session_row() {
   local sf
   init_sessions_file "$project"
   sf="$(sessions_file "$project")"
+  runtime_acquire_path_lock "$sf" || return 1
   prune_active_session_rows "$project" "$role" "$backend" "$tmux_target"
 
   # prune 후에도 동일 role+backend active 행이 남아있으면 중복 append 방지
@@ -1120,6 +1121,7 @@ add_session_row() {
     if [ "$dup" = "1" ]; then
       python3 "$TOOLS_DIR/log.py" system "$project" cmd session_duplicate_skipped "$role" \
         --detail backend="$backend" target="$tmux_target" || true
+      runtime_release_path_lock "$sf"
       return 0
     fi
   fi
@@ -1127,6 +1129,7 @@ add_session_row() {
   local today
   today="$(date +%Y-%m-%d)"
   echo "| ${role} | ${backend} | ${session_id} | ${tmux_target} | active | ${today} | ${model} | |" >> "$sf"
+  runtime_release_path_lock "$sf"
 }
 
 # sessions.md에서 특정 역할의 상태를 변경
@@ -1136,15 +1139,17 @@ mark_session_status() {
   local sf
   sf="$(sessions_file "$project")"
   if [ -f "$sf" ]; then
+    runtime_acquire_path_lock "$sf" || return 1
     if [ -n "$backend" ]; then
       awk -v role=" $role " -v backend=" $backend " -v old=" $old_status " -v new=" $new_status " \
         'BEGIN{FS=OFS="|"} $2==role && $3==backend && $6==old {$6=new} 1' \
-        "$sf" > "${sf}.tmp" && mv "${sf}.tmp" "$sf"
+        "$sf" > "${sf}.tmp.$$" && mv "${sf}.tmp.$$" "$sf"
     else
       awk -v role=" $role " -v old=" $old_status " -v new=" $new_status " \
         'BEGIN{FS=OFS="|"} $2==role && $6==old {$6=new} 1' \
-        "$sf" > "${sf}.tmp" && mv "${sf}.tmp" "$sf"
+        "$sf" > "${sf}.tmp.$$" && mv "${sf}.tmp.$$" "$sf"
     fi
+    runtime_release_path_lock "$sf"
   fi
 }
 
@@ -1155,19 +1160,24 @@ mark_window_status() {
   sess="$(session_name "$project")"
   target="${sess}:${window_name}"
   if [ -f "$sf" ]; then
+    runtime_acquire_path_lock "$sf" || return 1
     awk -v target=" ${target} " -v old=" ${old_status} " -v new=" ${new_status} " \
       'BEGIN{FS=OFS="|"} $5==target && $6==old {$6=new} 1' \
-      "$sf" > "${sf}.tmp" && mv "${sf}.tmp" "$sf"
+      "$sf" > "${sf}.tmp.$$" && mv "${sf}.tmp.$$" "$sf"
+    runtime_release_path_lock "$sf"
   fi
 }
 
-# sessions.md 전체를 closed로 갱신
+# sessions.md 전체를 closed로 갱신 (상태 컬럼만 대상)
 close_all_sessions() {
   local project="$1"
   local sf
   sf="$(sessions_file "$project")"
   if [ -f "$sf" ]; then
-    sed_inplace 's/| active |/| closed |/g' "$sf"
+    runtime_acquire_path_lock "$sf" || return 1
+    awk 'BEGIN{FS=OFS="|"} $6==" active " {$6=" closed "} 1' \
+      "$sf" > "${sf}.tmp.$$" && mv "${sf}.tmp.$$" "$sf"
+    runtime_release_path_lock "$sf"
   fi
 }
 
@@ -1178,7 +1188,8 @@ prune_inactive_sessions() {
   local sf tmp
   sf="$(sessions_file "$project")"
   [ -f "$sf" ] || return 0
-  tmp="${sf}.tmp"
+  runtime_acquire_path_lock "$sf" || return 1
+  tmp="${sf}.tmp.$$"
 
   awk '
     BEGIN { FS=OFS="|" }
@@ -1191,6 +1202,7 @@ prune_inactive_sessions() {
       }
     }
   ' "$sf" > "$tmp" && mv "$tmp" "$sf"
+  runtime_release_path_lock "$sf"
 }
 
 prune_active_session_rows() {
@@ -1198,7 +1210,8 @@ prune_active_session_rows() {
   local sf tmp
   sf="$(sessions_file "$project")"
   [ -f "$sf" ] || return 0
-  tmp="${sf}.tmp"
+  # Note: caller (add_session_row) already holds lock
+  tmp="${sf}.tmp.$$"
 
   awk -v role="$role" -v backend="$backend" -v target="$tmux_target" '
     BEGIN { FS=OFS="|" }
@@ -1225,28 +1238,50 @@ stale_missing_active_session_rows() {
   sf="$(sessions_file "$project")"
   [ -f "$sf" ] || return 0
   tmux has-session -t "$sess" 2>/dev/null && has_session=1
-  tmp="${sf}.tmp"
+  runtime_acquire_path_lock "$sf" || return 1
+  tmp="${sf}.tmp.$$"
 
-  awk -v sess="$sess" -v has_session="$has_session" '
-    BEGIN { FS=OFS="|" }
-    function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
-    {
-      if (trim($6) == "active") {
-        target = trim($5)
-        if (index(target, sess ":") == 1) {
-          if (has_session == 0) {
-            $6 = " stale "
-          } else {
-            cmd = "tmux list-panes -t \"" target "\" >/dev/null 2>&1"
-            if (system(cmd) != 0) {
-              $6 = " stale "
-            }
-          }
+  if [ "$has_session" -eq 0 ]; then
+    # 세션 자체가 없으면 모든 active 행을 stale로 (awk만으로 처리)
+    awk -v sess="$sess" '
+      BEGIN { FS=OFS="|" }
+      function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+      {
+        if (trim($6) == "active" && index(trim($5), sess ":") == 1) {
+          $6 = " stale "
         }
+        print
       }
-      print
-    }
-  ' "$sf" > "$tmp" && mv "$tmp" "$sf"
+    ' "$sf" > "$tmp" && mv "$tmp" "$sf"
+  else
+    # 세션이 있으면: awk로 active target 목록 추출 → bash에서 tmux 확인 → awk로 stale 처리
+    local stale_targets=""
+    local target
+    while IFS= read -r target; do
+      [ -n "$target" ] || continue
+      if ! tmux list-panes -t "$target" >/dev/null 2>&1; then
+        stale_targets="${stale_targets:+${stale_targets}|}${target}"
+      fi
+    done < <(awk -v sess="$sess" '
+      BEGIN { FS="|" }
+      function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+      trim($6) == "active" && index(trim($5), sess ":") == 1 { print trim($5) }
+    ' "$sf")
+
+    if [ -n "$stale_targets" ]; then
+      awk -v stale="$stale_targets" '
+        BEGIN { FS=OFS="|"; split(stale, arr, "|"); for (i in arr) stale_set[arr[i]]=1 }
+        function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+        {
+          if (trim($6) == "active" && (trim($5) in stale_set)) {
+            $6 = " stale "
+          }
+          print
+        }
+      ' "$sf" > "$tmp" && mv "$tmp" "$sf"
+    fi
+  fi
+  runtime_release_path_lock "$sf"
 }
 
 clear_recovered_agent_runtime_state() {
