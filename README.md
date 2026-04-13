@@ -393,7 +393,7 @@ cmd.sh refresh {role} {project}
 - Claude 에이전트의 `plan mode` 진입 감지 이벤트
 - 최근 시스템 이벤트 (부팅, 크래시, 리부팅)
 - 최근 메시지 전달 이력
-- Monitor heartbeat + queued message 상태
+- Monitor heartbeat 상태
 
 ```bash
 # 자동: cmd.sh boot 시 dashboard 윈도우가 자동 생성됨

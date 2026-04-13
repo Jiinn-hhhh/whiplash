@@ -200,7 +200,6 @@ cmd_monitor_check() {
   if [ -z "$pid" ] && [ -z "$active_pid" ]; then
     echo "[monitor-check] PID 파일 없음. monitor.sh 재시작 중..."
     restart_monitor "$project"
-    run_monitor_drain_once_if_queued "$project"
     return
   fi
 
@@ -208,7 +207,6 @@ cmd_monitor_check() {
   if [ -n "$pid" ] && ! [[ "$pid" =~ ^[0-9]+$ ]]; then
     echo "[monitor-check] PID 파일에 잘못된 값: '$pid'. monitor.sh 재시작 중..." >&2
     restart_monitor "$project"
-    run_monitor_drain_once_if_queued "$project"
     return
   fi
 
@@ -216,7 +214,6 @@ cmd_monitor_check() {
   if [ -z "$active_pid" ]; then
     echo "[monitor-check] monitor.sh 프로세스 죽음 (PID: $pid). 재시작 중..."
     restart_monitor "$project"
-    run_monitor_drain_once_if_queued "$project"
     return
   fi
 
@@ -225,8 +222,7 @@ cmd_monitor_check() {
   if [ -n "$hb_time" ]; then
     if ! [[ "$hb_time" =~ ^[0-9]+$ ]]; then
       echo "[monitor-check] heartbeat 파일에 잘못된 값. 프로세스 확인 필요."
-      run_monitor_drain_once_if_queued "$project"
-      return
+        return
     fi
     local hb_age=$((now - hb_time))
     if [ "$hb_age" -gt 90 ]; then
@@ -240,14 +236,11 @@ cmd_monitor_check() {
       fi
       sleep 1
       restart_monitor "$project"
-      run_monitor_drain_once_if_queued "$project"
-      return
+        return
     fi
     echo "[monitor-check] monitor.sh 정상 (PID: $active_pid, heartbeat: ${hb_age}초 전)"
-    run_monitor_drain_once_if_queued "$project"
   else
     echo "[monitor-check] heartbeat 파일 없음. 프로세스 확인 필요."
-    run_monitor_drain_once_if_queued "$project"
   fi
 }
 
@@ -266,15 +259,6 @@ restart_monitor() {
   runtime_set_manager_state "$project" "monitor_pid" "$new_pid"
   python3 "$TOOLS_DIR/log.py" system "$project" orchestrator monitor_restart monitor --detail pid="$new_pid" || true
   echo "[monitor-check] monitor.sh 재시작 완료 (PID: $new_pid, 자동 재시작 wrapper)"
-}
-
-run_monitor_drain_once_if_queued() {
-  local project="$1"
-  local queue_dir
-  queue_dir="$(runtime_message_queue_dir "$project")"
-  if compgen -G "${queue_dir}/*.msg" >/dev/null 2>&1; then
-    WHIPLASH_MONITOR_ONCE=1 bash "$TOOLS_DIR/monitor.sh" "$project" >/dev/null 2>&1 || true
-  fi
 }
 
 # ──────────────────────────────────────────────
@@ -337,8 +321,7 @@ cmd_shutdown() {
   remove_ralph_worktree "$project" "developer" || true
   remove_ralph_worktree "$project" "systems-engineer" || true
 
-  # 7. 런타임 파일 정리 (reboot 카운터, heartbeat, 메시지 큐, reboot lock)
-  rm -rf "$(runtime_message_queue_dir "$project")"
+  # 7. 런타임 파일 정리 (reboot 카운터, heartbeat, reboot lock)
   rm -f "$(runtime_reboot_state_file "$project")"
   rm -f "$(runtime_idle_state_file "$project")"
   cleanup_manager_runtime_transients "$project"

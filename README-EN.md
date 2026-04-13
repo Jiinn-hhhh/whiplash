@@ -369,7 +369,7 @@ Displays:
 - Claude agent `plan mode` detection events
 - Recent system events (boot, crash, reboot)
 - Recent message delivery history
-- Monitor heartbeat + queued message state
+- Monitor heartbeat state
 
 ```bash
 # Automatic: dashboard window is created by cmd.sh boot

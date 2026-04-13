@@ -24,7 +24,6 @@ ensure_onboarding_project_layout() {
     "$base/memory/systems-engineer" \
     "$base/memory/monitoring" \
     "$base/memory/onboarding" \
-    "$base/runtime/message-queue" \
     "$base/runtime/message-locks" \
     "$base/runtime/manager" \
     "$base/logs" \

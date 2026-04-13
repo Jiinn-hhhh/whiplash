@@ -61,6 +61,7 @@ bash scripts/message.sh {project} {from} {to} {kind} {priority} "{subject}" "{co
 - peer direct는 `status_update`, `need_input`, `escalation`, `consensus_request`, `consensus_response`만 허용한다.
 - peer direct 메시지는 Manager에도 자동 미러링된다.
 - 메시지 로그(`logs/message.log`)가 이력을 기록한다.
+- 전달 실패 시 exit 1을 리턴한다. 재시도 여부는 호출자가 판단한다.
 - 알림 프로토콜 상세는 `agents/manager/techniques/orchestration.md` §11 참조.
 
 ### 완료 보고 규칙

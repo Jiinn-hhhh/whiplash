@@ -91,10 +91,6 @@ runtime_waiting_state_file() {
   printf '%s/waiting-state.tsv\n' "$(runtime_root_dir "$1")"
 }
 
-runtime_message_queue_dir() {
-  printf '%s/message-queue\n' "$(runtime_root_dir "$1")"
-}
-
 runtime_message_lock_dir() {
   printf '%s/message-locks\n' "$(runtime_root_dir "$1")"
 }
@@ -651,17 +647,6 @@ runtime_migrate_idle_checks_dir() {
   rmdir "$source_dir" 2>/dev/null || true
 }
 
-runtime_migrate_queue_dir() {
-  local project="$1"
-  local source_dir="$2"
-  local target_dir
-  [ -d "$source_dir" ] || return 0
-  target_dir="$(runtime_message_queue_dir "$project")"
-  mkdir -p "$target_dir"
-  find "$source_dir" -mindepth 1 -maxdepth 1 -type f -exec mv {} "$target_dir/" \; 2>/dev/null || true
-  rmdir "$source_dir" 2>/dev/null || true
-}
-
 ensure_manager_runtime_layout() {
   local project="$1"
   local runtime_root manager_role_dir legacy_dir source_dir
@@ -679,7 +664,7 @@ ensure_manager_runtime_layout() {
     runtime_migrate_reboot_dir "$project" "$source_dir/reboot-counts"
     runtime_migrate_reboot_locks_dir "$project" "$source_dir/reboot-locks"
     runtime_migrate_idle_checks_dir "$project" "$source_dir/idle-checks"
-    runtime_migrate_queue_dir "$project" "$source_dir/message-queue"
+    rm -rf "$source_dir/message-queue"
     rm -rf "$source_dir/hung-flags"
     runtime_prune_empty_dir_chain "$source_dir" "$runtime_root"
   done
@@ -687,9 +672,8 @@ ensure_manager_runtime_layout() {
 
 cleanup_manager_runtime_transients() {
   local project="$1"
-  local runtime_root queue_dir lock_dir manager_state reboot_state idle_state waiting_state
+  local runtime_root lock_dir manager_state reboot_state idle_state waiting_state
   runtime_root="$(runtime_root_dir "$project")"
-  queue_dir="$(runtime_message_queue_dir "$project")"
   lock_dir="$(runtime_message_lock_dir "$project")"
   manager_state="$(runtime_manager_state_file "$project")"
   reboot_state="$(runtime_reboot_state_file "$project")"
@@ -698,11 +682,6 @@ cleanup_manager_runtime_transients() {
 
   rm -rf "$(legacy_manager_memory_dir "$project")/hung-flags"
   rm -rf "$(runtime_manager_dir "$project")/hung-flags"
-
-  if [ -d "$queue_dir" ] && ! find "$queue_dir" -type f -print -quit 2>/dev/null | grep -q .; then
-    rmdir "$queue_dir" 2>/dev/null || true
-    runtime_clear_manager_state "$project" "monitor_nudge_ts" || true
-  fi
 
   if [ -d "$lock_dir" ] && ! find "$lock_dir" -mindepth 1 -print -quit 2>/dev/null | grep -q .; then
     rmdir "$lock_dir" 2>/dev/null || true

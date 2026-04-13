@@ -1,9 +1,10 @@
 #!/bin/bash
 # enforce-role.sh — PreToolUse hook for Whiplash agent role enforcement
 #
-# Blocks dangerous Bash commands for readonly roles (manager, researcher, monitoring).
-# Unrestricted roles (developer, systems-engineer, discussion) and non-Whiplash
-# sessions (no WHIPLASH_AGENT_ROLE) are always allowed.
+# - Unrestricted roles (developer, systems-engineer, discussion): 전부 허용
+# - Manager: Write/Edit는 프레임워크 경로만 허용, Bash는 readonly 패턴 차단
+# - Readonly roles (researcher, monitoring, onboarding): Bash 수정 명령 차단
+# - 비 Whiplash 세션 (WHIPLASH_AGENT_ROLE 미설정): 전부 허용
 #
 # Exit codes: 0 = allow, 2 = block (with reason on stdout JSON)
 
@@ -21,16 +22,66 @@ case "$WHIPLASH_AGENT_ROLE" in
     ;;
 esac
 
-# Readonly roles: manager, researcher, monitoring
-# Only Bash tool needs filtering — other tools are controlled by allowedTools
+# Parse tool input
 input="$(cat)"
 tool_name="$(printf '%s' "$input" | python3 -c "import json,sys; print(json.load(sys.stdin).get('tool_name',''))" 2>/dev/null || true)"
+
+# ──────────────────────────────────────────────
+# Manager: 경로 기반 Write/Edit 제한 + Bash readonly
+# ──────────────────────────────────────────────
+
+if [ "$WHIPLASH_AGENT_ROLE" = "manager" ]; then
+
+  # Write/Edit 도구: 프레임워크 경로 화이트리스트
+  if [ "$tool_name" = "Write" ] || [ "$tool_name" = "Edit" ]; then
+    file_path="$(printf '%s' "$input" | python3 -c "import json,sys; print(json.load(sys.stdin).get('tool_input',{}).get('file_path',''))" 2>/dev/null || true)"
+
+    if [ -z "$file_path" ]; then
+      exit 0
+    fi
+
+    case "$file_path" in
+      */projects/*/memory/*)          exit 0 ;;
+      */projects/*/workspace/tasks/*) exit 0 ;;
+      */projects/*/reports/*)         exit 0 ;;
+      */projects/*/project.md)        exit 0 ;;
+      */projects/*/team/*)            exit 0 ;;
+    esac
+
+    printf '{"result":"block","reason":"[role-guard] Manager는 이 경로에 쓸 수 없다. Developer에게 위임해라: %s"}\n' "$file_path"
+    exit 2
+  fi
+
+  # Bash 도구: readonly 패턴 차단 (아래 공통 블록으로 fall through)
+  if [ "$tool_name" != "Bash" ]; then
+    exit 0
+  fi
+
+  command="$(printf '%s' "$input" | python3 -c "import json,sys; print(json.load(sys.stdin).get('tool_input',{}).get('command',''))" 2>/dev/null || true)"
+
+  if [ -z "$command" ]; then
+    exit 0
+  fi
+
+  # Manager가 실행해야 하는 명령은 허용
+  if printf '%s' "$command" | grep -qE '(^|[[:space:];|&])bash[[:space:]]+.*/scripts/(cmd|message|monitor)\.sh'; then
+    exit 0
+  fi
+
+  # Manager Bash → readonly 블록으로 fall through
+fi
+
+# ──────────────────────────────────────────────
+# Readonly roles (+ Manager Bash): 수정 명령 차단
+# ──────────────────────────────────────────────
 
 if [ "$tool_name" != "Bash" ]; then
   exit 0
 fi
 
-command="$(printf '%s' "$input" | python3 -c "import json,sys; print(json.load(sys.stdin).get('tool_input',{}).get('command',''))" 2>/dev/null || true)"
+if [ -z "${command:-}" ]; then
+  command="$(printf '%s' "$input" | python3 -c "import json,sys; print(json.load(sys.stdin).get('tool_input',{}).get('command',''))" 2>/dev/null || true)"
+fi
 
 if [ -z "$command" ]; then
   exit 0
@@ -43,7 +94,6 @@ if printf '%s' "$command" | grep -q 'WHIPLASH_AGENT_ROLE'; then
 fi
 
 # Block patterns for readonly roles — check each category separately
-# Word boundary: command at start of line or after separator
 WB='(^|[[:space:];|&])'
 
 blocked=0

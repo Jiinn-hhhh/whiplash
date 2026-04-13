@@ -455,7 +455,7 @@ def _agent_has_auth_block(manager_state: dict[str, str], session_name: str,
 def check_monitor(project_dir: str) -> dict[str, Any]:
     """모니터 상태 확인."""
     info: dict[str, Any] = {
-        "pid": None, "alive": False, "heartbeat_age": None, "queued": 0,
+        "pid": None, "alive": False, "heartbeat_age": None,
     }
     runtime_root_dir = os.path.join(project_dir, "runtime")
     manager_state = _read_tsv_map(
@@ -481,10 +481,6 @@ def check_monitor(project_dir: str) -> dict[str, Any]:
     if hb_str:
         if hb_str.isdigit():
             info["heartbeat_age"] = int(time.time()) - int(hb_str)
-
-    queue_dir = os.path.join(runtime_root_dir, "message-queue")
-    if os.path.isdir(queue_dir):
-        info["queued"] = len(glob(os.path.join(queue_dir, "*.msg")))
 
     return info
 
@@ -913,9 +909,6 @@ def _render_header(state: dict) -> Panel:
         line1.append("✗ Mon", style="red")
     else:
         line1.append("— Mon", style="dim")
-
-    if mon["queued"] > 0:
-        line1.append(f"  Q:{mon['queued']}", style="yellow")
 
     # 시간 우정렬
     time_str = now.strftime("%H:%M:%S")

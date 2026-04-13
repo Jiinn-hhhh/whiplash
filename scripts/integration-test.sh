@@ -19,8 +19,6 @@ source "$TOOLS_DIR/runtime-paths.sh"
 # shellcheck source=/dev/null
 source "$TOOLS_DIR/tmux-submit.sh"
 # shellcheck source=/dev/null
-source "$TOOLS_DIR/message-queue.sh"
-# shellcheck source=/dev/null
 source "$TOOLS_DIR/notify-format.sh"
 PROJECT="_stability-test"
 SESSION="whiplash-${PROJECT}"
@@ -637,7 +635,7 @@ module = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(module)
 info = module.check_monitor(project_dir)
-print(f'{int(info["alive"])}|{int(info.get("stale", False))}|{info["queued"]}|{int(info["heartbeat_age"] is not None)}')
+print(f'{int(info["alive"])}|{int(info.get("stale", False))}|{int(info["heartbeat_age"] is not None)}')
 PY
 }
 
@@ -940,78 +938,30 @@ HEADER
 }
 
 # ──────────────────────────────────────────────
-# 시나리오 3: 메시지 전달 실패 → 큐 저장 → drain
+# 시나리오 3: 메시지 전달 실패 → exit 1 + 로그 기록
 # ──────────────────────────────────────────────
 
 test_scenario_3() {
   echo ""
-  echo "=== 시나리오 3: 메시지 큐 저장 + drain ==="
+  echo "=== 시나리오 3: 메시지 전달 실패 시 exit 1 ==="
   cleanup
   setup_test_project
   build_fake_claude
 
-  local queue_dir
-  queue_dir="$(runtime_message_queue_dir "$PROJECT")"
-
   # tmux 세션 생성 (수신자 없음)
   tmux new-session -d -s "$SESSION" -n manager
 
-  # 수신자(developer)가 없는 상태에서 메시지 전송 → 큐 저장
+  # 수신자(developer)가 없는 상태에서 메시지 전송 → exit 1
+  local send_exit=0
   bash "$TOOLS_DIR/message.sh" "$PROJECT" researcher developer \
-    status_update normal "TASK-001 진행" "연구 결과 정리 완료" 2>/dev/null || true
+    status_update normal "TASK-001 진행" "연구 결과 정리 완료" 2>/dev/null || send_exit=$?
 
-  # .msg 파일 생성 확인
-  local msg_count
-  msg_count=$(find "$queue_dir" -name "*.msg" 2>/dev/null | wc -l | tr -d ' ') || msg_count="0"
-  assert_true "큐 파일 생성됨" test "$msg_count" -gt 0
+  assert_true "수신자 없을 때 exit 1 리턴" test "$send_exit" -ne 0
 
-  # 원본 대상(developer) 큐 파일 내용 확인
-  local msg_file
-  msg_file="$(find "$queue_dir" -name "*.msg" -print 2>/dev/null | while read -r msg; do
-    if grep -q '^to=developer$' "$msg" 2>/dev/null; then
-      printf '%s\n' "$msg"
-      break
-    fi
-  done)"
-  if [ -n "$msg_file" ]; then
-    assert_file_contains "큐 파일에 from 기록" "$msg_file" "^from=researcher"
-    assert_file_contains "큐 파일에 to 기록" "$msg_file" "^to=developer$"
-    assert_file_contains "큐 파일에 kind 기록" "$msg_file" "^kind=status_update"
-  fi
-
-  # 수신자 윈도우 생성
-  create_fake_agent "developer"
-  tmux_submit_wait_ready "${SESSION}:developer" 10 1 || true
-
-  # developer 대상 큐만 수동 drain하여 결정적으로 검증한다.
-  local drained=false pane_dump="" msg_from msg_to msg_kind msg_priority msg_subject msg_content notification
-  if [ -f "$msg_file" ]; then
-    msg_from="$(whiplash_queue_read_field "$msg_file" "from")"
-    msg_to="$(whiplash_queue_read_field "$msg_file" "to")"
-    msg_kind="$(whiplash_queue_read_field "$msg_file" "kind")"
-    msg_priority="$(whiplash_queue_read_field "$msg_file" "priority")"
-    msg_subject="$(whiplash_queue_read_field "$msg_file" "subject")"
-    msg_content="$(whiplash_queue_read_content "$msg_file")"
-    notification="$(build_expected_notification "$msg_from" "$msg_to" "$msg_kind" "$msg_priority" "$msg_subject" "$msg_content")"
-    if tmux_submit__literal_submit_single_line "${SESSION}:developer" "$notification" 0.25 8 \
-      || tmux_submit_pasted_payload "${SESSION}:developer" "$notification" "scenario3-drain"; then
-      rm -f "$msg_file"
-      local attempt
-      for attempt in $(seq 1 5); do
-        sleep 1
-        pane_dump="$(tmux capture-pane -pJ -t "${SESSION}:developer" -S -80 2>/dev/null || true)"
-        if echo "$pane_dump" | grep -q "연구 결과 정리 완료"; then
-          drained=true
-          break
-        fi
-      done
-    fi
-  fi
-
-  assert_true "큐 drain 성공" test "$drained" = true
-
-  # 큐 파일 삭제 확인
-  assert_file_not_exists "developer 대상 큐 파일 삭제됨" "$msg_file"
+  # 실패 로그 기록 확인 (수신자 없으면 unhealthy-offline으로 기록)
+  assert_file_contains "전달 실패가 skipped로 기록됨" \
+    "$PROJECT_DIR/logs/message.log" \
+    "researcher → developer status_update normal \"TASK-001 진행\" reason=\"unhealthy-offline\""
 
   echo "  시나리오 3 완료"
 }
@@ -1261,8 +1211,10 @@ EOF
 
   local af="$PROJECT_DIR/memory/manager/assignments.md"
 
-  tmux new-session -d -s "$SESSION" -n manager
+  tmux new-session -d -s "$SESSION" -n dashboard
+  create_fake_agent "manager"
   create_fake_agent "developer"
+  register_fake_agent "manager" "manager"
   register_fake_agent "developer" "developer"
 
   bash "$TOOLS_DIR/cmd.sh" dispatch developer \
@@ -1353,17 +1305,13 @@ EOF
   session_info="$(probe_dashboard_sessions)"
   assert_eq "dashboard sessions dedupe 최신 row 유지" "1|active" "$session_info"
 
-  local queue_dir
-  queue_dir="$(runtime_message_queue_dir "$PROJECT")"
-  mkdir -p "$queue_dir"
-  : > "$queue_dir/queued.msg"
   runtime_set_manager_state "$PROJECT" "monitor_pid" "999999"
   runtime_set_manager_state "$PROJECT" "monitor_lock_pid" "$$"
   runtime_set_manager_state "$PROJECT" "monitor_heartbeat" "$(date +%s)"
 
   local monitor_info
   monitor_info="$(probe_dashboard_monitor)"
-  assert_eq "dashboard monitor lock pid fallback 인식" "1|0|1|1" "$monitor_info"
+  assert_eq "dashboard monitor lock pid fallback 인식" "1|0|1" "$monitor_info"
 
   echo "  시나리오 9 완료"
 }
@@ -1507,12 +1455,12 @@ EOF
 }
 
 # ──────────────────────────────────────────────
-# 시나리오 12: queued codex interactive 메시지 drain
+# 시나리오 12: codex interactive 메시지 direct delivery
 # ──────────────────────────────────────────────
 
 test_scenario_12() {
   echo ""
-  echo "=== 시나리오 12: queued codex interactive drain ==="
+  echo "=== 시나리오 12: codex interactive 메시지 direct delivery ==="
   cleanup
   setup_test_project
   build_fake_codex
@@ -1553,38 +1501,6 @@ test_scenario_12() {
   assert_file_contains "message.sh direct path가 interactive로 기록됨" \
     "$PROJECT_DIR/logs/message.log" "manager → developer-codex status_update normal \"${direct_subject}\" reason=\"interactive\""
 
-  local queue_dir
-  queue_dir="$(runtime_message_queue_dir "$PROJECT")"
-  mkdir -p "$queue_dir"
-  local queue_file="$queue_dir/$(date +%s)-researcher-developer-codex.msg"
-  cat > "$queue_file" << 'EOF'
-from=researcher
-to=developer-codex
-kind=status_update
-priority=normal
-subject=queued-codex-interactive
-content=codex interactive drain smoke
-EOF
-
-  bash "$TOOLS_DIR/cmd.sh" monitor-check "$PROJECT" >/dev/null 2>&1
-
-  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
-    pane_dump="$(tmux capture-pane -pJ -t "${SESSION}:developer-codex" -S -60 2>/dev/null || true)"
-    if [ ! -f "$queue_file" ] && echo "$pane_dump" | grep -q "codex interactive drain smoke"; then
-      break
-    fi
-    sleep 1
-  done
-
-  assert_file_not_exists "queued codex interactive 메시지 제거됨" "$queue_file"
-  TOTAL=$((TOTAL + 1))
-  if echo "$pane_dump" | grep -q "codex interactive drain smoke"; then
-    echo "  PASS: codex interactive pane에 큐 메시지 표시"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: codex interactive pane에 큐 메시지 미표시"
-    FAIL=$((FAIL + 1))
-  fi
   assert_file_not_contains "monitor가 codex alias pane를 false-crash로 보지 않음" \
     "$PROJECT_DIR/logs/system.log" "developer-codex 크래시 감지"
 
@@ -1611,29 +1527,13 @@ test_scenario_13() {
   bash "$TOOLS_DIR/message.sh" "$PROJECT" researcher developer \
     status_update normal "peer-sync" "research ready" >/dev/null
 
-  local developer_pane manager_pane queue_dir mirror_seen attempt mirror_queue_file msg
-  queue_dir="$(runtime_message_queue_dir "$PROJECT")"
+  local developer_pane manager_pane mirror_seen attempt
   mirror_seen=false
   for attempt in 1 2 3 4 5 6 7 8; do
     developer_pane="$(tmux capture-pane -pJ -t "${SESSION}:developer" -S -80 2>/dev/null || true)"
     manager_pane="$(tmux capture-pane -pJ -t "${SESSION}:manager" -S -80 2>/dev/null || true)"
-    mirror_queue_file=""
-    for msg in "$queue_dir"/*.msg; do
-      [ -f "$msg" ] || continue
-      if grep -q '^to=manager$' "$msg" 2>/dev/null \
-        && grep -q '^subject=peer-sync$' "$msg" 2>/dev/null \
-        && grep -q '원수신자: developer' "$msg" 2>/dev/null \
-        && grep -q 'research ready' "$msg" 2>/dev/null; then
-        mirror_queue_file="$msg"
-        break
-      fi
-    done
     if echo "$developer_pane" | grep -q "research ready"; then
       if echo "$manager_pane" | grep -q "research ready" && echo "$manager_pane" | grep -q "원수신자: developer"; then
-        mirror_seen=true
-        break
-      fi
-      if [ -n "$mirror_queue_file" ]; then
         mirror_seen=true
         break
       fi
@@ -1729,12 +1629,12 @@ test_scenario_15() {
 }
 
 # ──────────────────────────────────────────────
-# 시나리오 16: 대상 lock 중 direct send → queue 후 drain
+# 시나리오 16: 대상 lock 중 direct send → exit 1
 # ──────────────────────────────────────────────
 
 test_scenario_16() {
   echo ""
-  echo "=== 시나리오 16: 대상 lock queue + drain ==="
+  echo "=== 시나리오 16: 대상 lock 중 전달 실패 ==="
   cleanup
   setup_test_project
   build_fake_claude
@@ -1745,42 +1645,17 @@ test_scenario_16() {
 
   assert_true "developer lock 획득" runtime_claim_message_target_lock "$PROJECT" "developer"
 
+  local send_exit=0
   bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer \
-    status_update normal "locked-send" "queued by lock" >/dev/null
+    status_update normal "locked-send" "queued by lock" 2>/dev/null || send_exit=$?
 
-  local queue_dir queue_file
-  queue_dir="$(runtime_message_queue_dir "$PROJECT")"
-  queue_file="$(find "$queue_dir" -name '*.msg' -print 2>/dev/null | while read -r msg; do
-    if grep -q '^subject=locked-send$' "$msg" 2>/dev/null; then
-      printf '%s\n' "$msg"
-      break
-    fi
-  done)"
-  assert_file_exists "lock 중 direct send는 큐 저장" "$queue_file"
+  assert_true "lock 중 direct send는 exit 1" test "$send_exit" -ne 0
+
+  assert_file_contains "lock-held 실패가 로그에 기록됨" \
+    "$PROJECT_DIR/logs/message.log" \
+    "manager → developer status_update normal \"locked-send\" reason=\"lock-held\""
 
   runtime_release_message_target_lock "$PROJECT" "developer"
-
-  bash "$TOOLS_DIR/cmd.sh" monitor-check "$PROJECT" >/dev/null 2>&1
-
-  local pane_dump attempt
-  pane_dump=""
-  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-    pane_dump="$(tmux capture-pane -pJ -t "${SESSION}:developer" -S -80 2>/dev/null || true)"
-    if [ ! -f "$queue_file" ] && echo "$pane_dump" | grep -q "queued by lock"; then
-      break
-    fi
-    sleep 1
-  done
-
-  assert_file_not_exists "queue drain 후 메시지 제거" "$queue_file"
-  TOTAL=$((TOTAL + 1))
-  if echo "$pane_dump" | grep -q "queued by lock"; then
-    echo "  PASS: lock 해제 후 queued message 전달"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: lock 해제 후 queued message 전달 실패"
-    FAIL=$((FAIL + 1))
-  fi
 
   echo "  시나리오 16 완료"
 }
@@ -1989,12 +1864,10 @@ test_scenario_21() {
     FAIL=$((FAIL + 1))
   fi
 
-  local queue_dir manager_queue=""
-  queue_dir="$(runtime_message_queue_dir "$PROJECT")"
-  if [ -d "$queue_dir" ]; then
-    manager_queue="$(grep -l '^to=manager$' "$queue_dir"/*.msg 2>/dev/null | head -1 || true)"
-  fi
-  assert_eq "onboarding 단계 manager mirror 큐 없음" "" "$manager_queue"
+  # onboarding 단계에서는 manager mirror가 발생하지 않아야 한다
+  assert_file_not_contains "onboarding 단계 manager mirror 로그 없음" \
+    "$PROJECT_DIR/logs/message.log" \
+    "peer mirror.*원수신자: onboarding"
 
   echo "  시나리오 21 완료"
 }
@@ -2685,7 +2558,7 @@ EOF
 
   WHIPLASH_MONITOR_ONCE=1 bash "$TOOLS_DIR/monitor.sh" "$PROJECT" >/dev/null 2>&1
 
-  local manager_pane auth_alert_count dashboard_state status_out queue_dir queued_count
+  local manager_pane auth_alert_count dashboard_state status_out
   manager_pane="$(tmux capture-pane -pJ -t "${SESSION}:manager" -S -120 2>/dev/null || true)"
   TOTAL=$((TOTAL + 1))
   if echo "$manager_pane" | grep -q "developer Claude auth blocked"; then
@@ -2718,22 +2591,18 @@ EOF
   fi
 
   local direct_subject="auth-blocked-direct"
+  local send_exit=0
   bash "$TOOLS_DIR/message.sh" "$PROJECT" manager developer \
-    status_update normal "$direct_subject" "auth blocked queue hold" >/dev/null
+    status_update normal "$direct_subject" "auth blocked fail" 2>/dev/null || send_exit=$?
+  assert_true "auth-blocked 전달 시 exit 1" test "$send_exit" -ne 0
   assert_file_contains "message.sh가 auth-blocked direct delivery를 skipped로 기록" \
     "$PROJECT_DIR/logs/message.log" \
-    "manager → developer status_update normal \"${direct_subject}\" reason=\"queued-auth-blocked\""
+    "manager → developer status_update normal \"${direct_subject}\" reason=\"unhealthy-auth-blocked\""
   assert_file_not_contains "message.sh가 auth-blocked direct delivery를 interactive 성공으로 기록하지 않음" \
     "$PROJECT_DIR/logs/message.log" \
     "\\[delivered\\] manager → developer status_update normal \"${direct_subject}\" reason=\"interactive\""
 
-  queue_dir="$(runtime_message_queue_dir "$PROJECT")"
-  queued_count="$(find "$queue_dir" -name '*.msg' 2>/dev/null | wc -l | tr -d ' ')"
-  assert_true "auth-blocked 메시지가 큐에 남아 있음" test "${queued_count:-0}" -gt 0
-
   WHIPLASH_MONITOR_ONCE=1 bash "$TOOLS_DIR/monitor.sh" "$PROJECT" >/dev/null 2>&1
-  queued_count="$(find "$queue_dir" -name '*.msg' 2>/dev/null | wc -l | tr -d ' ')"
-  assert_true "monitor drain이 auth-blocked 큐를 그대로 유지" test "${queued_count:-0}" -gt 0
   assert_file_not_contains "monitor가 auth-blocked pane을 crash로 오인하지 않음" \
     "$PROJECT_DIR/logs/system.log" \
     'developer 크래시 감지'
@@ -3294,7 +3163,7 @@ test_scenario_40() {
 
   local monitor_info
   monitor_info="$(probe_dashboard_monitor)"
-  assert_eq "dashboard monitor가 stale heartbeat를 zombie로 인식" "1|1|0|1" "$monitor_info"
+  assert_eq "dashboard monitor가 stale heartbeat를 zombie로 인식" "1|1|1" "$monitor_info"
 
   echo "  시나리오 40 완료"
 }

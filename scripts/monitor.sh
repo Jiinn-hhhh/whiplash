@@ -40,8 +40,6 @@ source "$TOOLS_DIR/agent-health.sh"
 # shellcheck source=/dev/null
 source "$TOOLS_DIR/assignment-state.sh"
 # shellcheck source=/dev/null
-source "$TOOLS_DIR/message-queue.sh"
-# shellcheck source=/dev/null
 source "$TOOLS_DIR/notify-format.sh"
 # shellcheck source=/dev/null
 source "$TOOLS_DIR/execution-config.sh"
@@ -49,7 +47,6 @@ whiplash_activate_tmux_project "$PROJECT"
 HEALTH_CHECK_INTERVAL=30
 MAX_REBOOT=3
 HUNG_THRESHOLD=600  # 10분 (초)
-QUEUE_TTL=86400  # 24시간
 ensure_manager_runtime_layout "$PROJECT"
 SESSION_ABSENT_COUNT=0
 REHYDRATION_GRACE_SECONDS="${WHIPLASH_REHYDRATION_GRACE_SECONDS:-180}"
@@ -724,95 +721,6 @@ check_agent_health() {
 }
 
 # ──────────────────────────────────────────────
-# 메시지 큐 drain
-# ──────────────────────────────────────────────
-
-drain_message_queue() {
-  local queue_dir
-  queue_dir="$(runtime_message_queue_dir "$PROJECT")"
-  [ -d "$queue_dir" ] || return 0
-
-  local now
-  now=$(date +%s)
-
-  for msg_file in "$queue_dir"/*.msg; do
-    [ -f "$msg_file" ] || continue
-
-    # TTL 확인 (파일명의 첫 필드가 타임스탬프)
-    local msg_ts
-    msg_ts=$(basename "$msg_file" | cut -d'-' -f1)
-    if [[ "$msg_ts" =~ ^[0-9]+$ ]] && [ $((now - msg_ts)) -gt "$QUEUE_TTL" ]; then
-      python3 "$TOOLS_DIR/log.py" message "$PROJECT" queue system queue_expire normal "$(basename "$msg_file")" skipped --reason "queue-ttl-expired" || true
-      rm -f "$msg_file"
-      continue
-    fi
-
-    # 메시지 파싱
-    local msg_from msg_to msg_kind msg_priority msg_subject msg_content
-    msg_from="$(whiplash_queue_read_field "$msg_file" "from")"
-    msg_to="$(whiplash_queue_read_field "$msg_file" "to")"
-    msg_kind="$(whiplash_queue_read_field "$msg_file" "kind")"
-    msg_priority="$(whiplash_queue_read_field "$msg_file" "priority")"
-    msg_subject="$(whiplash_queue_read_field "$msg_file" "subject")"
-    msg_content="$(whiplash_queue_read_content "$msg_file")"
-
-    [ -z "$msg_to" ] && { rm -f "$msg_file"; continue; }
-
-    if [ "$msg_kind" = "user_notice" ] || { [ "$msg_kind" = "status_update" ] && { [ "$msg_to" = "manager" ] || [ "$msg_to" = "user" ]; }; }; then
-      msg_subject="$(whiplash_notification_subject "$msg_kind" "$msg_subject")"
-      msg_content="$(whiplash_notification_body "$msg_kind" "$msg_subject" "$msg_content")"
-    fi
-
-    if [ "$msg_to" = "user" ]; then
-      rm -f "$msg_file"
-      python3 "$TOOLS_DIR/log.py" message "$PROJECT" "$msg_from" "$msg_to" "$msg_kind" "$msg_priority" "$msg_subject" delivered --reason "queued-user-alert" || true
-      continue
-    fi
-
-    if ! runtime_claim_message_target_lock "$PROJECT" "$msg_to"; then
-      continue
-    fi
-
-    local notification
-    notification="$(build_notification "$msg_from" "$msg_to" "$msg_kind" "$msg_priority" "$msg_subject" "$msg_content")"
-
-    local backend delivery_state
-    backend="$(get_window_backend "$msg_to")"
-    delivery_state="$(agent_delivery_state "$PROJECT" "$SESSION" "$msg_to" "$backend")"
-    if [ "${delivery_state%%|*}" != "healthy" ]; then
-      runtime_release_message_target_lock "$PROJECT" "$msg_to" || true
-      continue  # 아직 죽어 있으면 다음 주기에 재시도
-    fi
-
-    if submit_notification "$msg_to" "$notification"; then
-      rm -f "$msg_file"
-      # bookkeeping: 전달 성공 후에만 assignments.md 갱신 (C-02 수정)
-      case "$msg_kind" in
-        task_assign)
-          runtime_clear_waiting_report "$PROJECT" "$msg_to" 2>/dev/null || true
-          record_assignment_for_project "$PROJECT" "$msg_to" "$msg_subject" 2>/dev/null || true
-          ;;
-        task_complete)
-          if [ "$msg_to" = "manager" ]; then
-            # record_waiting_report: active task를 조회한 뒤 complete 처리
-            local _drain_task_ref _drain_report_path _drain_report_rel
-            _drain_task_ref="$(get_active_task_ref_for_project "$PROJECT" "$msg_from" 2>/dev/null || true)"
-            if [ -n "$_drain_task_ref" ]; then
-              _drain_report_path="$(runtime_task_report_path "$PROJECT" "$_drain_task_ref" "$msg_from" 2>/dev/null || true)"
-              _drain_report_rel="$(runtime_project_relative_path "$PROJECT" "$_drain_report_path" 2>/dev/null || true)"
-              runtime_set_waiting_report "$PROJECT" "$msg_from" "$(date +%s)" "$msg_subject" "$_drain_task_ref" "$_drain_report_rel" 2>/dev/null || true
-            fi
-            complete_assignment_for_project "$PROJECT" "$msg_from" 2>/dev/null || true
-          fi
-          ;;
-      esac
-      python3 "$TOOLS_DIR/log.py" message "$PROJECT" "$msg_from" "$msg_to" "$msg_kind" "$msg_priority" "$msg_subject" delivered --reason "queued-drain" || true
-    fi
-    runtime_release_message_target_lock "$PROJECT" "$msg_to" || true
-  done
-}
-
-# ──────────────────────────────────────────────
 # 메인: 헬스 체크 루프
 # ──────────────────────────────────────────────
 
@@ -821,7 +729,6 @@ if [ "$MONITOR_ONCE" = "1" ]; then
   check_agent_health
   check_claude_plan_mode
   check_claude_auth_blocked
-  drain_message_queue
   cleanup_manager_runtime_transients "$PROJECT"
   runtime_set_manager_state "$PROJECT" "monitor_heartbeat" "$(date +%s)" || true
   exit 0
@@ -833,7 +740,6 @@ python3 "$TOOLS_DIR/log.py" system "$PROJECT" monitor monitor_started "$SESSION"
 # (메인 루프 첫 반복까지 최대 HEALTH_CHECK_INTERVAL초 지연 방지)
 REBOOTED_THIS_CYCLE=""
 check_agent_windows
-drain_message_queue
 
 MONITOR_PARENT_PID="$$"
 
@@ -852,7 +758,6 @@ while true; do
   check_agent_health
   check_claude_plan_mode
   check_claude_auth_blocked
-  drain_message_queue
   cleanup_manager_runtime_transients "$PROJECT"
   runtime_set_manager_state "$PROJECT" "monitor_heartbeat" "$(date +%s)" || true
   sleep "$HEALTH_CHECK_INTERVAL"

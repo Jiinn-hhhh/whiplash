@@ -88,8 +88,6 @@ source "$TOOLS_DIR/assignment-state.sh"
 # shellcheck source=/dev/null
 source "$TOOLS_DIR/agent-health.sh"
 # shellcheck source=/dev/null
-source "$TOOLS_DIR/message-queue.sh"
-# shellcheck source=/dev/null
 source "$TOOLS_DIR/notify-format.sh"
 # shellcheck source=/dev/null
 source "$TOOLS_DIR/execution-config.sh"
@@ -366,56 +364,10 @@ validate_routing() {
   fi
 }
 
-queue_message() {
-  local queue_reason="${1:-queued}"
-  ensure_manager_runtime_layout "$project"
-  local queue_dir
-  queue_dir="$(runtime_message_queue_dir "$project")"
-  mkdir -p "$queue_dir"
-  local ts suffix tmp_file queue_file
-  ts=$(date +%s)
-  suffix="${from}-${to}-${RANDOM}"
-  tmp_file="${queue_dir}/.${ts}-${suffix}.msg.tmp"
-  queue_file="${queue_dir}/${ts}-${suffix}.msg"
-  whiplash_queue_write_file "$tmp_file" "$from" "$to" "$kind" "$priority" "$subject" "$content"
-  mv "$tmp_file" "$queue_file"
-  python3 "$TOOLS_DIR/log.py" message "$project" "$from" "$to" "$kind" "$priority" "$subject" skipped --reason "$queue_reason" || true
-  nudge_monitor_for_queue
-  echo "메시지 큐 저장: ${queue_file}" >&2
-}
-
-nudge_monitor_for_queue() {
-  ensure_manager_runtime_layout "$project"
-  local now last=0
-  now=$(date +%s)
-
-  last="$(runtime_get_manager_state "$project" "monitor_nudge_ts" "0" 2>/dev/null || echo "0")"
-  if ! [[ "${last:-0}" =~ ^[0-9]+$ ]]; then
-    last=0
-  fi
-
-  if [ $((now - last)) -lt 15 ]; then
-    return 0
-  fi
-
-  runtime_set_manager_state "$project" "monitor_nudge_ts" "$now" || true
-  (
-    bash "$TOOLS_DIR/cmd.sh" monitor-check "$project" >/dev/null 2>&1 || true
-  ) &
-}
-
-target_has_pending_queue() {
-  local target="$1"
-  local queue_dir msg_file
-  queue_dir="$(runtime_message_queue_dir "$project")"
-  [ -d "$queue_dir" ] || return 1
-  for msg_file in "$queue_dir"/*.msg; do
-    [ -f "$msg_file" ] || continue
-    if grep -q "^to=${target}$" "$msg_file" 2>/dev/null; then
-      return 0
-    fi
-  done
-  return 1
+log_delivery_failure() {
+  local reason="$1"
+  python3 "$TOOLS_DIR/log.py" message "$project" "$from" "$to" "$kind" "$priority" "$subject" skipped --reason "$reason" || true
+  echo "전달 실패: ${from} → ${to} | ${kind} (${reason})" >&2
 }
 
 maybe_refresh_target() {
@@ -494,13 +446,6 @@ mirror_peer_message_to_manager() {
   bash "$TOOLS_DIR/message.sh" "$project" "$from" manager "$kind" "$priority" "$subject" "$mirror_content" >/dev/null 2>&1 || true
 }
 
-queue_with_optional_mirror() {
-  local queue_reason="${1:-queued}"
-  queue_message "$queue_reason"
-  mirror_peer_message_to_manager
-  echo "전달 보류: ${from} → ${to} | ${kind} (${queue_reason})"
-}
-
 apply_bookkeeping() {
   if [ "${WHIPLASH_MESSAGE_SKIP_BOOKKEEPING:-0}" = "1" ]; then
     return 0
@@ -521,27 +466,22 @@ apply_bookkeeping() {
 validate_routing
 validate_discussion_handoff_contract
 augment_content_with_report_context
-# M-10: bookkeeping은 원본 subject를 사용해야 하므로 포맷팅 전에 실행
-apply_bookkeeping
+
 if [ "$kind" = "user_notice" ] || { [ "$kind" = "status_update" ] && { [ "$to" = "manager" ] || [ "$to" = "user" ]; }; }; then
   subject="$(whiplash_notification_subject "$kind" "$subject")"
   content="$(whiplash_notification_body "$kind" "$subject" "$content")"
 fi
 
 if [[ "$to" == "user" ]]; then
+  apply_bookkeeping
   python3 "$TOOLS_DIR/log.py" message "$project" "$from" "$to" "$kind" "$priority" "$subject" delivered --reason "user-alert" || true
   echo "전달 완료: ${from} → ${to} | ${kind}"
   exit 0
 fi
 
-if target_has_pending_queue "$to"; then
-  queue_with_optional_mirror
-  exit 0
-fi
-
 if ! runtime_claim_message_target_lock "$project" "$to"; then
-  queue_with_optional_mirror
-  exit 0
+  log_delivery_failure "lock-held"
+  exit 1
 fi
 lock_held=1
 lock_target="$to"
@@ -552,26 +492,24 @@ delivery_state="$(target_delivery_state "$to")"
 case "${delivery_state%%|*}" in
   healthy)
     ;;
-  auth-blocked)
-    queue_with_optional_mirror "queued-auth-blocked"
-    exit 0
-    ;;
   *)
-    queue_with_optional_mirror
-    exit 0
+    log_delivery_failure "unhealthy-${delivery_state%%|*}"
+    exit 1
     ;;
 esac
 
 if ! target_has_live_agent "$to"; then
-  queue_with_optional_mirror
-  exit 0
+  log_delivery_failure "no-live-agent"
+  exit 1
 fi
 
 if submit_notification "$to" "$notification"; then
+  apply_bookkeeping
   python3 "$TOOLS_DIR/log.py" message "$project" "$from" "$to" "$kind" "$priority" "$subject" delivered --reason "interactive" || true
   mirror_peer_message_to_manager
   echo "전달 완료: ${from} → ${to} | ${kind}"
   exit 0
 fi
 
-queue_with_optional_mirror
+log_delivery_failure "tmux-submit-failed"
+exit 1

@@ -17,7 +17,6 @@
 | `runtime/manager-state.tsv` | `projects/{name}/runtime/manager-state.tsv` |
 | `runtime/reboot-state.tsv` | `projects/{name}/runtime/reboot-state.tsv` |
 | `runtime/idle-state.tsv` | `projects/{name}/runtime/idle-state.tsv` |
-| `runtime/message-queue/` | `projects/{name}/runtime/message-queue/` |
 | `runtime/message-locks/` | `projects/{name}/runtime/message-locks/` |
 
 에이전트 정의 파일(`agents/`)과 도메인 파일(`domains/`)의 경로는 레포 루트 기준이다.
@@ -54,7 +53,6 @@ projects/{name}/
     manager-state.tsv      #   monitor pid/heartbeat/lock/nudge key-value 상태
     reboot-state.tsv       #   role -> reboot count / reboot lock / lockout 시각
     idle-state.tsv         #   role -> idle 감지 시각
-    message-queue/         #   전달 실패 메시지 보관
     message-locks/         #   target별 직렬화 lock
     manager/               #   runtime 보조 파일
   logs/                    # system.log, message.log

@@ -177,9 +177,7 @@ def cmd_system(args: argparse.Namespace) -> None:
 def cmd_message(args: argparse.Namespace) -> None:
     _validate_project(args.project)
 
-    # message.log: delivered만 기록. skipped/queued는 WHIPLASH_MESSAGE_LOG=1 시에만.
-    if args.status != "delivered" and not os.environ.get("WHIPLASH_MESSAGE_LOG"):
-        return
+    # message.log: delivered와 skipped 모두 기록 (큐 제거 후 실패 추적용)
 
     sender = getattr(args, "from")
 
@@ -221,7 +219,7 @@ def main() -> None:
     p_msg.add_argument("kind")
     p_msg.add_argument("priority")
     p_msg.add_argument("subject")
-    p_msg.add_argument("status", choices=["delivered", "skipped", "queued"])
+    p_msg.add_argument("status", choices=["delivered", "skipped"])
     p_msg.add_argument("--reason", nargs="*", help="skipped 사유")
 
     args = parser.parse_args()
